@@ -1,0 +1,50 @@
+# Example GitHub Actions workflow for deploying dbt jobs
+# This workflow runs on merge to main and deploys jobs to dbt Cloud
+
+name: Deploy DBT Jobs
+
+on:
+  push:
+    branches:
+      - main  # Change to your deployment branch
+    paths:
+      - 'jobs.yml'
+      - 'selectors.yml'
+      - '.github/workflows/deploy-dbt-jobs.yml'
+
+jobs:
+  deploy-jobs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dbt-jobs-as-code
+        run: |
+          pip install git+https://github.com/dbt-labs/dbt-jobs-as-code.git
+
+      - name: Validate jobs.yml exists
+        run: |
+          if [ ! -f jobs.yml ]; then
+            echo "❌ jobs.yml not found!"
+            exit 1
+          fi
+          echo "✅ jobs.yml found"
+
+      - name: Deploy jobs to dbt Cloud
+        env:
+          DBT_CLOUD_SERVICE_TOKEN: ${{ secrets.DBT_CLOUD_SERVICE_TOKEN }}
+        run: |
+          dbt-jobs-as-code sync-jobs jobs.yml
+
+      - name: Deployment summary
+        run: |
+          echo "✅ Jobs deployed successfully to dbt Cloud"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"

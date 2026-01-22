@@ -1,0 +1,84 @@
+# Example configuration for mixed mode with priority system
+# This demonstrates how to use all priority levels to prevent duplicate models
+
+manifest_path: target/manifest.json
+selectors_output_file: selectors.yml
+jobs_output_file: jobs.yml
+output_dir: .
+
+selector:
+  # Use mixed mode for comprehensive priority-based selector generation
+  method: mixed
+
+  # Group remaining models by shared dependencies
+  group_by_dependencies: true
+
+  # PRIORITY 1: Manual selectors (preserved automatically)
+  # Mark selectors with "manually_created" in description
+  # Example: Critical models that need special handling
+  preserve_manual_selectors: true
+
+  # PRIORITY 2: Path-based selectors (specified paths get dedicated selectors)
+  # Models in these paths are isolated from tag/FQN grouping
+  include_path_groups:
+    - models/staging/legacy      # Legacy models that need separate job
+    - models/marts/critical      # Critical business models
+    - models/marts/experimental  # Experimental features
+
+  # PRIORITY 3: Tag-based selectors
+  # Models with tags (not in manual/path selectors) get tag-based selectors
+  # Exclude certain tags from selector generation
+  exclude_tags:
+    - deprecated  # Old models being phased out
+    - archived    # Historical models not in use
+    - wip         # Work in progress, not ready for production
+
+  # Models to completely exclude from any selectors
+  exclude_models: []
+
+  # Paths to completely exclude
+  exclude_paths:
+    - models/temp
+    - models/scratch
+
+  # PRIORITY 4: FQN-based selectors for remaining models
+  # Models not yet assigned will be grouped by dependencies
+
+  # Additional options
+  include_freshness_selectors: true
+  include_parent_sources: true
+  prefix_order: []  # Empty = alphabetical sorting
+  path_grouping_level: 1
+  min_models_per_selector: 1
+  selector_prefix: automatically_generated_selector
+
+# Job configuration for dbt Cloud
+job:
+  account_id: null  # Set your dbt Cloud account ID
+  project_id: null  # Set your dbt Cloud project ID
+  environment_id: null  # Set your production environment ID
+  dbt_version: ""
+  threads: 8
+  target_name: prod
+  timeout_seconds: 0
+  cron_schedule: "0 */6 * * *"
+  generate_docs: false
+  run_generate_sources: false
+  job_name_prefix: dbt
+
+# Deployment configuration
+deployment:
+  deploy_branch: main
+  require_dbt_jobs_as_code: true
+  dbt_project_path: .
+
+# USAGE EXAMPLE:
+#
+# 1. Create manual selectors in selectors.yml with "manually_created" in description
+# 2. Run: dbt-job-maestro generate --config config_mixed_mode.yml
+# 3. Result:
+#    - Manual selectors preserved (e.g., critical_revenue_models)
+#    - Path selectors created (e.g., path_models_staging_legacy)
+#    - Tag selectors created (e.g., tag_daily)
+#    - FQN selectors created for remaining models
+#    - ZERO DUPLICATES - each model in exactly one selector

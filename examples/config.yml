@@ -1,0 +1,142 @@
+# dbt-job-maestro Configuration File
+# This file defines how selectors and jobs should be generated from your dbt manifest.json
+
+# Path to your dbt manifest.json file
+manifest_path: target/manifest.json
+
+# Output directory for generated files
+output_dir: .
+
+# Name of the output selector file
+selectors_output_file: selectors.yml
+
+# Name of the output jobs file (for dbt-jobs-as-code)
+jobs_output_file: jobs.yml
+
+# Selector generation configuration
+selector:
+  # Selector generation method: 'fqn', 'path', 'tag', or 'mixed'
+  # - fqn: Group models by shared dependencies (fully qualified names)
+  # - path: Group models by folder structure
+  # - tag: Group models by dbt tags
+  # - mixed: Combine tag-based grouping with dependency-based grouping for untagged models
+  method: fqn
+
+  # Whether to group models by shared dependencies (only applies to 'fqn' and 'mixed' methods)
+  group_by_dependencies: true
+
+  # Tags to exclude from selector generation
+  # Models with these tags will not be included in any generated selectors
+  exclude_tags:
+    - deprecated
+    - archived
+    - experimental
+    # Add your own tags to exclude here
+
+  # Specific models to exclude by name
+  # Use exact model names or patterns
+  exclude_models: []
+    # - temp_model
+    # - test_*
+
+  # Paths to exclude from selector generation
+  # Models in these paths will not be included
+  exclude_paths: []
+    # - models/staging/legacy
+    # - models/temp
+
+  # Specific paths to create dedicated selectors for (used in 'mixed' mode)
+  # Models in these paths get their own selectors with FIRST priority
+  # They are excluded from tag-based and FQN-based grouping to prevent duplicates
+  # This is useful for isolating specific model groups that need separate jobs
+  include_path_groups: []
+    # - models/staging/legacy
+    # - models/marts/finance
+    # - models/marts/critical
+
+  # Whether to generate source freshness selectors
+  # Creates paired selectors for checking source freshness
+  include_freshness_selectors: true
+
+  # Whether to include parent sources when a model depends on them
+  # When true, adds "parents: true" to include upstream sources in the selector
+  include_parent_sources: true
+
+  # Custom model prefix order for sorting (optional)
+  # Leave empty [] to use alphabetical sorting
+  # Add your project's prefixes to prioritize them in selector names
+  # Examples:
+  #   - Common dbt: ['stg', 'int', 'fct', 'dim']
+  #   - Medallion: ['bronze', 'silver', 'gold']
+  #   - Simple: ['raw', 'staging', 'marts', 'reports']
+  prefix_order: []
+
+  # Path grouping level (for path-based selectors)
+  # 0 = root level (models/)
+  # 1 = first subdirectory (models/staging, models/marts, etc.)
+  # 2 = second subdirectory level, etc.
+  path_grouping_level: 1
+
+  # Minimum number of models required per selector
+  # Selectors with fewer models than this will be merged or skipped
+  min_models_per_selector: 1
+
+  # Prefix for automatically generated selector names
+  # Helps distinguish auto-generated selectors from manual ones
+  selector_prefix: automatically_generated_selector
+
+  # Whether to preserve manually created selectors when regenerating
+  # Manual selectors should have description starting with "manually_created"
+  preserve_manual_selectors: true
+
+# Job generation configuration (for dbt-jobs-as-code)
+job:
+  # dbt Cloud account ID (find in dbt Cloud URL or API)
+  account_id: null  # e.g., 12345
+
+  # dbt Cloud project ID
+  project_id: null  # e.g., 67890
+
+  # dbt Cloud environment ID (usually production environment)
+  environment_id: null  # e.g., 11111
+
+  # dbt version (leave empty to use environment default)
+  dbt_version: ""
+
+  # Number of threads for dbt execution
+  threads: 8
+
+  # Target name (usually 'prod' or 'production')
+  target_name: prod
+
+  # Job timeout in seconds (0 = no timeout)
+  timeout_seconds: 0
+
+  # Cron schedule for jobs (default: every 6 hours)
+  # Examples:
+  #   - "0 */6 * * *"  (every 6 hours)
+  #   - "0 0 * * *"    (daily at midnight)
+  #   - "0 9 * * 1-5"  (weekdays at 9am)
+  cron_schedule: "0 */6 * * *"
+
+  # Whether to generate dbt docs
+  generate_docs: false
+
+  # Whether to run source freshness checks
+  run_generate_sources: false
+
+  # Job name prefix (jobs will be named: prefix_selector_name)
+  job_name_prefix: dbt
+
+# Deployment configuration
+deployment:
+  # Branch that triggers job deployment to dbt Cloud
+  # Set this to your main/production branch
+  deploy_branch: main
+
+  # Whether to require dbt-jobs-as-code package
+  # If true, will validate it's installed before deployment
+  require_dbt_jobs_as_code: true
+
+  # Path to dbt project (for checking packages.yml)
+  dbt_project_path: .
