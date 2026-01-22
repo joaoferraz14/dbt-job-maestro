@@ -271,7 +271,7 @@ class SelectorGenerator:
         for model in sorted_models:
             if model in models_with_sources and self.config.include_parent_sources:
                 selector["definition"]["union"].append(
-                    {"method": "fqn", "value": model, "parents": "true"}
+                    {"method": "fqn", "value": model, "parents": True}
                 )
             else:
                 selector["definition"]["union"].append({"method": "fqn", "value": model})
@@ -294,7 +294,7 @@ class SelectorGenerator:
 
         if model_name in models_with_sources and self.config.include_parent_sources:
             selector["definition"]["union"].append(
-                {"method": "fqn", "value": model_name, "parents": "true"}
+                {"method": "fqn", "value": model_name, "parents": True}
             )
         else:
             selector["definition"]["union"].append({"method": "fqn", "value": model_name})
@@ -318,7 +318,7 @@ class SelectorGenerator:
         for model in sorted_models:
             if model in models_with_sources and self.config.include_parent_sources:
                 selector["definition"]["union"].append(
-                    {"method": "fqn", "value": model, "parents": "true"}
+                    {"method": "fqn", "value": model, "parents": True}
                 )
             else:
                 selector["definition"]["union"].append({"method": "fqn", "value": model})
@@ -343,7 +343,7 @@ class SelectorGenerator:
                             {
                                 "method": "source_status",
                                 "value": "fresher",
-                                "children": "true",
+                                "children": True,
                             },
                         ]
                     }
