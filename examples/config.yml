@@ -16,10 +16,11 @@ jobs_output_file: jobs.yml
 # Selector generation configuration
 selector:
   # Selector generation method: 'fqn', 'path', 'tag', or 'mixed'
-  # - fqn: Group models by shared dependencies (fully qualified names)
-  # - path: Group models by folder structure
-  # - tag: Group models by dbt tags
-  # - mixed: Combine tag-based grouping with dependency-based grouping for untagged models
+  # - fqn: Group ALL models by shared dependencies (fully qualified names)
+  # - path: Group ALL models by folder structure
+  # - tag: Group ALL models by dbt tags
+  # - mixed: (RECOMMENDED) Preserve manual selectors (any method) + auto-generate FQN selectors for remaining models
+  #          Manual selectors identified by 'manually_created_' prefix in name
   method: fqn
 
   # Whether to group models by shared dependencies (only applies to 'fqn' and 'mixed' methods)

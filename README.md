@@ -39,14 +39,15 @@ This generates the `target/manifest.json` file that dbt-job-maestro analyzes.
 ### 2. Generate selectors
 
 ```bash
-# Basic usage - analyzes dependencies
+# Basic usage - FQN-based (analyzes dependencies)
 dbt-job-maestro generate --manifest target/manifest.json
 
-# Group by folder structure
-dbt-job-maestro generate --method path
+# Recommended - Mixed mode (manual + automated FQN)
+dbt-job-maestro generate --method mixed
 
-# Group by tags
-dbt-job-maestro generate --method tag
+# Other methods
+dbt-job-maestro generate --method path  # Group by folder structure
+dbt-job-maestro generate --method tag   # Group by tags
 
 # Exclude specific tags
 dbt-job-maestro generate --exclude-tag deprecated --exclude-tag archived
@@ -65,6 +66,24 @@ dbt build --selector automatically_generated_selector_stg_customers
 ```
 
 ## Selector Generation Methods
+
+dbt-job-maestro supports four generation methods:
+
+| Method | Type | Auto-Generation Method | Use Case |
+|--------|------|----------------------|----------|
+| **fqn** | Standalone | FQN (dependency-based) | Projects with clear dependency chains |
+| **path** | Standalone | Path (folder structure) | Projects organized by folders |
+| **tag** | Standalone | Tag (dbt tags) | Projects with comprehensive tagging |
+| **mixed** | Hybrid ⭐ | FQN only (for auto) | Manual selectors (any method) + automated FQN |
+
+**Key Difference:**
+- **Standalone methods** (`fqn`, `path`, `tag`): Generate selectors for ALL models using that method
+- **Mixed method** (⭐ recommended):
+  - Manual selectors can use **any method** (fqn/tag/path) and are preserved
+  - Auto-generated selectors use **only FQN method**
+  - Models in manual selectors are excluded from auto-generation
+
+---
 
 ### FQN (Fully Qualified Names) - Default
 
@@ -96,6 +115,8 @@ Groups models by their folder structure.
 
 **Best for:** Projects organized by folder (staging, marts, etc.)
 
+**Usage:** Standalone method only (generates path-based selectors for all models)
+
 ```bash
 dbt-job-maestro generate --method path --path-level 1
 ```
@@ -117,6 +138,8 @@ Groups models by dbt tags.
 
 **Best for:** Projects with comprehensive tagging strategies
 
+**Usage:** Standalone method only (generates tag-based selectors for all models)
+
 ```bash
 dbt-job-maestro generate --method tag
 ```
@@ -132,26 +155,32 @@ selectors:
           value: daily
 ```
 
-### Mixed
+### Mixed (Recommended)
 
-Combines multiple methods with a priority system to ensure NO duplicate models across selectors.
+**The most powerful method:** Combines manual customization with automated FQN-based generation, ensuring NO duplicate models across selectors.
 
 **Priority order:**
-1. **Manually created selectors** - Preserved from existing file (identified by `manually_created_` prefix in name)
-2. **FQN-based selectors** - Auto-generated selectors using dependency analysis
+1. **Manually created selectors** (HIGHEST PRIORITY) - Preserved from existing file
+   - Identified by `manually_created_` prefix in name
+   - Can use ANY method: fqn, tag, or path
+   - Models from these selectors are excluded from auto-generation
+2. **FQN-based auto-generated selectors** (LOWER PRIORITY) - Created automatically
+   - Uses ONLY fqn method (dependency analysis)
+   - Only processes models NOT in manual selectors
 
-**Best for:** Projects that need custom manual selectors combined with automated dependency-based selectors
+**Best for:** Most production projects that need both custom control and automated maintenance
 
 ```bash
 dbt-job-maestro generate --method mixed
 ```
 
 **How it works:**
-- Manual selectors are read from existing `selectors.yml` and preserved exactly as-is
-- Models referenced in manual selectors (via fqn, tag, or path methods) are automatically resolved
-- Those models are excluded from auto-generated FQN selectors
-- Overlap detection warns if models appear in multiple manual selectors (allowed)
-- Overlap detection errors if models appear in multiple auto-generated selectors (bug)
+- **Manual selectors** are read from existing `selectors.yml` and preserved exactly as-is
+- Manual selectors can use **any method** (fqn, tag, or path) for maximum flexibility
+- Models referenced in manual selectors are **automatically resolved** and excluded from auto-generation
+- **Auto-generated selectors** use **only FQN method** (dependency-based grouping)
+- Overlap detection **warns** if models appear in multiple manual selectors (allowed for cross-cutting concerns)
+- Overlap detection **errors** if models appear in multiple auto-generated selectors (indicates a bug)
 
 ## Configuration Files
 
@@ -405,9 +434,9 @@ selector:
   fail_on_auto_overlaps: true      # Error if auto-generated selectors overlap (default: true)
 ```
 
-When regenerating, models in manual selectors are **excluded** from FQN-based grouping, ensuring no duplicates.
+When regenerating with `mixed` method, models in manual selectors are **automatically resolved** and **excluded** from FQN-based auto-generation, ensuring no duplicates.
 
-**Smart Model Resolution:** Manual selectors can use any method (fqn, tag, path), and all referenced models are automatically resolved:
+**Smart Model Resolution:** Manual selectors can use **any method** (fqn, tag, path), and all referenced models are automatically resolved and excluded from auto-generated selectors:
 
 ```yaml
 selectors:
