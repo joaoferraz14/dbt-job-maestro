@@ -115,7 +115,7 @@ Groups models by their folder structure.
 
 **Best for:** Projects organized by folder (staging, marts, etc.)
 
-**Usage:** Standalone method only (generates path-based selectors for all models)
+**Note:** This is a standalone method (not used in mixed mode auto-generation). For mixed mode, only manual selectors can use path method.
 
 ```bash
 dbt-job-maestro generate --method path --path-level 1
@@ -138,7 +138,7 @@ Groups models by dbt tags.
 
 **Best for:** Projects with comprehensive tagging strategies
 
-**Usage:** Standalone method only (generates tag-based selectors for all models)
+**Note:** This is a standalone method (not used in mixed mode auto-generation). For mixed mode, only manual selectors can use tag method.
 
 ```bash
 dbt-job-maestro generate --method tag
@@ -175,12 +175,13 @@ dbt-job-maestro generate --method mixed
 ```
 
 **How it works:**
-- **Manual selectors** are read from existing `selectors.yml` and preserved exactly as-is
-- Manual selectors can use **any method** (fqn, tag, or path) for maximum flexibility
-- Models referenced in manual selectors are **automatically resolved** and excluded from auto-generation
-- **Auto-generated selectors** use **only FQN method** (dependency-based grouping)
-- Overlap detection **warns** if models appear in multiple manual selectors (allowed for cross-cutting concerns)
-- Overlap detection **errors** if models appear in multiple auto-generated selectors (indicates a bug)
+- **Manual selectors** can use ANY method (fqn, tag, or path) and are preserved exactly as-is
+- **Auto-generated selectors** ONLY use FQN method (dependency-based grouping)
+- Models referenced in manual selectors are automatically resolved and excluded from auto-generation
+- Overlap detection warns if models appear in multiple manual selectors (allowed)
+- Overlap detection errors if models appear in multiple auto-generated selectors (bug)
+
+**Important:** Path and tag methods are available for manual selectors only. Auto-generated selectors use FQN exclusively.
 
 ## Configuration Files
 
@@ -219,6 +220,13 @@ selector:
     - models/staging/legacy
 
   include_freshness_selectors: true
+
+  # Optional: Specific selectors to generate freshness for (if empty, all selectors get freshness when include_freshness_selectors is true)
+  # Example: Only create freshness selectors for critical models
+  freshness_selector_names:
+    - automatically_generated_selector_dim_customers
+    - manually_created_revenue_critical
+
   include_parent_sources: true
 
   # Optional: Model prefix order for sorting (leave empty [] for alphabetical)
@@ -460,6 +468,256 @@ selectors:
 - **Manual + Auto overlaps**: Reported as ERROR (indicates improper exclusion)
 
 See [examples/selectors_with_manual.yml](examples/selectors_with_manual.yml) for a complete example.
+
+### Complete Workflow Example
+
+Here's a complete workflow showing how to create manual selectors and regenerate:
+
+#### Step 1: Initial Setup (First Time)
+
+```bash
+# Compile your dbt project
+cd your-dbt-project
+dbt compile
+
+# Generate initial selectors
+dbt-job-maestro generate --manifest target/manifest.json --method mixed
+```
+
+This creates `selectors.yml` with auto-generated FQN-based selectors.
+
+#### Step 2: Create Manual Selectors
+
+Edit `selectors.yml` to add your custom selectors with the `manually_created_` prefix:
+
+```yaml
+selectors:
+  # Manual selector 1: Critical revenue models (highest priority)
+  - name: manually_created_critical_revenue
+    description: "Critical revenue models that run first"
+    definition:
+      union:
+        - method: fqn
+          value: fct_revenue
+          parents: true
+        - method: fqn
+          value: fct_subscriptions
+          parents: true
+        - method: tag
+          value: critical
+
+  # Manual selector 2: Legacy models that need special handling
+  - name: manually_created_legacy
+    description: "Legacy staging models with custom logic"
+    definition:
+      union:
+        - method: path
+          value: models/staging/legacy
+
+  # Manual selector 3: Experimental features (can overlap with others)
+  - name: manually_created_experimental
+    description: "Experimental features under development"
+    definition:
+      union:
+        - method: tag
+          value: experimental
+
+  # Auto-generated selectors below (will be regenerated)
+  - name: automatically_generated_selector_stg_customers
+    description: "Selector for models in component starting with stg_customers"
+    definition:
+      union:
+        - method: fqn
+          value: stg_customers
+        - method: fqn
+          value: stg_orders
+```
+
+#### Step 3: Regenerate Selectors
+
+When you add/remove models or change dependencies:
+
+```bash
+# Recompile dbt project
+dbt compile
+
+# Regenerate selectors
+dbt-job-maestro generate --manifest target/manifest.json --method mixed
+
+# Check what changed
+git diff selectors.yml
+```
+
+**What happens:**
+- ✅ Manual selectors (`manually_created_*`) are **preserved exactly**
+- ✅ Models from manual selectors are **automatically excluded** from auto-generated selectors
+- ✅ Auto-generated selectors are **regenerated** based on new dependencies
+- ✅ Warnings shown if manual selectors have overlapping models
+
+#### Step 4: Test Your Selectors
+
+```bash
+# Test individual selectors
+dbt list --selector manually_created_critical_revenue
+dbt list --selector automatically_generated_selector_stg_customers
+
+# Run models with a selector
+dbt build --selector manually_created_critical_revenue
+
+# Run specific selectors in order
+dbt build --selector manually_created_critical_revenue
+dbt build --selector automatically_generated_selector_stg_customers
+```
+
+#### Step 5: Ongoing Maintenance
+
+Every time you modify your dbt models:
+
+```bash
+# 1. Make changes to your dbt models
+# 2. Compile
+dbt compile
+
+# 3. Regenerate selectors (manual ones preserved)
+dbt-job-maestro generate --manifest target/manifest.json --method mixed
+
+# 4. Review changes
+git diff selectors.yml
+
+# 5. Commit if satisfied
+git add selectors.yml
+git commit -m "Update selectors after model changes"
+```
+
+### Real-World Example: E-commerce Project
+
+```yaml
+selectors:
+  # Manual: Critical daily revenue pipeline (runs first, highest priority)
+  - name: manually_created_revenue_critical
+    description: "Daily revenue models - run first every day"
+    definition:
+      union:
+        - method: fqn
+          value: fct_orders
+          parents: true
+        - method: fqn
+          value: fct_revenue
+          parents: true
+        - method: tag
+          value: revenue_critical
+
+  # Manual: Customer 360 models (cross-cutting concern, may overlap)
+  - name: manually_created_customer_360
+    description: "Customer analytics models"
+    definition:
+      union:
+        - method: path
+          value: models/marts/customer
+        - method: tag
+          value: customer_facing
+
+  # Manual: Legacy models that need special configuration
+  - name: manually_created_legacy_migration
+    description: "Legacy models being migrated - custom warehouse"
+    definition:
+      union:
+        - method: path
+          value: models/staging/legacy
+        - method: path
+          value: models/marts/legacy
+
+  # Auto-generated: Staging area models (auto-managed by dependencies)
+  - name: automatically_generated_selector_stg_orders
+    description: "Selector for models in component starting with stg_orders"
+    definition:
+      union:
+        - method: fqn
+          value: stg_orders
+        - method: fqn
+          value: stg_order_items
+
+  # Auto-generated: Product analytics models
+  - name: automatically_generated_selector_dim_products
+    description: "Selector for models in component starting with dim_products"
+    definition:
+      union:
+        - method: fqn
+          value: dim_products
+        - method: fqn
+          value: fct_product_metrics
+```
+
+**Running this project:**
+
+```bash
+# Run critical revenue models first (every morning)
+dbt build --selector manually_created_revenue_critical
+
+# Run other auto-generated selectors in parallel
+dbt build --selector automatically_generated_selector_stg_orders &
+dbt build --selector automatically_generated_selector_dim_products &
+
+# Or use dbt Cloud jobs to orchestrate
+```
+
+### Configuring Freshness Selectors
+
+Freshness selectors automatically check source data freshness before running dependent models. You can control which selectors get freshness variants:
+
+**Option 1: Enable freshness for all selectors (default)**
+
+```yaml
+selector:
+  method: mixed
+  include_freshness_selectors: true  # All selectors get freshness variants
+```
+
+This generates:
+- `manually_created_revenue_critical` → `freshness_manually_created_revenue_critical`
+- `automatically_generated_selector_stg_orders` → `freshness_automatically_generated_selector_stg_orders`
+
+**Option 2: Disable freshness globally**
+
+```yaml
+selector:
+  method: mixed
+  include_freshness_selectors: false  # No freshness selectors generated
+```
+
+**Option 3: Enable freshness for specific selectors only**
+
+```yaml
+selector:
+  method: mixed
+  include_freshness_selectors: true
+
+  # Only these selectors will have freshness variants
+  freshness_selector_names:
+    - manually_created_revenue_critical
+    - automatically_generated_selector_stg_orders
+```
+
+This generates freshness variants ONLY for:
+- `freshness_manually_created_revenue_critical`
+- `freshness_automatically_generated_selector_stg_orders`
+
+But NOT for other selectors like `automatically_generated_selector_dim_products`.
+
+**When to use selective freshness:**
+- Production-critical selectors that depend on external sources
+- Hourly/real-time pipelines that need fresh data
+- Selectors that don't need freshness checks (pure transformations) can be excluded
+
+**Example usage:**
+
+```bash
+# Run freshness check, then build critical revenue models
+dbt build --selector freshness_manually_created_revenue_critical
+
+# Build models without freshness (for selectors without source dependencies)
+dbt build --selector automatically_generated_selector_dim_products
+```
 
 ## Best Practices
 

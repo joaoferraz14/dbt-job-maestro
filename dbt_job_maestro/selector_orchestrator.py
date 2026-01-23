@@ -135,7 +135,7 @@ class SelectorOrchestrator:
         selectors: List[Dict[str, Any]],
         output_path: str
     ) -> None:
-        """Write selectors to YAML file.
+        """Write selectors to YAML file with blank lines between selectors.
 
         Args:
             selectors: List of selector definitions
@@ -144,10 +144,30 @@ class SelectorOrchestrator:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
         with open(output_path, "w") as f:
-            yaml.dump(
-                {"selectors": selectors},
-                f,
-                default_flow_style=False,
-                sort_keys=False,
-                indent=2
-            )
+            # Write the selectors key
+            f.write("selectors:\n")
+
+            # Write each selector with a blank line after it
+            for i, selector in enumerate(selectors):
+                # Convert selector to YAML
+                selector_yaml = yaml.dump(
+                    [selector],
+                    default_flow_style=False,
+                    sort_keys=False,
+                    indent=2
+                )
+
+                # Remove the leading "- " from the first line and adjust indentation
+                lines = selector_yaml.split('\n')
+                if lines and lines[0].startswith('- '):
+                    lines[0] = '  - ' + lines[0][2:]  # Add proper indentation
+                    for j in range(1, len(lines)):
+                        if lines[j]:  # Only add indentation to non-empty lines
+                            lines[j] = '  ' + lines[j]
+
+                # Write the selector
+                f.write('\n'.join(lines))
+
+                # Add blank line between selectors (but not after the last one)
+                if i < len(selectors) - 1:
+                    f.write('\n')

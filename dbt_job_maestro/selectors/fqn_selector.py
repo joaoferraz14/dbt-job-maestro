@@ -57,7 +57,7 @@ class FQNSelector(BaseSelector):
                     selectors.append(selector)
 
                     # Optionally create freshness selector
-                    if self.config.include_freshness_selectors:
+                    if self._should_create_freshness(selector["name"]):
                         freshness = self._create_freshness_selector(
                             selector["name"],
                             filtered_component
@@ -75,7 +75,7 @@ class FQNSelector(BaseSelector):
                 selector = self._create_independent_selector(filtered_independent)
                 selectors.append(selector)
 
-                if self.config.include_freshness_selectors:
+                if self._should_create_freshness("selector_independent"):
                     freshness = self._create_freshness_selector(
                         "selector_independent",
                         filtered_independent
@@ -292,3 +292,20 @@ class FQNSelector(BaseSelector):
         ], reverse=True)
 
         return sorted_with_prefix + sorted_without_prefix
+
+    def _should_create_freshness(self, selector_name: str) -> bool:
+        """Determine if a freshness selector should be created for this selector.
+
+        Logic:
+        - If freshness_selector_names is provided, only create freshness for those selectors
+        - Otherwise, use the global include_freshness_selectors flag
+
+        Args:
+            selector_name: Name of the selector to check
+
+        Returns:
+            True if freshness selector should be created, False otherwise
+        """
+        if self.config.freshness_selector_names:
+            return selector_name in self.config.freshness_selector_names
+        return self.config.include_freshness_selectors
