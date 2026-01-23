@@ -137,29 +137,21 @@ selectors:
 Combines multiple methods with a priority system to ensure NO duplicate models across selectors.
 
 **Priority order:**
-1. **Manually created selectors** - Preserved from existing file (marked with "manually_created" in description)
-2. **Path-based selectors** - For specific paths in `include_path_groups` config
-3. **Tag-based selectors** - For models with tags (excluding already assigned)
-4. **FQN-based selectors** - For remaining models using dependency analysis
+1. **Manually created selectors** - Preserved from existing file (identified by `manually_created_` prefix in name)
+2. **FQN-based selectors** - Auto-generated selectors using dependency analysis
 
-**Best for:** Complex projects needing flexible, customized selector strategies without duplicates
+**Best for:** Projects that need custom manual selectors combined with automated dependency-based selectors
 
 ```bash
 dbt-job-maestro generate --method mixed
 ```
 
-**Example config:**
-```yaml
-selector:
-  method: mixed
-  include_path_groups:
-    - models/staging/legacy  # Gets its own selector first
-    - models/marts/critical
-  exclude_tags:
-    - deprecated
-```
-
-This ensures models in `models/staging/legacy` get their own dedicated selector, then tagged models get selectors, and finally remaining models are grouped by dependencies - with zero overlap.
+**How it works:**
+- Manual selectors are read from existing `selectors.yml` and preserved exactly as-is
+- Models referenced in manual selectors (via fqn, tag, or path methods) are automatically resolved
+- Those models are excluded from auto-generated FQN selectors
+- Overlap detection warns if models appear in multiple manual selectors (allowed)
+- Overlap detection errors if models appear in multiple auto-generated selectors (bug)
 
 ## Configuration Files
 
@@ -292,7 +284,8 @@ This separation of concerns allows:
 Use dbt-job-maestro as a Python library:
 
 ```python
-from dbt_job_maestro import ManifestParser, GraphBuilder, SelectorGenerator
+from dbt_job_maestro import ManifestParser, GraphBuilder
+from dbt_job_maestro.selector_orchestrator import SelectorOrchestrator
 from dbt_job_maestro.config import Config
 
 # Load configuration
@@ -305,12 +298,22 @@ models = parser.get_models()
 # Build dependency graph
 graph = GraphBuilder(models)
 
-# Generate selectors
-generator = SelectorGenerator(parser, graph, config.selector)
-selectors = generator.generate_selectors()
+# Generate selectors with priority-based orchestrator
+orchestrator = SelectorOrchestrator(parser, graph, config.selector)
+selectors = orchestrator.generate_selectors()
 
 # Write to file
-generator.write_selectors(selectors, config.selectors_output_file)
+orchestrator.write_selectors(selectors, config.selectors_output_file)
+```
+
+**For backward compatibility with legacy code:**
+
+```python
+from dbt_job_maestro import SelectorGenerator
+
+# Old API still works for path and tag methods
+generator = SelectorGenerator(parser, graph, config.selector)
+selectors = generator.generate_selectors()
 ```
 
 See [examples/example_usage.py](examples/example_usage.py) for more examples.
@@ -341,13 +344,13 @@ You can create custom selectors that will be preserved during regeneration. This
 
 **How to mark a selector as manual:**
 
-Include `manually_created` anywhere in the description:
+**Option 1 (Recommended)**: Use `manually_created_` prefix in the selector name:
 
 ```yaml
 selectors:
   # Manual selector - PRESERVED during regeneration
-  - name: critical_revenue_models
-    description: "manually_created - Critical revenue tracking models"
+  - name: manually_created_critical_revenue
+    description: "Critical revenue tracking models"
     definition:
       union:
         - method: fqn
@@ -360,8 +363,8 @@ selectors:
           value: revenue
 
   # Manual selector using path
-  - name: experimental_features
-    description: "manually_created - Experimental features under development"
+  - name: manually_created_experimental
+    description: "Experimental features under development"
     definition:
       union:
         - method: path
@@ -376,34 +379,56 @@ selectors:
           value: stg_customers
 ```
 
+**Option 2 (Alternative)**: Add metadata field:
+
+```yaml
+selectors:
+  - name: critical_revenue
+    metadata:
+      manually_created: true
+    description: "Critical revenue tracking models"
+    definition:
+      union:
+        - method: fqn
+          value: fct_revenue
+```
+
+**Option 3 (Legacy)**: Include `manually_created` in the description (backward compatibility only)
+
 **With mixed mode:**
 
 ```yaml
 selector:
   method: mixed
-  preserve_manual_selectors: true  # Enable manual selector preservation
+  preserve_manual_selectors: true  # Enable manual selector preservation (default: true)
+  warn_on_manual_overlaps: true    # Warn if models appear in multiple manual selectors (default: true)
+  fail_on_auto_overlaps: true      # Error if auto-generated selectors overlap (default: true)
 ```
 
-When regenerating, models in manual selectors are **excluded** from tag-based and FQN-based grouping, ensuring no duplicates.
+When regenerating, models in manual selectors are **excluded** from FQN-based grouping, ensuring no duplicates.
 
-**Smart Exclusion:** If a manual selector uses `method: path` or `method: tag`, those specific paths/tags are also excluded from automated generation. For example:
+**Smart Model Resolution:** Manual selectors can use any method (fqn, tag, path), and all referenced models are automatically resolved:
 
 ```yaml
 selectors:
-  - name: legacy_custom_handling
-    description: "manually_created - Legacy models with special logic"
+  - name: manually_created_critical_pipeline
+    description: "Critical revenue pipeline"
     definition:
       union:
-        - method: path
-          value: models/staging/legacy
+        - method: fqn
+          value: fct_revenue         # Direct model reference
         - method: tag
-          value: critical
+          value: critical            # All models with "critical" tag
+        - method: path
+          value: models/marts/revenue  # All models in revenue path
 ```
 
-With this manual selector:
-- No `path_models_staging_legacy` will be auto-generated (even if in `include_path_groups`)
-- No `tag_critical` will be auto-generated
-- Models in that path or with that tag are completely handled by your manual selector
+**All models** from these definitions (fqn, tag, and path) are resolved and excluded from auto-generated selectors.
+
+**Overlap Detection:**
+- **Manual selector overlaps**: Allowed with WARNING (useful for cross-cutting concerns)
+- **Auto-generated overlaps**: Reported as ERROR (indicates a bug in deduplication)
+- **Manual + Auto overlaps**: Reported as ERROR (indicates improper exclusion)
 
 See [examples/selectors_with_manual.yml](examples/selectors_with_manual.yml) for a complete example.
 
@@ -538,7 +563,51 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - **Documentation**: This README and inline code documentation
 - **Examples**: See [examples/](examples/) directory
 
+## Architecture
+
+### Refactored Selector System (v0.2.0+)
+
+The selector generation system has been refactored with clean architecture principles:
+
+**Core Components:**
+- **`SelectorOrchestrator`**: Coordinates selector generation with priority-based deduplication
+- **`BaseSelector`** (ABC): Abstract base class for all selector generators
+- **`ManualSelector`**: Preserves manually created selectors from existing files
+- **`FQNSelector`**: Generates dependency-based selectors using graph analysis
+- **`ModelResolver`**: Resolves models from selector definitions (handles fqn/tag/path methods)
+- **`OverlapDetector`**: Detects and reports model overlaps with appropriate severity
+
+**Design Patterns:**
+- Strategy Pattern for different selector generation strategies
+- Template Method for common selector functionality
+- Factory Pattern for creating appropriate generators
+- Composite Pattern for selector definitions (union/intersection/exclude)
+
+**Priority System:**
+1. Manual selectors (highest priority)
+2. FQN-based auto-generated selectors (lower priority)
+3. Automatic deduplication prevents model overlap
+
 ## Changelog
+
+### 0.2.0 (2026-01-23) - Architecture Refactor
+
+**Major Changes:**
+- Refactored selector system with abstract base classes and design patterns
+- New `SelectorOrchestrator` replaces `SelectorGenerator` for FQN and mixed modes
+- Manual selector identification via `manually_created_` name prefix (primary method)
+- Comprehensive model resolution across fqn, tag, and path methods
+- Overlap detection with warnings and errors
+- Priority-based deduplication system
+
+**Breaking Changes:**
+- Mixed mode now only generates FQN-based auto-selectors (no longer generates path/tag auto-selectors)
+- Manual selector priority is now highest (models excluded from all auto-generation)
+
+**Backward Compatibility:**
+- `SelectorGenerator` still available for path and tag methods
+- Legacy manual selector detection (via description) still supported
+- CLI remains unchanged
 
 ### 0.1.0 (2026-01-22)
 

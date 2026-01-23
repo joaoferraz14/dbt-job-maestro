@@ -8,6 +8,7 @@ from dbt_job_maestro.config import Config, SelectorConfig
 from dbt_job_maestro.manifest_parser import ManifestParser
 from dbt_job_maestro.graph_builder import GraphBuilder
 from dbt_job_maestro.selector_generator import SelectorGenerator
+from dbt_job_maestro.selector_orchestrator import SelectorOrchestrator
 from dbt_job_maestro.job_generator import JobGenerator
 
 
@@ -144,7 +145,13 @@ def generate(
         if cfg.selector.exclude_tags:
             click.echo(f"Excluding tags: {', '.join(cfg.selector.exclude_tags)}")
 
-        generator = SelectorGenerator(parser, graph, cfg.selector)
+        # Use new SelectorOrchestrator for supported methods
+        if cfg.selector.method in ["fqn", "mixed"]:
+            generator = SelectorOrchestrator(parser, graph, cfg.selector)
+        else:
+            # Fall back to SelectorGenerator for backward compatibility
+            generator = SelectorGenerator(parser, graph, cfg.selector)
+
         selectors = generator.generate_selectors()
 
         output_path = Path(cfg.output_dir) / cfg.selectors_output_file

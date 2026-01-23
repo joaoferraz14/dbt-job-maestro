@@ -56,6 +56,15 @@ class SelectorConfig:
     # Whether to preserve manually created selectors
     preserve_manual_selectors: bool = True
 
+    # Prefix for manually created selectors (used for identification)
+    manual_selector_identifier: str = "manually_created_"
+
+    # Whether to warn about overlaps in manual selectors
+    warn_on_manual_overlaps: bool = True
+
+    # Whether to fail on overlaps in auto-generated selectors
+    fail_on_auto_overlaps: bool = True
+
 
 @dataclass
 class JobConfig:
@@ -162,6 +171,9 @@ class Config:
             min_models_per_selector=selector_data.get("min_models_per_selector", 1),
             selector_prefix=selector_data.get("selector_prefix", "automatically_generated_selector"),
             preserve_manual_selectors=selector_data.get("preserve_manual_selectors", True),
+            manual_selector_identifier=selector_data.get("manual_selector_identifier", "manually_created_"),
+            warn_on_manual_overlaps=selector_data.get("warn_on_manual_overlaps", True),
+            fail_on_auto_overlaps=selector_data.get("fail_on_auto_overlaps", True),
         )
 
         # Create job config
@@ -225,6 +237,9 @@ class Config:
                 "min_models_per_selector": self.selector.min_models_per_selector,
                 "selector_prefix": self.selector.selector_prefix,
                 "preserve_manual_selectors": self.selector.preserve_manual_selectors,
+                "manual_selector_identifier": self.selector.manual_selector_identifier,
+                "warn_on_manual_overlaps": self.selector.warn_on_manual_overlaps,
+                "fail_on_auto_overlaps": self.selector.fail_on_auto_overlaps,
             },
             "job": {
                 "account_id": self.job.account_id,
