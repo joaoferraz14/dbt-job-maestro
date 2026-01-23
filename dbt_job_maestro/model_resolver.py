@@ -1,7 +1,10 @@
 """Resolve models from selector definitions."""
 
+import logging
 from typing import Dict, Any, Set
 from dbt_job_maestro.selector_types import ModelResolution
+
+logger = logging.getLogger(__name__)
 
 
 class ModelResolver:
@@ -116,12 +119,23 @@ class ModelResolver:
         elif method == "tag":
             # All models with this tag
             tag_models = self.graph.group_by_tag(value)
+            if not tag_models and value:
+                logger.warning(
+                    f"Tag '{value}' does not match any models in the manifest. "
+                    f"This selector definition will not select any models via this tag."
+                )
             models.update(tag_models)
             tags.add(value)
 
         elif method == "path":
             # All models in this path
             path_models = self.graph.group_by_path(value)
+            if not path_models and value:
+                logger.warning(
+                    f"Path '{value}' does not match any models in the manifest. "
+                    f"This selector definition will not select any models via this path. "
+                    f"Check if the path is correct (try with or without 'models/' prefix)."
+                )
             models.update(path_models)
             paths.add(value)
 

@@ -45,7 +45,7 @@ Repository = "https://github.com/yourusername/dbt-job-maestro"
 Issues = "https://github.com/yourusername/dbt-job-maestro/issues"
 
 [project.scripts]
-dbt-job-maestro = "dbt_job_maestro.cli:main"
+maestro = "dbt_job_maestro.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

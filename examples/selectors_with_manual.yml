@@ -36,7 +36,7 @@ selectors:
         - method: tag
           value: daily
 
-  - name: automatically_generated_selector_stg_customers
+  - name: maestro_stg_customers
     description: Selector for models in component starting with stg_customers
     definition:
       union:

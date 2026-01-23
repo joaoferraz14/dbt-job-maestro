@@ -59,10 +59,10 @@ The generated `selectors.yml` file is ready to use:
 
 ```bash
 # Test a selector
-dbt list --selector automatically_generated_selector_stg_customers
+dbt list --selector maestro_stg_customers
 
 # Run models with a selector
-dbt build --selector automatically_generated_selector_stg_customers
+dbt build --selector maestro_stg_customers
 ```
 
 ## Selector Generation Methods
@@ -98,7 +98,7 @@ dbt-job-maestro generate --method fqn
 **Example output:**
 ```yaml
 selectors:
-  - name: automatically_generated_selector_stg_customers
+  - name: maestro_stg_customers
     description: Selector for models in component starting with stg_customers
     definition:
       union:
@@ -160,11 +160,12 @@ selectors:
 **The most powerful method:** Combines manual customization with automated FQN-based generation, ensuring NO duplicate models across selectors.
 
 **Priority order:**
-1. **Manually created selectors** (HIGHEST PRIORITY) - Preserved from existing file
-   - Identified by `manually_created_` prefix in name
+1. **Manual selectors** (HIGHEST PRIORITY) - Preserved from existing file
+   - Identified by NOT having `maestro_` prefix in name
    - Can use ANY method: fqn, tag, or path
    - Models from these selectors are excluded from auto-generation
-2. **FQN-based auto-generated selectors** (LOWER PRIORITY) - Created automatically
+2. **Auto-generated selectors** (LOWER PRIORITY) - Created automatically
+   - Identified by `maestro_` prefix in name
    - Uses ONLY fqn method (dependency analysis)
    - Only processes models NOT in manual selectors
 
@@ -224,7 +225,7 @@ selector:
   # Optional: Specific selectors to generate freshness for (if empty, all selectors get freshness when include_freshness_selectors is true)
   # Example: Only create freshness selectors for critical models
   freshness_selector_names:
-    - automatically_generated_selector_dim_customers
+    - maestro_dim_customers
     - manually_created_revenue_critical
 
   include_parent_sources: true
@@ -536,14 +537,18 @@ selector:
 
 You can create custom selectors that will be preserved during regeneration. This is especially useful with the `mixed` method, where manual selectors get **highest priority** and their models are excluded from automated grouping.
 
-**How to mark a selector as manual:**
+**Simple Convention:**
+- ✅ **Selectors WITHOUT `maestro_` prefix are MANUAL** (preserved during regeneration)
+- 🤖 **Selectors WITH `maestro_` prefix are AUTO-GENERATED** (replaced during regeneration)
 
-**Option 1 (Recommended)**: Use `manually_created_` prefix in the selector name:
+That's it! No need for special naming or metadata - just avoid using the `maestro_` prefix for your custom selectors.
+
+**Example:**
 
 ```yaml
 selectors:
-  # Manual selector - PRESERVED during regeneration
-  - name: manually_created_critical_revenue
+  # Manual selector - PRESERVED during regeneration (no maestro_ prefix)
+  - name: critical_revenue
     description: "Critical revenue tracking models"
     definition:
       union:
@@ -556,38 +561,22 @@ selectors:
         - method: tag
           value: revenue
 
-  # Manual selector using path
-  - name: manually_created_experimental
+  # Manual selector using path - PRESERVED (no maestro_ prefix)
+  - name: experimental_features
     description: "Experimental features under development"
     definition:
       union:
         - method: path
           value: models/marts/experimental
 
-  # Auto-generated selector - REPLACED during regeneration
-  - name: automatically_generated_selector_stg_customers
+  # Auto-generated selector - REPLACED during regeneration (has maestro_ prefix)
+  - name: maestro_stg_customers
     description: Selector for models in component starting with stg_customers
     definition:
       union:
         - method: fqn
           value: stg_customers
 ```
-
-**Option 2 (Alternative)**: Add metadata field:
-
-```yaml
-selectors:
-  - name: critical_revenue
-    metadata:
-      manually_created: true
-    description: "Critical revenue tracking models"
-    definition:
-      union:
-        - method: fqn
-          value: fct_revenue
-```
-
-**Option 3 (Legacy)**: Include `manually_created` in the description (backward compatibility only)
 
 **With mixed mode:**
 
@@ -605,7 +594,7 @@ When regenerating with `mixed` method, models in manual selectors are **automati
 
 ```yaml
 selectors:
-  - name: manually_created_critical_pipeline
+  - name: critical_pipeline
     description: "Critical revenue pipeline"
     definition:
       union:
@@ -645,12 +634,12 @@ This creates `selectors.yml` with auto-generated FQN-based selectors.
 
 #### Step 2: Create Manual Selectors
 
-Edit `selectors.yml` to add your custom selectors with the `manually_created_` prefix:
+Edit `selectors.yml` to add your custom selectors (without `maestro_` prefix):
 
 ```yaml
 selectors:
-  # Manual selector 1: Critical revenue models (highest priority)
-  - name: manually_created_critical_revenue
+  # Manual selector 1: Critical revenue models (highest priority - no maestro_ prefix)
+  - name: critical_revenue
     description: "Critical revenue models that run first"
     definition:
       union:
@@ -663,24 +652,24 @@ selectors:
         - method: tag
           value: critical
 
-  # Manual selector 2: Legacy models that need special handling
-  - name: manually_created_legacy
+  # Manual selector 2: Legacy models that need special handling (no maestro_ prefix)
+  - name: legacy_staging
     description: "Legacy staging models with custom logic"
     definition:
       union:
         - method: path
           value: models/staging/legacy
 
-  # Manual selector 3: Experimental features (can overlap with others)
-  - name: manually_created_experimental
+  # Manual selector 3: Experimental features (can overlap with others, no maestro_ prefix)
+  - name: experimental_features
     description: "Experimental features under development"
     definition:
       union:
         - method: tag
           value: experimental
 
-  # Auto-generated selectors below (will be regenerated)
-  - name: automatically_generated_selector_stg_customers
+  # Auto-generated selectors below (have maestro_ prefix - will be regenerated)
+  - name: maestro_stg_customers
     description: "Selector for models in component starting with stg_customers"
     definition:
       union:
@@ -706,24 +695,24 @@ git diff selectors.yml
 ```
 
 **What happens:**
-- ✅ Manual selectors (`manually_created_*`) are **preserved exactly**
+- ✅ Manual selectors (without `maestro_` prefix) are **preserved exactly**
 - ✅ Models from manual selectors are **automatically excluded** from auto-generated selectors
-- ✅ Auto-generated selectors are **regenerated** based on new dependencies
+- ✅ Auto-generated selectors (with `maestro_` prefix) are **regenerated** based on new dependencies
 - ✅ Warnings shown if manual selectors have overlapping models
 
 #### Step 4: Test Your Selectors
 
 ```bash
 # Test individual selectors
-dbt list --selector manually_created_critical_revenue
-dbt list --selector automatically_generated_selector_stg_customers
+dbt list --selector critical_revenue
+dbt list --selector maestro_stg_customers
 
 # Run models with a selector
-dbt build --selector manually_created_critical_revenue
+dbt build --selector critical_revenue
 
 # Run specific selectors in order
-dbt build --selector manually_created_critical_revenue
-dbt build --selector automatically_generated_selector_stg_customers
+dbt build --selector critical_revenue
+dbt build --selector maestro_stg_customers
 ```
 
 #### Step 5: Ongoing Maintenance
@@ -750,8 +739,8 @@ git commit -m "Update selectors after model changes"
 
 ```yaml
 selectors:
-  # Manual: Critical daily revenue pipeline (runs first, highest priority)
-  - name: manually_created_revenue_critical
+  # Manual: Critical daily revenue pipeline (no maestro_ prefix = manual)
+  - name: revenue_critical
     description: "Daily revenue models - run first every day"
     definition:
       union:
@@ -765,7 +754,7 @@ selectors:
           value: revenue_critical
 
   # Manual: Customer 360 models (cross-cutting concern, may overlap)
-  - name: manually_created_customer_360
+  - name: customer_360
     description: "Customer analytics models"
     definition:
       union:
@@ -775,7 +764,7 @@ selectors:
           value: customer_facing
 
   # Manual: Legacy models that need special configuration
-  - name: manually_created_legacy_migration
+  - name: legacy_migration
     description: "Legacy models being migrated - custom warehouse"
     definition:
       union:
@@ -784,8 +773,8 @@ selectors:
         - method: path
           value: models/marts/legacy
 
-  # Auto-generated: Staging area models (auto-managed by dependencies)
-  - name: automatically_generated_selector_stg_orders
+  # Auto-generated: Staging area models (maestro_ prefix = auto-managed)
+  - name: maestro_stg_orders
     description: "Selector for models in component starting with stg_orders"
     definition:
       union:
@@ -795,7 +784,7 @@ selectors:
           value: stg_order_items
 
   # Auto-generated: Product analytics models
-  - name: automatically_generated_selector_dim_products
+  - name: maestro_dim_products
     description: "Selector for models in component starting with dim_products"
     definition:
       union:
@@ -809,11 +798,11 @@ selectors:
 
 ```bash
 # Run critical revenue models first (every morning)
-dbt build --selector manually_created_revenue_critical
+dbt build --selector revenue_critical
 
 # Run other auto-generated selectors in parallel
-dbt build --selector automatically_generated_selector_stg_orders &
-dbt build --selector automatically_generated_selector_dim_products &
+dbt build --selector maestro_stg_orders &
+dbt build --selector maestro_dim_products &
 
 # Or use dbt Cloud jobs to orchestrate
 ```
@@ -832,7 +821,7 @@ selector:
 
 This generates:
 - `manually_created_revenue_critical` → `freshness_manually_created_revenue_critical`
-- `automatically_generated_selector_stg_orders` → `freshness_automatically_generated_selector_stg_orders`
+- `maestro_stg_orders` → `freshness_maestro_stg_orders`
 
 **Option 2: Disable freshness globally**
 
@@ -852,14 +841,14 @@ selector:
   # Only these selectors will have freshness variants
   freshness_selector_names:
     - manually_created_revenue_critical
-    - automatically_generated_selector_stg_orders
+    - maestro_stg_orders
 ```
 
 This generates freshness variants ONLY for:
 - `freshness_manually_created_revenue_critical`
-- `freshness_automatically_generated_selector_stg_orders`
+- `freshness_maestro_stg_orders`
 
-But NOT for other selectors like `automatically_generated_selector_dim_products`.
+But NOT for other selectors like `maestro_dim_products`.
 
 **When to use selective freshness:**
 - Production-critical selectors that depend on external sources
@@ -873,7 +862,7 @@ But NOT for other selectors like `automatically_generated_selector_dim_products`
 dbt build --selector freshness_manually_created_revenue_critical
 
 # Build models without freshness (for selectors without source dependencies)
-dbt build --selector automatically_generated_selector_dim_products
+dbt build --selector maestro_dim_products
 ```
 
 ### Job Orchestration Example
@@ -907,15 +896,15 @@ jobs:
 
   dbt_customer_analytics:
     schedule: {cron: "15 6 * * 1-5"}   # 6:15 AM
-    execute_steps: ["dbt build --selector automatically_generated_selector_customer"]
+    execute_steps: ["dbt build --selector maestro_customer"]
 
   dbt_product_metrics:
     schedule: {cron: "30 6 * * 1-5"}   # 6:30 AM
-    execute_steps: ["dbt build --selector automatically_generated_selector_product"]
+    execute_steps: ["dbt build --selector maestro_product"]
 
   dbt_reporting:
     schedule: {cron: "45 6 * * 1-5"}   # 6:45 AM
-    execute_steps: ["dbt build --selector automatically_generated_selector_reporting"]
+    execute_steps: ["dbt build --selector maestro_reporting"]
 ```
 
 **Benefits:** Spreads database load, predictable timing for monitoring
@@ -952,7 +941,7 @@ jobs:
       on_job_completion:
         job_id: 12345  # References revenue job by ID
         statuses: ["success", "error", "cancelled"]
-    execute_steps: ["dbt build --selector automatically_generated_selector_customer"]
+    execute_steps: ["dbt build --selector maestro_customer"]
 
   dbt_product_metrics:
     triggers:
@@ -960,7 +949,7 @@ jobs:
       on_job_completion:
         job_id: 12346  # References customer job by ID
         statuses: ["success", "error", "cancelled"]
-    execute_steps: ["dbt build --selector automatically_generated_selector_product"]
+    execute_steps: ["dbt build --selector maestro_product"]
 
   dbt_reporting:
     triggers:
@@ -968,7 +957,7 @@ jobs:
       on_job_completion:
         job_id: 12347  # References product job by ID
         statuses: ["success", "error", "cancelled"]
-    execute_steps: ["dbt build --selector automatically_generated_selector_reporting"]
+    execute_steps: ["dbt build --selector maestro_reporting"]
 ```
 
 **Benefits:** Guaranteed ordering, resource efficiency (one job at a time), handles failures gracefully
@@ -991,15 +980,15 @@ jobs:
 
   dbt_customer_analytics:
     schedule: {cron: "0 6 * * 1-5"}
-    execute_steps: ["dbt build --selector automatically_generated_selector_customer"]
+    execute_steps: ["dbt build --selector maestro_customer"]
 
   dbt_product_metrics:
     schedule: {cron: "0 6 * * 1-5"}
-    execute_steps: ["dbt build --selector automatically_generated_selector_product"]
+    execute_steps: ["dbt build --selector maestro_product"]
 
   dbt_reporting:
     schedule: {cron: "0 6 * * 1-5"}
-    execute_steps: ["dbt build --selector automatically_generated_selector_reporting"]
+    execute_steps: ["dbt build --selector maestro_reporting"]
 ```
 
 **Benefits:** Maximum parallelism, fastest total execution time

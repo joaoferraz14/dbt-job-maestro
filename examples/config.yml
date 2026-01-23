@@ -20,7 +20,7 @@ selector:
   # - path: Group ALL models by folder structure
   # - tag: Group ALL models by dbt tags
   # - mixed: (RECOMMENDED) Preserve manual selectors (any method) + auto-generate FQN selectors for remaining models
-  #          Manual selectors identified by 'manually_created_' prefix in name
+  #          Manual selectors identified by 'user-defined selector' prefix in name
   method: fqn
 
   # Whether to group models by shared dependencies (only applies to 'fqn' and 'mixed' methods)
@@ -64,8 +64,8 @@ selector:
   # If provided, only these selectors will have freshness selectors generated
   # Useful for limiting freshness checks to production-critical or source-dependent selectors
   freshness_selector_names: []
-    # - automatically_generated_selector_dim_customers
-    # - manually_created_revenue_critical
+    # - maestro_dim_customers
+    # - user-defined selectorrevenue_critical
 
   # Whether to include parent sources when a model depends on them
   # When true, adds "parents: true" to include upstream sources in the selector

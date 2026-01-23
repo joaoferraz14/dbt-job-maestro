@@ -129,16 +129,32 @@ class GraphBuilder:
         Group models by path prefix
 
         Args:
-            path_prefix: Path prefix to filter by
+            path_prefix: Path prefix to filter by (e.g., "models/staging" or "staging")
 
         Returns:
             List of model names under the path prefix
         """
-        return sorted([
-            name
-            for name, data in self.models.items()
-            if data["path"].startswith(path_prefix)
-        ])
+        # Normalize the path prefix by removing common prefixes like "models/"
+        normalized_prefix = path_prefix
+        for common_prefix in ["models/", "model/"]:
+            if normalized_prefix.startswith(common_prefix):
+                normalized_prefix = normalized_prefix[len(common_prefix):]
+                break
+
+        # Match against both the manifest path and original_file_path
+        matched_models = []
+        for name, data in self.models.items():
+            model_path = data.get("path", "")
+            original_path = data.get("original_file_path", "")
+
+            # Check if either path starts with the normalized prefix
+            if model_path.startswith(normalized_prefix) or \
+               model_path.startswith(path_prefix) or \
+               original_path.startswith(normalized_prefix) or \
+               original_path.startswith(path_prefix):
+                matched_models.append(name)
+
+        return sorted(matched_models)
 
     def group_by_tag(self, tag: str) -> List[str]:
         """

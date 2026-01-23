@@ -9,8 +9,8 @@
 
 1. Edit dbt models
 2. dbt compile → target/manifest.json
-3. dbt-job-maestro generate → selectors.yml
-4. dbt-job-maestro generate-jobs → jobs.yml
+3. maestro generate → selectors.yml
+4. maestro generate-jobs → jobs.yml
 5. git commit + push
 
 ┌─────────────────────────────────────────────────────────────┐
@@ -152,7 +152,7 @@ deployment:
 ### selectors.yml
 ```yaml
 selectors:
-  - name: automatically_generated_selector_stg_customers
+  - name: maestro_stg_customers
     description: Selector for models...
     definition:
       union:
@@ -165,12 +165,12 @@ selectors:
 jobs:
   dbt_stg_customers:
     identifier: dbt_stg_customers
-    name: dbt-automatically_generated_selector_stg_customers
+    name: dbt-maestro_stg_customers
     account_id: 12345
     project_id: 67890
     environment_id: 11111
     execute_steps:
-      - dbt build --selector automatically_generated_selector_stg_customers
+      - dbt build --selector maestro_stg_customers
     triggers:
       schedule: true
     schedule:
@@ -181,16 +181,16 @@ jobs:
 
 ```bash
 # Generate selectors from manifest
-dbt-job-maestro generate --config config.yml
+maestro generate --config config.yml
 
 # Generate jobs from selectors
-dbt-job-maestro generate-jobs --config config.yml
+maestro generate-jobs --config config.yml
 
 # Analyze project
-dbt-job-maestro info
+maestro info
 
 # Create config template
-dbt-job-maestro init
+maestro init
 ```
 
 ## Dependencies
@@ -249,7 +249,7 @@ if not is_valid:
 dbt list --selector <selector_name>
 
 # Validate config
-dbt-job-maestro info --manifest target/manifest.json
+maestro info --manifest target/manifest.json
 
 # Check generated files
 cat selectors.yml

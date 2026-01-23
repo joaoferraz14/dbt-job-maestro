@@ -20,18 +20,18 @@ cd your-dbt-project
 dbt compile
 
 # Generate selectors with defaults
-dbt-job-maestro generate --manifest target/manifest.json
+maestro generate --manifest target/manifest.json
 ```
 
 ### Option B: Use Config File (Recommended)
 
 ```bash
 # Create config template
-dbt-job-maestro init
+maestro init
 
 # Edit config.yml with your preferences
 # Then generate
-dbt-job-maestro generate --config config.yml
+maestro generate --config config.yml
 ```
 
 ## Step 3: Use Your Selectors
@@ -105,10 +105,10 @@ dbt-jobs-as-code create --selectors selectors.yml
 dbt-job-maestro --help
 
 # Analyze your project
-dbt-job-maestro info
+maestro info
 
 # See what each method does
-dbt-job-maestro generate --help
+maestro generate --help
 ```
 
 ## Examples

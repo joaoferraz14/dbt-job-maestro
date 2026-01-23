@@ -59,13 +59,14 @@ class SelectorConfig:
     min_models_per_selector: int = 1
 
     # Selector name prefix for auto-generated selectors
-    selector_prefix: str = "automatically_generated_selector"
+    selector_prefix: str = "maestro"
 
     # Whether to preserve manually created selectors
     preserve_manual_selectors: bool = True
 
     # Prefix for manually created selectors (used for identification)
-    manual_selector_identifier: str = "manually_created_"
+    # Note: Any selector NOT starting with "maestro_" is considered manual
+    manual_selector_identifier: str = "maestro_"
 
     # Whether to warn about overlaps in manual selectors
     warn_on_manual_overlaps: bool = True
@@ -207,9 +208,9 @@ class Config:
             prefix_order=selector_data.get("prefix_order", []),
             path_grouping_level=selector_data.get("path_grouping_level", 1),
             min_models_per_selector=selector_data.get("min_models_per_selector", 1),
-            selector_prefix=selector_data.get("selector_prefix", "automatically_generated_selector"),
+            selector_prefix=selector_data.get("selector_prefix", "maestro"),
             preserve_manual_selectors=selector_data.get("preserve_manual_selectors", True),
-            manual_selector_identifier=selector_data.get("manual_selector_identifier", "manually_created_"),
+            manual_selector_identifier=selector_data.get("manual_selector_identifier", "maestro_"),
             warn_on_manual_overlaps=selector_data.get("warn_on_manual_overlaps", True),
             fail_on_auto_overlaps=selector_data.get("fail_on_auto_overlaps", True),
         )

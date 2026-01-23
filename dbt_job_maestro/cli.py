@@ -97,13 +97,13 @@ def generate(
     Examples:
 
       # Use config file
-      dbt-job-maestro generate --config config.yml
+      maestro generate --config config.yml
 
       # Use command line options
-      dbt-job-maestro generate --manifest target/manifest.json --method fqn
+      maestro generate --manifest target/manifest.json --method fqn
 
       # Mix config file with overrides
-      dbt-job-maestro generate --config config.yml --exclude-tag deprecated
+      maestro generate --config config.yml --exclude-tag deprecated
     """
     try:
         # Load config from file or use defaults
@@ -228,13 +228,13 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
     Examples:
 
       # Using config file
-      dbt-job-maestro generate-jobs --config config.yml
+      maestro generate-jobs --config config.yml
 
       # Using command line options
-      dbt-job-maestro generate-jobs --selectors selectors.yml --output jobs.yml
+      maestro generate-jobs --selectors selectors.yml --output jobs.yml
 
       # Override config settings
-      dbt-job-maestro generate-jobs --config config.yml --account-id 12345
+      maestro generate-jobs --config config.yml --account-id 12345
     """
     try:
         # Load config from file or use defaults
@@ -419,7 +419,7 @@ def init(output):
 
         click.echo(click.style(f"\n✓ Configuration template created: {output}", fg="green", bold=True))
         click.echo("\nEdit this file to customize selector generation for your project.")
-        click.echo(f"\nThen run: dbt-job-maestro generate --config {output}")
+        click.echo(f"\nThen run: maestro generate --config {output}")
 
     except Exception as e:
         click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)
