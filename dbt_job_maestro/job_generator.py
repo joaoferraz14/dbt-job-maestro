@@ -42,14 +42,15 @@ class JobGenerator:
 
         jobs = existing_jobs.get("jobs", {}).copy()
 
-        for selector in selectors:
-            selector_name = selector["name"]
+        # Filter out freshness selectors
+        non_freshness_selectors = [
+            s for s in selectors
+            if not s["name"].startswith("freshness_")
+            and not s["name"].startswith("automatically_generated_freshness_")
+        ]
 
-            # Skip freshness selectors (they're referenced by main jobs)
-            if selector_name.startswith("freshness_") or selector_name.startswith(
-                "automatically_generated_freshness_"
-            ):
-                continue
+        for idx, selector in enumerate(non_freshness_selectors):
+            selector_name = selector["name"]
 
             # Generate job name
             job_name = self._generate_job_name(selector_name)
@@ -58,8 +59,13 @@ class JobGenerator:
             if job_name in jobs and self._is_manually_created(jobs[job_name]):
                 continue
 
-            # Create job definition
-            job = self._create_job_definition(selector_name)
+            # Create job definition with orchestration
+            job = self._create_job_definition(
+                selector_name,
+                job_index=idx,
+                total_jobs=len(non_freshness_selectors),
+                previous_job_name=self._generate_job_name(non_freshness_selectors[idx-1]["name"]) if idx > 0 else None
+            )
             jobs[job_name] = job
 
         return {"jobs": jobs}
@@ -89,29 +95,94 @@ class JobGenerator:
 
         return f"{self.config.job_name_prefix}_{name}"
 
-    def _create_job_definition(self, selector_name: str) -> Dict[str, Any]:
+    def _create_job_definition(
+        self,
+        selector_name: str,
+        job_index: int = 0,
+        total_jobs: int = 1,
+        previous_job_name: str = None
+    ) -> Dict[str, Any]:
         """
         Create job definition for a selector
 
         Args:
             selector_name: Name of the selector
+            job_index: Index of this job in the list (for cron_incremental)
+            total_jobs: Total number of jobs being created
+            previous_job_name: Name of the previous job (for cascade mode)
 
         Returns:
             Job definition dictionary compatible with dbt-jobs-as-code
         """
         job_dbt_name = f"{self.config.job_name_prefix}-{selector_name}"
 
-        job = {
-            "identifier": self._generate_job_name(selector_name),
-            "name": job_dbt_name,
-            "dbt_version": self.config.dbt_version or None,
-            "triggers": {
+        # Determine orchestration based on mode
+        if self.config.orchestration_mode == "cron_incremental":
+            cron_schedule = self._generate_incremental_cron(job_index)
+            triggers = {
                 "github_webhook": False,
                 "git_provider_webhook": False,
                 "custom_branch_only": True,
                 "schedule": True,
-            },
-            "schedule": {"cron": self.config.cron_schedule},
+            }
+            schedule = {"cron": cron_schedule}
+        elif self.config.orchestration_mode == "cascade":
+            if job_index == 0:
+                # First job is always scheduled
+                cron_schedule = self._generate_start_time_cron()
+                triggers = {
+                    "github_webhook": False,
+                    "git_provider_webhook": False,
+                    "custom_branch_only": True,
+                    "schedule": True,
+                }
+                schedule = {"cron": cron_schedule}
+            else:
+                # Subsequent jobs trigger on completion of previous
+                if self.config.cascade_initial_deployment:
+                    # PHASE 1: Initial deployment - all jobs are scheduled
+                    # (Need job IDs first, so temporarily use cron schedule)
+                    cron_schedule = self._generate_start_time_cron()
+                    triggers = {
+                        "github_webhook": False,
+                        "git_provider_webhook": False,
+                        "custom_branch_only": True,
+                        "schedule": True,
+                    }
+                    schedule = {"cron": cron_schedule}
+                else:
+                    # PHASE 2: Update with cascade triggers using job IDs
+                    previous_job_id = self.config.job_id_mapping.get(previous_job_name)
+                    if previous_job_id is None:
+                        raise ValueError(
+                            f"Job ID not found for '{previous_job_name}' in job_id_mapping. "
+                            f"Make sure to populate job_id_mapping after initial deployment."
+                        )
+                    triggers = {
+                        "github_webhook": False,
+                        "git_provider_webhook": False,
+                        "custom_branch_only": True,
+                        "schedule": False,
+                        "on_job_completion": {
+                            "job_id": previous_job_id,
+                            "statuses": ["success", "error", "cancelled"]  # Any status triggers next
+                        }
+                    }
+                    schedule = None
+        else:  # simple mode (default)
+            triggers = {
+                "github_webhook": False,
+                "git_provider_webhook": False,
+                "custom_branch_only": True,
+                "schedule": True,
+            }
+            schedule = {"cron": self.config.cron_schedule}
+
+        job = {
+            "identifier": self._generate_job_name(selector_name),
+            "name": job_dbt_name,
+            "dbt_version": self.config.dbt_version or None,
+            "triggers": triggers,
             "execution": {
                 "timeout_seconds": self.config.timeout_seconds,
             },
@@ -123,6 +194,10 @@ class JobGenerator:
             "run_generate_sources": self.config.run_generate_sources,
             "execute_steps": [f"dbt build --selector {selector_name}"],
         }
+
+        # Add schedule if applicable
+        if schedule:
+            job["schedule"] = schedule
 
         # Add dbt Cloud IDs if provided
         if self.config.account_id:
@@ -146,6 +221,66 @@ class JobGenerator:
         """
         description = job.get("description", "")
         return description.startswith("manually_created")
+
+    def _generate_incremental_cron(self, job_index: int) -> str:
+        """
+        Generate incremental cron schedule for a job.
+
+        Args:
+            job_index: Index of the job (0-based)
+
+        Returns:
+            Cron schedule string (e.g., "5 6 * * *" for 6:05 AM every day)
+        """
+        # Calculate total minutes from start time
+        total_minutes = (
+            self.config.start_hour * 60 +
+            self.config.start_minute +
+            (job_index * self.config.cron_increment_minutes)
+        )
+
+        # Handle wrap-around for 24-hour clock
+        hour = (total_minutes // 60) % 24
+        minute = total_minutes % 60
+
+        # Build day of week part
+        if self.config.cron_days_of_week:
+            # Map day names to cron values (0=Sunday, 1=Monday, etc.)
+            day_mapping = {
+                "SUN": "0", "MON": "1", "TUE": "2", "WED": "3",
+                "THU": "4", "FRI": "5", "SAT": "6"
+            }
+            days = ",".join([
+                day_mapping.get(day.upper(), "*")
+                for day in self.config.cron_days_of_week
+            ])
+        else:
+            days = "*"
+
+        # Cron format: minute hour day_of_month month day_of_week
+        return f"{minute} {hour} * * {days}"
+
+    def _generate_start_time_cron(self) -> str:
+        """
+        Generate cron schedule for the start time (first job in cascade).
+
+        Returns:
+            Cron schedule string
+        """
+        # Build day of week part
+        if self.config.cron_days_of_week:
+            day_mapping = {
+                "SUN": "0", "MON": "1", "TUE": "2", "WED": "3",
+                "THU": "4", "FRI": "5", "SAT": "6"
+            }
+            days = ",".join([
+                day_mapping.get(day.upper(), "*")
+                for day in self.config.cron_days_of_week
+            ])
+        else:
+            days = "*"
+
+        return f"{self.config.start_minute} {self.config.start_hour} * * {days}"
 
     def write_jobs(self, jobs: Dict[str, Any], output_path: str) -> None:
         """

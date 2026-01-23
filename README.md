@@ -300,7 +300,122 @@ dbt-job-maestro init --output config.yml
 
 ## Creating dbt Cloud Jobs
 
-`dbt-job-maestro` focuses on selector generation. To materialize these selectors as dbt Cloud jobs, use the **[dbt-jobs-as-code](https://pypi.org/project/dbt-jobs-as-code/)** package:
+`dbt-job-maestro` can generate job definitions with intelligent orchestration. Configure via `jobs.yml`:
+
+### Job Orchestration Modes
+
+#### 1. Simple Mode (Default)
+All jobs use the same cron schedule. Best for independent jobs that can run in parallel.
+
+```yaml
+job:
+  orchestration_mode: simple
+  cron_schedule: "0 6 * * *"  # All jobs run at 6:00 AM
+```
+
+#### 2. Cron Incremental Mode
+Stagger jobs with time increments to spread load across time while keeping predictable schedules.
+
+```yaml
+job:
+  orchestration_mode: cron_incremental
+  start_hour: 6          # First job at 6:00 AM
+  start_minute: 0
+  cron_increment_minutes: 5  # Each subsequent job +5 minutes
+  cron_days_of_week: ["MON", "TUE", "WED", "THU", "FRI"]  # Weekdays only
+```
+
+**Result:**
+- Job 1: `0 6 * * 1-5` (6:00 AM weekdays)
+- Job 2: `5 6 * * 1-5` (6:05 AM weekdays)
+- Job 3: `10 6 * * 1-5` (6:10 AM weekdays)
+- Job 4: `15 6 * * 1-5` (6:15 AM weekdays)
+
+**Use cases:**
+- Spread database load across time
+- Avoid resource contention
+- Maintain predictable schedules for monitoring
+
+#### 3. Cascade Mode (Two-Phase Deployment)
+Chain jobs so each triggers after the previous completes (any status: success, error, or cancelled).
+
+**Important:** Cascade mode requires a two-phase deployment because job IDs are only available AFTER creating jobs in dbt Cloud.
+
+##### Phase 1: Initial Deployment
+
+```yaml
+# config.yml
+job:
+  orchestration_mode: cascade
+  start_hour: 6
+  start_minute: 0
+  cron_days_of_week: ["MON", "TUE", "WED", "THU", "FRI"]
+  cascade_initial_deployment: true  # Generate all jobs with cron schedules
+```
+
+```bash
+# Generate jobs (all will have cron schedules initially)
+dbt-job-maestro generate --config config.yml
+
+# Deploy to dbt Cloud
+dbt-jobs-as-code create --config dbt-cloud-config.yml
+
+# Get job IDs from dbt Cloud API (Option 1: Using helper script)
+python scripts/fetch_job_ids.py --account-id 12345 --project-id 67890
+
+# Or Option 2: Using curl + jq
+curl -H "Authorization: Token $DBT_API_TOKEN" \
+  https://cloud.getdbt.com/api/v2/accounts/{account_id}/jobs/ \
+  | jq '.data[] | {name: .name, id: .id}'
+```
+
+**Output example from helper script:**
+```yaml
+# Add this to your config.yml under job:
+job_id_mapping:
+  dbt_revenue_critical: 12345
+  dbt_customer_analytics: 12346
+  dbt_product_metrics: 12347
+```
+
+##### Phase 2: Add Cascade Triggers
+
+Update config with job IDs and regenerate:
+
+```yaml
+# config.yml
+job:
+  orchestration_mode: cascade
+  cascade_initial_deployment: false  # Now add cascade triggers
+  job_id_mapping:
+    dbt_revenue_critical: 12345
+    dbt_customer_analytics: 12346
+    dbt_product_metrics: 12347
+    dbt_reporting: 12348
+```
+
+```bash
+# Regenerate jobs (now with cascade triggers using job IDs)
+dbt-job-maestro generate --config config.yml
+
+# Redeploy to dbt Cloud to activate cascading
+dbt-jobs-as-code update --config dbt-cloud-config.yml
+```
+
+**Result:**
+- Job 1 (dbt_revenue_critical): Scheduled at 6:00 AM weekdays
+- Job 2 (dbt_customer_analytics): Triggers when job ID 12345 completes (any status)
+- Job 3 (dbt_product_metrics): Triggers when job ID 12346 completes (any status)
+- Job 4 (dbt_reporting): Triggers when job ID 12347 completes (any status)
+
+**Use cases:**
+- Sequential dependencies where order matters
+- Guaranteed ordering of model builds
+- Resource-constrained environments (one job at a time)
+
+### Deploying Jobs to dbt Cloud
+
+Use the **[dbt-jobs-as-code](https://pypi.org/project/dbt-jobs-as-code/)** package to deploy generated jobs:
 
 ```bash
 # Install dbt-jobs-as-code
@@ -311,8 +426,50 @@ dbt-jobs-as-code create --selectors selectors.yml --config dbt-cloud-config.yml
 ```
 
 This separation of concerns allows:
-- **dbt-job-maestro**: Focus on selector logic and generation
-- **dbt-jobs-as-code**: Handle dbt Cloud API integration and job management
+- **dbt-job-maestro**: Focus on selector logic and job orchestration configuration
+- **dbt-jobs-as-code**: Handle dbt Cloud API integration and job deployment
+
+### Automated Cascade Deployment (GitHub Actions)
+
+For cascade mode, this repository includes a complete GitHub Actions workflow that automates the two-phase deployment process.
+
+**Working Example:** [.github/workflows/deploy-dbt-jobs.yml](.github/workflows/deploy-dbt-jobs.yml)
+
+The workflow automatically:
+- ✅ Detects which deployment phase you're in (initial or cascade)
+- ✅ Deploys jobs to dbt Cloud using dbt-jobs-as-code
+- ✅ Fetches job IDs from dbt Cloud API (Phase 1)
+- ✅ Updates config.yml with job IDs (Phase 1)
+- ✅ Regenerates jobs with cascade triggers (Phase 1)
+- ✅ Redeploys with cascade configuration (Phase 1)
+- ✅ Commits updated config back to repo with `[skip ci]` (Phase 1)
+- ✅ Handles subsequent deployments automatically (Phase 2+)
+
+**Required GitHub Secrets:**
+- `DBT_CLOUD_SERVICE_TOKEN`: dbt Cloud service token for deploying jobs
+- `DBT_API_TOKEN`: dbt Cloud API token for fetching job IDs
+- `GITHUB_TOKEN`: Automatically provided for committing config updates
+
+**How it works:**
+1. On push to main (when jobs.yml, selectors.yml, or config.yml changes)
+2. Workflow checks if `orchestration_mode: cascade` and `job_id_mapping` is empty
+3. **Phase 1** (if cascade + empty mapping):
+   - Deploys jobs with cron schedules
+   - Fetches job IDs from dbt Cloud API
+   - Updates config.yml with `job_id_mapping` and sets `cascade_initial_deployment: false`
+   - Regenerates jobs.yml with cascade triggers
+   - Redeploys jobs with cascade triggers
+   - Commits updated config with `[skip ci]`
+4. **Phase 2+** (subsequent pushes):
+   - Simply deploys the jobs (already configured with cascade triggers)
+
+**One-Time Setup:**
+1. Add the required secrets to your GitHub repository settings
+2. Set `orchestration_mode: cascade` in your config.yml
+3. Ensure `cascade_initial_deployment: true` and `job_id_mapping: {}`
+4. Push to main - the workflow handles everything automatically!
+
+See [.github/workflows/deploy-dbt-jobs.yml](.github/workflows/deploy-dbt-jobs.yml) for the complete implementation.
 
 ## Advanced Usage
 
@@ -718,6 +875,134 @@ dbt build --selector freshness_manually_created_revenue_critical
 # Build models without freshness (for selectors without source dependencies)
 dbt build --selector automatically_generated_selector_dim_products
 ```
+
+### Job Orchestration Example
+
+Here's a complete example showing how to configure job orchestration for different scenarios:
+
+**Scenario:** E-commerce project with 4 job groups:
+1. Critical revenue models (must run first)
+2. Customer analytics
+3. Product metrics
+4. Reporting aggregations
+
+#### Option A: Cron Incremental (Spread Load)
+
+```yaml
+# config.yml
+job:
+  orchestration_mode: cron_incremental
+  start_hour: 6
+  start_minute: 0
+  cron_increment_minutes: 15  # 15-minute increments
+  cron_days_of_week: ["MON", "TUE", "WED", "THU", "FRI"]
+```
+
+**Generated jobs.yml:**
+```yaml
+jobs:
+  dbt_revenue_critical:
+    schedule: {cron: "0 6 * * 1-5"}    # 6:00 AM
+    execute_steps: ["dbt build --selector manually_created_revenue_critical"]
+
+  dbt_customer_analytics:
+    schedule: {cron: "15 6 * * 1-5"}   # 6:15 AM
+    execute_steps: ["dbt build --selector automatically_generated_selector_customer"]
+
+  dbt_product_metrics:
+    schedule: {cron: "30 6 * * 1-5"}   # 6:30 AM
+    execute_steps: ["dbt build --selector automatically_generated_selector_product"]
+
+  dbt_reporting:
+    schedule: {cron: "45 6 * * 1-5"}   # 6:45 AM
+    execute_steps: ["dbt build --selector automatically_generated_selector_reporting"]
+```
+
+**Benefits:** Spreads database load, predictable timing for monitoring
+
+#### Option B: Cascade (Sequential Dependencies)
+
+**Note:** Requires two-phase deployment (see Cascade Mode section for details)
+
+```yaml
+# config.yml (Phase 2 - after getting job IDs from dbt Cloud)
+job:
+  orchestration_mode: cascade
+  start_hour: 6
+  start_minute: 0
+  cron_days_of_week: ["MON", "TUE", "WED", "THU", "FRI"]
+  cascade_initial_deployment: false
+  job_id_mapping:
+    dbt_revenue_critical: 12345
+    dbt_customer_analytics: 12346
+    dbt_product_metrics: 12347
+```
+
+**Generated jobs.yml (after Phase 2):**
+```yaml
+jobs:
+  dbt_revenue_critical:
+    schedule: {cron: "0 6 * * 1-5"}    # Starts at 6:00 AM
+    triggers: {schedule: true}
+    execute_steps: ["dbt build --selector manually_created_revenue_critical"]
+
+  dbt_customer_analytics:
+    triggers:
+      schedule: false
+      on_job_completion:
+        job_id: 12345  # References revenue job by ID
+        statuses: ["success", "error", "cancelled"]
+    execute_steps: ["dbt build --selector automatically_generated_selector_customer"]
+
+  dbt_product_metrics:
+    triggers:
+      schedule: false
+      on_job_completion:
+        job_id: 12346  # References customer job by ID
+        statuses: ["success", "error", "cancelled"]
+    execute_steps: ["dbt build --selector automatically_generated_selector_product"]
+
+  dbt_reporting:
+    triggers:
+      schedule: false
+      on_job_completion:
+        job_id: 12347  # References product job by ID
+        statuses: ["success", "error", "cancelled"]
+    execute_steps: ["dbt build --selector automatically_generated_selector_reporting"]
+```
+
+**Benefits:** Guaranteed ordering, resource efficiency (one job at a time), handles failures gracefully
+
+#### Option C: Simple (Parallel Execution)
+
+```yaml
+# config.yml
+job:
+  orchestration_mode: simple
+  cron_schedule: "0 6 * * 1-5"  # All jobs at same time
+```
+
+**Generated jobs.yml:**
+```yaml
+jobs:
+  dbt_revenue_critical:
+    schedule: {cron: "0 6 * * 1-5"}   # All start at 6:00 AM
+    execute_steps: ["dbt build --selector manually_created_revenue_critical"]
+
+  dbt_customer_analytics:
+    schedule: {cron: "0 6 * * 1-5"}
+    execute_steps: ["dbt build --selector automatically_generated_selector_customer"]
+
+  dbt_product_metrics:
+    schedule: {cron: "0 6 * * 1-5"}
+    execute_steps: ["dbt build --selector automatically_generated_selector_product"]
+
+  dbt_reporting:
+    schedule: {cron: "0 6 * * 1-5"}
+    execute_steps: ["dbt build --selector automatically_generated_selector_reporting"]
+```
+
+**Benefits:** Maximum parallelism, fastest total execution time
 
 ## Best Practices
 
