@@ -35,6 +35,7 @@ class ModelResolver:
         paths = set()
         tags = set()
         fqns = set()
+        invalid_fqns = set()
 
         definition = selector_def.get("definition", {})
 
@@ -46,6 +47,7 @@ class ModelResolver:
                 paths.update(resolved.paths)
                 tags.update(resolved.tags)
                 fqns.update(resolved.fqns)
+                invalid_fqns.update(resolved.invalid_fqns)
 
         # Process intersection definitions
         if "intersection" in definition:
@@ -56,6 +58,7 @@ class ModelResolver:
                 paths.update(resolved.paths)
                 tags.update(resolved.tags)
                 fqns.update(resolved.fqns)
+                invalid_fqns.update(resolved.invalid_fqns)
 
             if all_sets:
                 models = set.intersection(*all_sets)
@@ -69,7 +72,8 @@ class ModelResolver:
             models=models,
             paths=paths,
             tags=tags,
-            fqns=fqns
+            fqns=fqns,
+            invalid_fqns=invalid_fqns
         )
 
     def _resolve_item(self, item: Dict[str, Any]) -> ModelResolution:
@@ -85,9 +89,10 @@ class ModelResolver:
         paths = set()
         tags = set()
         fqns = set()
+        invalid_fqns = set()
 
         if not isinstance(item, dict):
-            return ModelResolution(models=models, paths=paths, tags=tags, fqns=fqns)
+            return ModelResolution(models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns)
 
         method = item.get("method", "")
         value = item.get("value", "")
@@ -105,6 +110,8 @@ class ModelResolver:
                     models.update(self._get_parents(value))
                 if include_children:
                     models.update(self._get_children(value))
+            elif value:  # Track invalid FQN references (non-empty values not in manifest)
+                invalid_fqns.add(value)
 
         elif method == "tag":
             # All models with this tag
@@ -131,6 +138,7 @@ class ModelResolver:
                 paths.update(resolved.paths)
                 tags.update(resolved.tags)
                 fqns.update(resolved.fqns)
+                invalid_fqns.update(resolved.invalid_fqns)
 
         if "intersection" in item:
             all_sets = []
@@ -140,6 +148,7 @@ class ModelResolver:
                 paths.update(resolved.paths)
                 tags.update(resolved.tags)
                 fqns.update(resolved.fqns)
+                invalid_fqns.update(resolved.invalid_fqns)
 
             if all_sets:
                 models = set.intersection(*all_sets)
@@ -152,7 +161,8 @@ class ModelResolver:
             models=models,
             paths=paths,
             tags=tags,
-            fqns=fqns
+            fqns=fqns,
+            invalid_fqns=invalid_fqns
         )
 
     def _resolve_exclusions(self, exclude_def: Dict[str, Any]) -> ModelResolution:
@@ -171,7 +181,7 @@ class ModelResolver:
                 resolved = self._resolve_item(item)
                 models.update(resolved.models)
 
-        return ModelResolution(models=models, paths=set(), tags=set(), fqns=set())
+        return ModelResolution(models=models, paths=set(), tags=set(), fqns=set(), invalid_fqns=set())
 
     def _get_parents(self, model_name: str) -> Set[str]:
         """Get all parent models (dependencies).

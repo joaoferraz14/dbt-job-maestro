@@ -80,7 +80,8 @@ class ManualSelector(BaseSelector):
             models_covered=resolution.models,
             paths_used=resolution.paths,
             tags_used=resolution.tags,
-            fqns_used=resolution.fqns
+            fqns_used=resolution.fqns,
+            invalid_fqns=resolution.invalid_fqns
         )
 
     def _read_selectors_file(self, file_path: str) -> List[Dict[str, Any]]:

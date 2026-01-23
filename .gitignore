@@ -134,7 +134,7 @@ dmypy.json
 Thumbs.db
 
 # Project specific
-manifest.json
+target/manifest.json
 selectors.yml
 jobs_test.yml
 jobs.yml

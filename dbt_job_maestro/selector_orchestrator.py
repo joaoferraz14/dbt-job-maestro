@@ -98,6 +98,27 @@ class SelectorOrchestrator:
                 metadata = manual_gen.extract_metadata(selector)
                 selector_metadata[selector["name"]] = metadata
 
+                # Warn about invalid FQN references
+                if metadata.invalid_fqns:
+                    logger.warning(
+                        f"  ⚠️  Manual selector '{selector['name']}' references {len(metadata.invalid_fqns)} "
+                        f"models that no longer exist in the manifest:"
+                    )
+                    for invalid_fqn in sorted(metadata.invalid_fqns):
+                        logger.warning(f"      - {invalid_fqn}")
+
+                # Log which models are being excluded by this manual selector
+                if metadata.models_covered:
+                    logger.info(
+                        f"  Manual selector '{selector['name']}' covers {len(metadata.models_covered)} models, "
+                        f"excluding them from auto-generation"
+                    )
+                    # Log first few models as examples
+                    example_models = sorted(list(metadata.models_covered))[:5]
+                    logger.info(f"    Example models: {', '.join(example_models)}")
+                    if len(metadata.models_covered) > 5:
+                        logger.info(f"    ... and {len(metadata.models_covered) - 5} more")
+
                 # Exclude models from future generation
                 excluded_models.update(metadata.models_covered)
 
@@ -110,8 +131,18 @@ class SelectorOrchestrator:
 
             logger.info(
                 f"Generated {len(fqn_selectors)} FQN-based selectors "
-                f"(excluding {len(excluded_models)} models)"
+                f"(excluding {len(excluded_models)} models from auto-generation due to manual selectors)"
             )
+
+            if excluded_models:
+                logger.info(
+                    f"  The following {len(excluded_models)} models were excluded from auto-generation "
+                    f"because they are covered by manual selectors:"
+                )
+                example_excluded = sorted(list(excluded_models))[:10]
+                logger.info(f"    {', '.join(example_excluded)}")
+                if len(excluded_models) > 10:
+                    logger.info(f"    ... and {len(excluded_models) - 10} more")
 
             # Extract metadata and update exclusions
             for selector in fqn_selectors:
@@ -127,6 +158,16 @@ class SelectorOrchestrator:
             selector_metadata
         )
         self.overlap_detector.report_overlaps(overlap_warnings)
+
+        # Report summary of invalid FQNs
+        total_invalid_fqns = sum(
+            len(meta.invalid_fqns) for meta in selector_metadata.values()
+        )
+        if total_invalid_fqns > 0:
+            logger.warning(
+                f"\n⚠️  Found {total_invalid_fqns} invalid FQN references across all selectors. "
+                f"These models no longer exist in the manifest."
+            )
 
         return all_selectors
 
