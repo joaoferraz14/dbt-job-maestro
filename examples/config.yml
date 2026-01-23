@@ -58,6 +58,14 @@ selector:
   # Creates paired selectors for checking source freshness
   include_freshness_selectors: true
 
+  # Specific selector names to generate freshness for (optional)
+  # If empty and include_freshness_selectors is true, all selectors get freshness variants
+  # If provided, only these selectors will have freshness selectors generated
+  # Useful for limiting freshness checks to production-critical or source-dependent selectors
+  freshness_selector_names: []
+    # - automatically_generated_selector_dim_customers
+    # - manually_created_revenue_critical
+
   # Whether to include parent sources when a model depends on them
   # When true, adds "parents: true" to include upstream sources in the selector
   include_parent_sources: true

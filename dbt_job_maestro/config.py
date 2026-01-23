@@ -32,8 +32,14 @@ class SelectorConfig:
     # Example: ['models/staging/legacy', 'models/marts/finance', 'models/marts/critical']
     include_path_groups: List[str] = field(default_factory=list)
 
-    # Whether to include source freshness selectors
+    # Whether to include source freshness selectors (global default)
     include_freshness_selectors: bool = True
+
+    # Specific selector names to generate freshness for (optional)
+    # If empty and include_freshness_selectors is True, all selectors get freshness
+    # If provided, only these selectors get freshness variants
+    # Example: ['selector_critical', 'automatically_generated_selector_staging']
+    freshness_selector_names: List[str] = field(default_factory=list)
 
     # Whether to include parent sources when a model depends on them
     include_parent_sources: bool = True
@@ -165,6 +171,7 @@ class Config:
             exclude_paths=selector_data.get("exclude_paths", []),
             include_path_groups=selector_data.get("include_path_groups", []),
             include_freshness_selectors=selector_data.get("include_freshness_selectors", True),
+            freshness_selector_names=selector_data.get("freshness_selector_names", []),
             include_parent_sources=selector_data.get("include_parent_sources", True),
             prefix_order=selector_data.get("prefix_order", []),
             path_grouping_level=selector_data.get("path_grouping_level", 1),
@@ -231,6 +238,7 @@ class Config:
                 "exclude_paths": self.selector.exclude_paths,
                 "include_path_groups": self.selector.include_path_groups,
                 "include_freshness_selectors": self.selector.include_freshness_selectors,
+                "freshness_selector_names": self.selector.freshness_selector_names,
                 "include_parent_sources": self.selector.include_parent_sources,
                 "prefix_order": self.selector.prefix_order,
                 "path_grouping_level": self.selector.path_grouping_level,
