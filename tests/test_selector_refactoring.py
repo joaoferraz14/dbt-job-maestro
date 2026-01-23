@@ -428,5 +428,521 @@ class TestIntegration:
             os.chdir(original_dir)
 
 
+class TestManualSelectorOverlaps:
+    """Test that overlapping manual selectors are preserved and warned about."""
+
+    def test_overlapping_manual_selectors_both_preserved(self, mock_parser, mock_graph, tmp_path):
+        """Test that two manual selectors with overlapping models are both preserved."""
+        # Create manual selectors with overlapping models
+        selectors_file = tmp_path / "selectors.yml"
+        manual_selectors = [
+            {
+                "name": "manually_created_revenue",
+                "description": "Revenue models",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            },
+            {
+                "name": "manually_created_finance",
+                "description": "Finance models",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            }
+        ]
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": manual_selectors}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            config = SelectorConfig(
+                method="mixed",
+                preserve_manual_selectors=True
+            )
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Both manual selectors should be preserved
+            manual_names = [s["name"] for s in selectors if s["name"].startswith("manually_created_")]
+            assert "manually_created_revenue" in manual_names
+            assert "manually_created_finance" in manual_names
+            assert len(manual_names) == 2
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_overlapping_manual_selectors_generate_warning(self, mock_parser, mock_graph, tmp_path):
+        """Test that overlapping manual selectors generate a warning."""
+        selectors_file = tmp_path / "selectors.yml"
+        manual_selectors = [
+            {
+                "name": "manually_created_revenue",
+                "description": "Revenue models",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            },
+            {
+                "name": "manually_created_finance",
+                "description": "Finance models",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            }
+        ]
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": manual_selectors}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Check that overlap was detected
+            warnings = orchestrator.overlap_detector.detect_overlaps(selectors)
+            assert len(warnings) > 0
+            assert warnings[0].severity == "WARNING"
+            assert "model_a" in warnings[0].message
+
+        finally:
+            os.chdir(original_dir)
+
+
+class TestManualSelectorPersistence:
+    """Test that manual selectors are never deleted during regeneration."""
+
+    def test_manual_selectors_never_deleted_on_regeneration(self, mock_parser, mock_graph, tmp_path):
+        """Test that manual selectors persist across multiple regenerations."""
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Initial manual selectors
+        initial_selectors = [
+            {
+                "name": "manually_created_critical",
+                "description": "Critical models",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            },
+            {
+                "name": "manually_created_legacy",
+                "description": "Legacy models",
+                "definition": {"union": [{"method": "path", "value": "staging/"}]}
+            }
+        ]
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": initial_selectors}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+
+            # First generation
+            orchestrator1 = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors1 = orchestrator1.generate_selectors()
+
+            # Write selectors back
+            orchestrator1.write_selectors(selectors1, str(selectors_file))
+
+            # Second generation (simulating regeneration)
+            orchestrator2 = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors2 = orchestrator2.generate_selectors()
+
+            # Both manual selectors should still be present
+            manual_names = [s["name"] for s in selectors2 if s["name"].startswith("manually_created_")]
+            assert "manually_created_critical" in manual_names
+            assert "manually_created_legacy" in manual_names
+            assert len(manual_names) == 2
+
+            # Verify they are exactly the same
+            manual1 = [s for s in selectors1 if s["name"] == "manually_created_critical"][0]
+            manual2 = [s for s in selectors2 if s["name"] == "manually_created_critical"][0]
+            assert manual1 == manual2
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_auto_selectors_regenerated_manual_preserved(self, mock_parser, mock_graph, tmp_path):
+        """Test that auto selectors can change but manual selectors stay the same."""
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Create file with both manual and auto selectors
+        mixed_selectors = [
+            {
+                "name": "manually_created_critical",
+                "description": "Critical models",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            },
+            {
+                "name": "automatically_generated_selector_model_b",
+                "description": "Auto generated",
+                "definition": {"union": [{"method": "fqn", "value": "model_b"}]}
+            }
+        ]
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": mixed_selectors}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Manual selector should be preserved exactly
+            manual_selectors = [s for s in selectors if s["name"] == "manually_created_critical"]
+            assert len(manual_selectors) == 1
+            assert manual_selectors[0]["definition"] == {"union": [{"method": "fqn", "value": "model_a"}]}
+
+        finally:
+            os.chdir(original_dir)
+
+
+class TestManualSelectorModelExclusion:
+    """Test that models in manual selectors are excluded from auto-generated selectors."""
+
+    def test_fqn_manual_selector_excludes_models(self, mock_parser, mock_graph, tmp_path):
+        """Test that models referenced by FQN in manual selectors are excluded from auto."""
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Manual selector with FQN method
+        manual_selector = {
+            "name": "manually_created_critical",
+            "description": "Critical models",
+            "definition": {
+                "union": [
+                    {"method": "fqn", "value": "model_a"},
+                    {"method": "fqn", "value": "model_b"}
+                ]
+            }
+        }
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": [manual_selector]}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Extract all models from auto-generated selectors
+            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_models = set()
+            resolver = ModelResolver(mock_parser, mock_graph)
+
+            for selector in auto_selectors:
+                resolution = resolver.resolve_selector(selector)
+                auto_models.update(resolution.models)
+
+            # model_a and model_b should NOT be in any auto-generated selector
+            assert "model_a" not in auto_models
+            assert "model_b" not in auto_models
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_tag_manual_selector_excludes_models(self, mock_parser, mock_graph, tmp_path):
+        """Test that models with tags in manual selectors are excluded from auto."""
+        # Setup mock to return models by tag
+        mock_graph.group_by_tag.return_value = ["model_a", "model_b"]
+
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Manual selector with tag method
+        manual_selector = {
+            "name": "manually_created_staging",
+            "description": "Staging models",
+            "definition": {
+                "union": [
+                    {"method": "tag", "value": "staging"}
+                ]
+            }
+        }
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": [manual_selector]}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Extract all models from auto-generated selectors
+            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_models = set()
+            resolver = ModelResolver(mock_parser, mock_graph)
+
+            for selector in auto_selectors:
+                resolution = resolver.resolve_selector(selector)
+                auto_models.update(resolution.models)
+
+            # Models with "staging" tag should NOT be in any auto-generated selector
+            assert "model_a" not in auto_models
+            assert "model_b" not in auto_models
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_path_manual_selector_excludes_models(self, mock_parser, mock_graph, tmp_path):
+        """Test that models in paths from manual selectors are excluded from auto."""
+        # Setup mock to return models by path
+        mock_graph.group_by_path.return_value = ["model_a", "model_b"]
+
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Manual selector with path method
+        manual_selector = {
+            "name": "manually_created_legacy",
+            "description": "Legacy models",
+            "definition": {
+                "union": [
+                    {"method": "path", "value": "staging/legacy"}
+                ]
+            }
+        }
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": [manual_selector]}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Extract all models from auto-generated selectors
+            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_models = set()
+            resolver = ModelResolver(mock_parser, mock_graph)
+
+            for selector in auto_selectors:
+                resolution = resolver.resolve_selector(selector)
+                auto_models.update(resolution.models)
+
+            # Models in "staging/legacy" path should NOT be in any auto-generated selector
+            assert "model_a" not in auto_models
+            assert "model_b" not in auto_models
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_mixed_methods_manual_selector_excludes_all_models(self, mock_parser, mock_graph, tmp_path):
+        """Test that manual selector using multiple methods excludes all referenced models."""
+        # Setup mocks
+        mock_graph.group_by_tag.return_value = ["model_a"]
+        mock_graph.group_by_path.return_value = ["model_b"]
+
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Manual selector with mixed methods (fqn + tag + path)
+        manual_selector = {
+            "name": "manually_created_critical_pipeline",
+            "description": "Critical pipeline",
+            "definition": {
+                "union": [
+                    {"method": "fqn", "value": "model_c"},
+                    {"method": "tag", "value": "critical"},
+                    {"method": "path", "value": "marts/revenue"}
+                ]
+            }
+        }
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": [manual_selector]}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Extract all models from auto-generated selectors
+            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_models = set()
+            resolver = ModelResolver(mock_parser, mock_graph)
+
+            for selector in auto_selectors:
+                resolution = resolver.resolve_selector(selector)
+                auto_models.update(resolution.models)
+
+            # All models from all methods should be excluded
+            assert "model_a" not in auto_models  # From tag
+            assert "model_b" not in auto_models  # From path
+            assert "model_c" not in auto_models  # From fqn
+
+        finally:
+            os.chdir(original_dir)
+
+
+class TestEdgeCases:
+    """Test edge cases and error conditions."""
+
+    def test_empty_manual_selector_file(self, mock_parser, mock_graph, tmp_path):
+        """Test handling of empty selectors file."""
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Create empty file
+        with open(selectors_file, "w") as f:
+            f.write("")
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Should generate auto selectors without errors
+            assert len(selectors) > 0
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_no_selectors_file_creates_auto_only(self, mock_parser, mock_graph, tmp_path):
+        """Test that missing selectors file generates only auto selectors."""
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Should have only auto-generated selectors
+            manual_selectors = [s for s in selectors if s["name"].startswith("manually_created_")]
+            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+
+            assert len(manual_selectors) == 0
+            assert len(auto_selectors) > 0
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_manual_selector_with_invalid_model_excluded(self, mock_parser, mock_graph, tmp_path):
+        """Test that manual selector referencing non-existent model still preserved."""
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Manual selector with non-existent model
+        manual_selector = {
+            "name": "manually_created_test",
+            "description": "Test selector",
+            "definition": {
+                "union": [
+                    {"method": "fqn", "value": "nonexistent_model"}
+                ]
+            }
+        }
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": [manual_selector]}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Manual selector should still be preserved (even if model doesn't exist)
+            manual_names = [s["name"] for s in selectors if s["name"].startswith("manually_created_")]
+            assert "manually_created_test" in manual_names
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_all_models_in_manual_selectors_no_auto_generated(self, mock_parser, mock_graph, tmp_path):
+        """Test that if all models are in manual selectors, no auto selectors are generated."""
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Manual selector covering all models
+        manual_selector = {
+            "name": "manually_created_all",
+            "description": "All models",
+            "definition": {
+                "union": [
+                    {"method": "fqn", "value": "model_a"},
+                    {"method": "fqn", "value": "model_b"},
+                    {"method": "fqn", "value": "model_c"}
+                ]
+            }
+        }
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": [manual_selector]}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Should have manual selector but no auto-generated selectors
+            manual_selectors = [s for s in selectors if s["name"].startswith("manually_created_")]
+            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+
+            assert len(manual_selectors) == 1
+            assert len(auto_selectors) == 0
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_manual_selector_with_parents_flag(self, mock_parser, mock_graph, tmp_path):
+        """Test that manual selector with parents flag still excludes the model."""
+        selectors_file = tmp_path / "selectors.yml"
+
+        # Manual selector with parents flag
+        manual_selector = {
+            "name": "manually_created_with_parents",
+            "description": "Models with sources",
+            "definition": {
+                "union": [
+                    {"method": "fqn", "value": "model_a", "parents": True}
+                ]
+            }
+        }
+
+        with open(selectors_file, "w") as f:
+            yaml.dump({"selectors": [manual_selector]}, f)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # model_a should be excluded from auto-generated selectors
+            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_models = set()
+            resolver = ModelResolver(mock_parser, mock_graph)
+
+            for selector in auto_selectors:
+                resolution = resolver.resolve_selector(selector)
+                auto_models.update(resolution.models)
+
+            assert "model_a" not in auto_models
+
+        finally:
+            os.chdir(original_dir)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
