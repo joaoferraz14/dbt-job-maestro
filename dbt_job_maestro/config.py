@@ -2,7 +2,7 @@
 
 import os
 import yaml
-from typing import List, Optional
+from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
 
@@ -97,7 +97,7 @@ class JobConfig:
     # Timeout in seconds (0 = no timeout)
     timeout_seconds: int = 0
 
-    # Cron schedule for scheduled jobs
+    # Cron schedule for scheduled jobs (used when orchestration_mode is "simple")
     cron_schedule: str = "0 */6 * * *"
 
     # Whether to generate docs
@@ -108,6 +108,35 @@ class JobConfig:
 
     # Job name prefix
     job_name_prefix: str = "dbt"
+
+    # Job orchestration mode: "simple", "cron_incremental", or "cascade"
+    # - simple: All jobs use the same cron_schedule
+    # - cron_incremental: Stagger jobs with time increments (e.g., 6:00, 6:05, 6:10)
+    # - cascade: Chain jobs so each triggers after the previous completes
+    orchestration_mode: str = "simple"
+
+    # For cascade mode: use two-phase deployment
+    # Phase 1: Set to True to generate jobs without cascade triggers (for initial deployment)
+    # Phase 2: Set to False to generate jobs with cascade triggers using job_id_mapping
+    cascade_initial_deployment: bool = True
+
+    # Mapping of job names to dbt Cloud job IDs (for cascade mode phase 2)
+    # After deploying jobs, populate this with actual job IDs from dbt Cloud API
+    # Example: {"dbt_revenue_critical": 12345, "dbt_customer_analytics": 12346}
+    job_id_mapping: Dict[str, int] = field(default_factory=dict)
+
+    # Starting hour for first job (0-23) when using cron_incremental or cascade modes
+    start_hour: int = 6
+
+    # Starting minute for first job (0-59) when using cron_incremental or cascade modes
+    start_minute: int = 0
+
+    # Time increment in minutes between jobs for cron_incremental mode
+    cron_increment_minutes: int = 5
+
+    # Days of week for cron jobs (used in cron_incremental mode)
+    # Empty list means every day, or specify: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+    cron_days_of_week: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -197,6 +226,13 @@ class Config:
             generate_docs=job_data.get("generate_docs", False),
             run_generate_sources=job_data.get("run_generate_sources", False),
             job_name_prefix=job_data.get("job_name_prefix", "dbt"),
+            orchestration_mode=job_data.get("orchestration_mode", "simple"),
+            start_hour=job_data.get("start_hour", 6),
+            start_minute=job_data.get("start_minute", 0),
+            cron_increment_minutes=job_data.get("cron_increment_minutes", 5),
+            cron_days_of_week=job_data.get("cron_days_of_week", []),
+            cascade_initial_deployment=job_data.get("cascade_initial_deployment", True),
+            job_id_mapping=job_data.get("job_id_mapping", {}),
         )
 
         # Create deployment config
@@ -261,6 +297,13 @@ class Config:
                 "generate_docs": self.job.generate_docs,
                 "run_generate_sources": self.job.run_generate_sources,
                 "job_name_prefix": self.job.job_name_prefix,
+                "orchestration_mode": self.job.orchestration_mode,
+                "start_hour": self.job.start_hour,
+                "start_minute": self.job.start_minute,
+                "cron_increment_minutes": self.job.cron_increment_minutes,
+                "cron_days_of_week": self.job.cron_days_of_week,
+                "cascade_initial_deployment": self.job.cascade_initial_deployment,
+                "job_id_mapping": self.job.job_id_mapping,
             },
             "deployment": {
                 "deploy_branch": self.deployment.deploy_branch,

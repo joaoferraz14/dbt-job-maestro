@@ -121,7 +121,7 @@ job:
   # Job timeout in seconds (0 = no timeout)
   timeout_seconds: 0
 
-  # Cron schedule for jobs (default: every 6 hours)
+  # Cron schedule for jobs (used when orchestration_mode is "simple")
   # Examples:
   #   - "0 */6 * * *"  (every 6 hours)
   #   - "0 0 * * *"    (daily at midnight)
@@ -136,6 +136,49 @@ job:
 
   # Job name prefix (jobs will be named: prefix_selector_name)
   job_name_prefix: dbt
+
+  # Job orchestration mode: "simple", "cron_incremental", or "cascade"
+  # - simple: All jobs use the same cron_schedule (default)
+  # - cron_incremental: Stagger jobs with time increments (e.g., 6:00, 6:05, 6:10)
+  #   Useful for spreading load across time while keeping predictable schedules
+  # - cascade: Chain jobs so each triggers after the previous completes (any status)
+  #   Useful for sequential dependencies where you want guaranteed ordering
+  orchestration_mode: simple
+
+  # Starting hour for first job (0-23) when using cron_incremental or cascade modes
+  start_hour: 6
+
+  # Starting minute for first job (0-59) when using cron_incremental or cascade modes
+  start_minute: 0
+
+  # Time increment in minutes between jobs for cron_incremental mode
+  # Examples: 5 (6:00, 6:05, 6:10...), 15 (6:00, 6:15, 6:30...), 30 (6:00, 6:30, 7:00...)
+  cron_increment_minutes: 5
+
+  # Days of week for cron jobs (used in cron_incremental and cascade modes)
+  # Empty list means every day
+  # Specify days: ["MON", "TUE", "WED", "THU", "FRI"] for weekdays only
+  # Or: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"] for all days
+  cron_days_of_week: []
+
+  # FOR CASCADE MODE ONLY: Two-phase deployment required
+  #
+  # PHASE 1 - Initial Deployment:
+  # Set cascade_initial_deployment: true (default)
+  # Generate jobs, deploy to dbt Cloud, get job IDs from API
+  cascade_initial_deployment: true
+
+  # PHASE 2 - Add Cascade Triggers:
+  # After deploying, use dbt Cloud API to get job IDs, then:
+  # 1. Set cascade_initial_deployment: false
+  # 2. Populate job_id_mapping with actual job IDs from dbt Cloud:
+  #    job_id_mapping:
+  #      dbt_revenue_critical: 12345
+  #      dbt_customer_analytics: 12346
+  #      dbt_product_metrics: 12347
+  # 3. Regenerate jobs.yml (now has cascade triggers with job IDs)
+  # 4. Redeploy to dbt Cloud to activate cascading
+  job_id_mapping: {}
 
 # Deployment configuration
 deployment:
