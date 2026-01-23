@@ -62,31 +62,19 @@ class BaseSelector(ABC):
     def is_manually_created(self, selector_def: Dict[str, Any]) -> bool:
         """Determine if a selector is manually created.
 
-        Checks in priority order:
-        1. Name starts with "manually_created_"
-        2. Has metadata field "manually_created: true"
-        3. Fallback: description contains "manually_created"
+        Any selector whose name does NOT start with "maestro_" is considered manual.
+        This is the new, simpler convention - all auto-generated selectors use maestro_ prefix.
 
         Args:
             selector_def: Selector definition dictionary
 
         Returns:
-            True if manually created, False otherwise
+            True if manually created (name doesn't start with maestro_), False otherwise
         """
         name = selector_def.get("name", "")
 
-        # Primary: Check name prefix
-        if name.startswith("manually_created_"):
-            return True
-
-        # Secondary: Check metadata field
-        metadata = selector_def.get("metadata", {})
-        if metadata.get("manually_created", False):
-            return True
-
-        # Fallback: Check description (deprecated, for backward compatibility)
-        description = selector_def.get("description", "")
-        if "manually_created" in description.lower():
+        # New convention: If name doesn't start with "maestro_", it's manual
+        if not name.startswith("maestro_"):
             return True
 
         return False

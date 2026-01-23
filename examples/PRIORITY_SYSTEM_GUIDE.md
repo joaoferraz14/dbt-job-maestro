@@ -170,8 +170,8 @@ Models not yet assigned to manual/path/tag selectors are grouped by:
 - Connected components in dependency graph
 
 **Result:**
-- `automatically_generated_selector_stg_customers`
-- `automatically_generated_selector_dim_products`
+- `maestro_stg_customers`
+- `maestro_dim_products`
 
 ## Complete Example
 
@@ -219,7 +219,7 @@ selectors:
 ### Step 2: Generate Selectors
 
 ```bash
-dbt-job-maestro generate --config config.yml
+maestro generate --config config.yml
 ```
 
 ### Step 3: Review Results
@@ -268,7 +268,7 @@ selectors:
           value: hourly
 
   # Priority 4: FQN-based for remaining models
-  - name: automatically_generated_selector_stg_customers
+  - name: maestro_stg_customers
     description: Selector for models in component starting with stg_customers
     definition:
       union:
@@ -288,7 +288,7 @@ To verify no duplicates:
 dbt list --selector critical_revenue
 dbt list --selector path_models_staging_legacy
 dbt list --selector tag_daily
-dbt list --selector automatically_generated_selector_stg_customers
+dbt list --selector maestro_stg_customers
 
 # Check for overlap (should be empty)
 # Use your favorite scripting language to compare outputs

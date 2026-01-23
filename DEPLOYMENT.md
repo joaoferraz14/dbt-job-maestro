@@ -15,9 +15,9 @@ This guide shows how to deploy selectors and jobs to dbt Cloud using CI/CD.
 ```mermaid
 graph LR
     A[Dev: Edit models] --> B[dbt compile]
-    B --> C[dbt-job-maestro generate]
+    B --> C[maestro generate]
     C --> D[Generate selectors.yml]
-    C --> E[dbt-job-maestro generate-jobs]
+    C --> E[maestro generate-jobs]
     E --> F[Generate jobs.yml]
     F --> G[Commit to git]
     G --> H[Merge to main]
@@ -84,7 +84,7 @@ deployment:
 dbt compile
 
 # Generate selectors
-dbt-job-maestro generate --config config.yml
+maestro generate --config config.yml
 
 # Review selectors.yml
 cat selectors.yml
@@ -94,7 +94,7 @@ cat selectors.yml
 
 ```bash
 # Generate jobs from selectors
-dbt-job-maestro generate-jobs --config config.yml
+maestro generate-jobs --config config.yml
 
 # Review jobs.yml
 cat jobs.yml
@@ -280,7 +280,7 @@ dbt deps
 cat jobs.yml
 
 # Verify dbt Cloud IDs are correct
-dbt-job-maestro info --manifest target/manifest.json
+maestro info --manifest target/manifest.json
 
 # Check dbt-jobs-as-code logs
 dbt-jobs-as-code sync-jobs jobs.yml --verbose
@@ -329,8 +329,8 @@ Results in jobs named: `mycompany_dbt_stg_customers`
 ```bash
 # Update selectors when models change
 dbt compile
-dbt-job-maestro generate --config config.yml
-dbt-job-maestro generate-jobs --config config.yml
+maestro generate --config config.yml
+maestro generate-jobs --config config.yml
 
 # Commit if changed
 git diff selectors.yml jobs.yml
@@ -347,13 +347,13 @@ repos:
     hooks:
       - id: generate-selectors
         name: Generate DBT Selectors
-        entry: bash -c 'dbt compile && dbt-job-maestro generate --config config.yml'
+        entry: bash -c 'dbt compile && maestro generate --config config.yml'
         language: system
         pass_filenames: false
 
       - id: generate-jobs
         name: Generate DBT Jobs
-        entry: dbt-job-maestro generate-jobs --config config.yml
+        entry: maestro generate-jobs --config config.yml
         language: system
         pass_filenames: false
 ```

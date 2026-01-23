@@ -44,13 +44,13 @@ This generates the `target/manifest.json` file.
 cd your-dbt-project
 
 # Generate selectors
-dbt-job-maestro generate-selectors --manifest target/manifest.json --output selectors.yml
+maestro generate-selectors --manifest target/manifest.json --output selectors.yml
 ```
 
 ### 3. Generate Jobs
 
 ```bash
-dbt-job-maestro generate-jobs \
+maestro generate-jobs \
   --selectors selectors.yml \
   --output jobs.yml \
   --account-id YOUR_ACCOUNT_ID \

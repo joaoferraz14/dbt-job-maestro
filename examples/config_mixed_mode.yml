@@ -75,7 +75,7 @@ deployment:
 # USAGE EXAMPLE:
 #
 # 1. Create manual selectors in selectors.yml with "manually_created" in description
-# 2. Run: dbt-job-maestro generate --config config_mixed_mode.yml
+# 2. Run: maestro generate --config config_mixed_mode.yml
 # 3. Result:
 #    - Manual selectors preserved (e.g., critical_revenue_models)
 #    - Path selectors created (e.g., path_models_staging_legacy)

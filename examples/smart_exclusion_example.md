@@ -57,7 +57,7 @@ selectors:
 
 When you run:
 ```bash
-dbt-job-maestro generate --config config.yml
+maestro generate --config config.yml
 ```
 
 ### Stage 1: Manual Selectors (Priority 1)
@@ -126,7 +126,7 @@ All remaining models (not in manual, path, or tag selectors) are grouped by depe
 
 ```yaml
 selectors:
-  - name: automatically_generated_selector_stg_customers
+  - name: maestro_stg_customers
     description: Selector for models in component starting with stg_customers
     definition:
       union:
@@ -184,7 +184,7 @@ selectors:
           value: weekly
 
   # === PRIORITY 4: FQN-based (AUTO-GENERATED) ===
-  - name: automatically_generated_selector_stg_customers
+  - name: maestro_stg_customers
     description: Selector for models in component starting with stg_customers
     definition:
       union:
@@ -205,7 +205,7 @@ dbt list --selector critical_hourly_reports
 dbt list --selector path_models_marts_finance
 dbt list --selector tag_daily
 dbt list --selector tag_weekly
-dbt list --selector automatically_generated_selector_stg_customers
+dbt list --selector maestro_stg_customers
 
 # Write a script to check for overlaps
 ```
