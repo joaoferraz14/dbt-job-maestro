@@ -45,6 +45,9 @@ class FQNSelector(BaseSelector):
                 exclude_models=excluded_models
             )
 
+            # Track models added to component selectors
+            component_models = set()
+
             # Generate selector for each component
             for component in components:
                 filtered_component = [
@@ -56,6 +59,9 @@ class FQNSelector(BaseSelector):
                     selector = self._create_component_selector(filtered_component)
                     selectors.append(selector)
 
+                    # Track these models to exclude from independent selector
+                    component_models.update(filtered_component)
+
                     # Optionally create freshness selector
                     if self._should_create_freshness(selector["name"]):
                         freshness = self._create_freshness_selector(
@@ -64,11 +70,11 @@ class FQNSelector(BaseSelector):
                         )
                         selectors.append(freshness)
 
-            # Handle independent models
+            # Handle independent models (exclude models already in components)
             independent = set(self.graph.find_independent_models())
             filtered_independent = [
                 m for m in independent
-                if m not in excluded_models
+                if m not in excluded_models and m not in component_models
             ]
 
             if filtered_independent:
@@ -103,7 +109,8 @@ class FQNSelector(BaseSelector):
             models_covered=resolution.models,
             paths_used=resolution.paths,
             tags_used=resolution.tags,
-            fqns_used=resolution.fqns
+            fqns_used=resolution.fqns,
+            invalid_fqns=resolution.invalid_fqns
         )
 
     def _create_component_selector(self, models: List[str]) -> Dict[str, Any]:

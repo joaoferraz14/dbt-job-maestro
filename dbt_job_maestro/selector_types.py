@@ -27,6 +27,7 @@ class SelectorMetadata:
         paths_used: Set of paths referenced in the selector definition
         tags_used: Set of tags referenced in the selector definition
         fqns_used: Set of FQN values referenced in the selector definition
+        invalid_fqns: Set of FQN references that don't exist in the manifest
     """
     name: str
     priority: SelectorPriority
@@ -35,6 +36,7 @@ class SelectorMetadata:
     paths_used: Set[str] = field(default_factory=set)
     tags_used: Set[str] = field(default_factory=set)
     fqns_used: Set[str] = field(default_factory=set)
+    invalid_fqns: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -46,11 +48,13 @@ class ModelResolution:
         paths: Set of paths referenced
         tags: Set of tags referenced
         fqns: Set of FQN values referenced
+        invalid_fqns: Set of FQN references that don't exist in the manifest
     """
     models: Set[str] = field(default_factory=set)
     paths: Set[str] = field(default_factory=set)
     tags: Set[str] = field(default_factory=set)
     fqns: Set[str] = field(default_factory=set)
+    invalid_fqns: Set[str] = field(default_factory=set)
 
 
 @dataclass
