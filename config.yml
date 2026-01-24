@@ -1,0 +1,48 @@
+manifest_path: target/manifest.json
+output_dir: .
+selectors_output_file: selectors.yml
+jobs_output_file: jobs.yml
+selector:
+  method: mixed
+  group_by_dependencies: true
+  exclude_tags: []
+  exclude_models: []
+  exclude_paths: []
+  include_path_groups: []
+  include_freshness_selectors: false
+  freshness_selector_names: []
+  include_parent_sources: true
+  prefix_order: []
+  path_grouping_level: 1
+  min_models_per_selector: 1
+  selector_prefix: zequinha
+  preserve_manual_selectors: true
+  manual_selector_identifier: maestro_
+  warn_on_manual_overlaps: true
+  fail_on_auto_overlaps: true
+job:
+  account_id: null
+  project_id: null
+  environment_id: null
+  dbt_version: ''
+  threads: 8
+  target_name: prod
+  timeout_seconds: 0
+  cron_schedule: 0 */6 * * *
+  generate_docs: false
+  run_generate_sources: false
+  job_name_prefix: dbt
+  orchestration_mode: simple
+  start_hour: 6
+  start_minute: 0
+  cron_increment_minutes: 5
+  cron_days_of_week: []
+  cascade_initial_deployment: true
+  job_id_mapping: {}
+  include_maestro_selectors_in_jobs: false
+  include_manual_selectors_in_jobs: false
+  selector_prefix: maestro
+deployment:
+  deploy_branch: main
+  require_dbt_jobs_as_code: true
+  dbt_project_path: .

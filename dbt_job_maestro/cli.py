@@ -192,8 +192,11 @@ def generate(
 
         if cfg.selector.method == "fqn":
             components = graph.find_connected_components()
+            non_freshness_selectors = len(
+                [s for s in selectors if not s["name"].startswith("freshness_")]
+            )
             click.echo(
-                f"Generated {len([s for s in selectors if not s['name'].startswith('freshness_')])} selector groups"
+                f"Generated {non_freshness_selectors} selectors from {len(components)} connected components"
             )
 
         click.echo("\n" + "=" * 60)
@@ -393,7 +396,7 @@ def info(manifest):
         components = graph.find_connected_components()
         independent = graph.find_independent_models()
 
-        click.echo(f"\n🔗 Dependency Analysis:")
+        click.echo("\n🔗 Dependency Analysis:")
         click.echo(f"   - Connected components: {len(components)}")
         click.echo(f"   - Independent models: {len(independent)}")
         if components:
@@ -545,15 +548,15 @@ def check(config, dbt_project):
         jobs_file = Path(dbt_project) / "jobs.yml"
 
         if selectors_file.exists():
-            click.echo(click.style(f"   ✓ selectors.yml exists", fg="green"))
+            click.echo(click.style("   ✓ selectors.yml exists", fg="green"))
         else:
-            click.echo(click.style(f"   ⚠ selectors.yml not found", fg="yellow"))
+            click.echo(click.style("   ⚠ selectors.yml not found", fg="yellow"))
             click.echo("     Run: maestro generate")
 
         if jobs_file.exists():
-            click.echo(click.style(f"   ✓ jobs.yml exists", fg="green"))
+            click.echo(click.style("   ✓ jobs.yml exists", fg="green"))
         else:
-            click.echo(click.style(f"   ⚠ jobs.yml not found", fg="yellow"))
+            click.echo(click.style("   ⚠ jobs.yml not found", fg="yellow"))
             click.echo("     Run: maestro generate-jobs")
 
         # Summary

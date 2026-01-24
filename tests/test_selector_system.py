@@ -1,7 +1,6 @@
 """Comprehensive tests for refactored selector system."""
 
 import pytest
-import tempfile
 import os
 import yaml
 from unittest.mock import Mock

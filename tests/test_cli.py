@@ -6,7 +6,7 @@ import tempfile
 import os
 from pathlib import Path
 from click.testing import CliRunner
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from dbt_job_maestro.cli import main
 

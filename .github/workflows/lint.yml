@@ -28,7 +28,7 @@ jobs:
         run: black --check --diff dbt_job_maestro/ tests/
 
       - name: Lint with Flake8
-        run: flake8 dbt_job_maestro/ tests/ --max-line-length=100 --ignore=E501,W503
+        run: flake8 dbt_job_maestro/ tests/ --max-line-length=100 --extend-ignore=E203,E501,W503
 
       - name: Type check with MyPy
         run: mypy dbt_job_maestro/ --ignore-missing-imports --no-error-summary || true

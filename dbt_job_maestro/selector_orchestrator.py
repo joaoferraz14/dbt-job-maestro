@@ -3,7 +3,7 @@
 import os
 import yaml
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 
 from dbt_job_maestro.selector_types import SelectorPriority
 from dbt_job_maestro.model_resolver import ModelResolver

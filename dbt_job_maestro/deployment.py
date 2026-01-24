@@ -1,6 +1,5 @@
 """Deployment helpers for dbt-jobs-as-code integration"""
 
-import os
 import subprocess
 import yaml
 from pathlib import Path
