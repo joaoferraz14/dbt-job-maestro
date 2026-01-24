@@ -50,12 +50,53 @@ class SelectorGenerator:
         else:
             raise ValueError(f"Unknown selector method: {self.config.method}")
 
+    def _get_excluded_models(self) -> Set[str]:
+        """
+        Get models to exclude based on config's exclude_paths and exclude_models.
+
+        Returns:
+            Set of model names to exclude from selector generation
+        """
+        excluded = set()
+
+        # Exclude models matching exclude_paths
+        if self.config.exclude_paths:
+            for path_prefix in self.config.exclude_paths:
+                excluded.update(self.graph.group_by_path(path_prefix))
+
+        # Exclude models by name
+        if self.config.exclude_models:
+            for model_name in self.config.exclude_models:
+                if model_name in self.models:
+                    excluded.add(model_name)
+
+        return excluded
+
+    def _should_include_model(self, model_name: str, excluded_models: Set[str] = None) -> bool:
+        """
+        Check if a model should be included in selector generation.
+
+        Args:
+            model_name: Name of the model to check
+            excluded_models: Optional set of already excluded models
+
+        Returns:
+            True if model should be included, False otherwise
+        """
+        if excluded_models is None:
+            excluded_models = self._get_excluded_models()
+        return model_name not in excluded_models
+
     def _generate_fqn_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors using FQN (fully qualified names)"""
         selectors = []
 
+        # Get models to exclude from config (exclude_paths and exclude_models)
+        excluded_models = self._get_excluded_models()
+
         # Get manually generated models to exclude
         manually_generated_models = set()
+        manually_generated_models.update(excluded_models)
 
         if self.config.group_by_dependencies:
             # Find connected components
@@ -108,12 +149,15 @@ class SelectorGenerator:
     def _generate_path_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors based on directory paths"""
         selectors = []
+        excluded_models = self._get_excluded_models()
 
         # Get path prefixes at configured level
         path_prefixes = self.parser.get_path_prefixes(self.config.path_grouping_level)
 
         for path_prefix in sorted(path_prefixes):
             models = self.graph.group_by_path(path_prefix)
+            # Filter out excluded models
+            models = [m for m in models if m not in excluded_models]
 
             if len(models) >= self.config.min_models_per_selector:
                 selector_name = self._path_to_selector_name(path_prefix)
@@ -142,6 +186,7 @@ class SelectorGenerator:
     def _generate_tag_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors based on tags"""
         selectors = []
+        excluded_models = self._get_excluded_models()
 
         # Get all unique tags
         all_tags = self.parser.get_all_tags()
@@ -151,6 +196,8 @@ class SelectorGenerator:
 
         for tag in sorted(included_tags):
             models = self.graph.group_by_tag(tag)
+            # Filter out excluded models
+            models = [m for m in models if m not in excluded_models]
 
             if len(models) >= self.config.min_models_per_selector:
                 selector = {
@@ -182,7 +229,8 @@ class SelectorGenerator:
         Overlaps are detected and reported as warnings.
         """
         selectors = []
-        assigned_models = set()  # Track models assigned in automated selectors
+        # Start with models excluded by config (exclude_paths and exclude_models)
+        assigned_models = self._get_excluded_models()  # Track models assigned in automated selectors
 
         # Stage 0: Preserve manually created selectors (can have duplicates)
         manual_selectors = []

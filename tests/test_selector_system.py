@@ -6,13 +6,6 @@ import os
 import yaml
 from unittest.mock import Mock
 
-from dbt_job_maestro.selector_types import (
-    SelectorPriority,
-    SelectorMetadata,
-    ModelResolution,
-    OverlapWarning
-)
-from dbt_job_maestro.base_selector import BaseSelector
 from dbt_job_maestro.model_resolver import ModelResolver
 from dbt_job_maestro.selectors.manual_selector import ManualSelector
 from dbt_job_maestro.selectors.fqn_selector import FQNSelector

@@ -171,3 +171,30 @@ class GraphBuilder:
             for name, data in self.models.items()
             if tag in data["tags"]
         ])
+
+    def get_models_in_paths(self, paths: List[str]) -> Set[str]:
+        """
+        Get all models that match any of the given path prefixes.
+
+        Args:
+            paths: List of path prefixes to match
+
+        Returns:
+            Set of model names that match any of the paths
+        """
+        matched_models = set()
+        for path_prefix in paths:
+            matched_models.update(self.group_by_path(path_prefix))
+        return matched_models
+
+    def get_models_by_names(self, names: List[str]) -> Set[str]:
+        """
+        Get models that match the given names (exact match or pattern).
+
+        Args:
+            names: List of model names to match
+
+        Returns:
+            Set of model names that exist in the manifest
+        """
+        return {name for name in names if name in self.models}

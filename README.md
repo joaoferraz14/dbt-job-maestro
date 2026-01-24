@@ -17,6 +17,7 @@
 - [Configuration File Usage](#configuration-file-usage)
 - [Selector Generation Methods](#selector-generation-methods)
 - [Job Generation & Orchestration](#job-generation--orchestration)
+- [CI/CD Integration](#cicd-integration)
 - [Advanced Usage](#advanced-usage)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
@@ -147,7 +148,8 @@ maestro generate --method tag        # Tag-based
 
 # Exclude models/tags/paths
 maestro generate --exclude-tag deprecated --exclude-tag archived
-maestro generate --exclude-model temp_model
+maestro generate --exclude-path models/staging/legacy --exclude-path models/temp
+maestro generate --exclude-model temp_model --exclude-model debug_model
 
 # Use configuration file
 maestro generate --config maestro-config.yml
@@ -162,8 +164,11 @@ maestro generate --config maestro-config.yml --method fqn
 - `--output, -o`: Output file (default: `selectors.yml`)
 - `--method`: Generation method (`fqn`, `path`, `tag`, `mixed`)
 - `--exclude-tag`: Tags to exclude (can specify multiple)
+- `--exclude-path`: Paths to exclude (can specify multiple, e.g., `models/staging/legacy`)
 - `--exclude-model`: Models to exclude (can specify multiple)
+- `--path-level`: Directory level for path grouping (default: 1)
 - `--min-models`: Minimum models per selector (default: 1)
+- `--no-freshness`: Disable freshness selector generation
 
 ### `maestro generate-jobs`
 
@@ -212,6 +217,31 @@ maestro init --output maestro-config.yml
 ```
 
 Generates a fully-commented configuration file you can customize.
+
+### `maestro check`
+
+Validate deployment requirements before deploying to dbt Cloud.
+
+```bash
+# Basic check
+maestro check
+
+# Check with config file (uses deployment.deploy_branch setting)
+maestro check --config maestro-config.yml
+
+# Check specific dbt project directory
+maestro check --dbt-project ./my-dbt-project
+```
+
+Checks:
+- dbt-jobs-as-code package is installed
+- Current git branch matches deployment branch
+- packages.yml configuration (optional)
+- Required files exist (selectors.yml, jobs.yml)
+
+**Options:**
+- `--config, -c`: Path to configuration YAML file
+- `--dbt-project, -p`: Path to dbt project directory (default: current directory)
 
 ---
 
@@ -747,6 +777,185 @@ maestro generate --config maestro-config.yml
 maestro generate-jobs --config maestro-config.yml
 dbt-jobs-as-code sync jobs.yml
 ```
+
+---
+
+## CI/CD Integration
+
+### GitHub Actions Workflow
+
+Here's a complete GitHub Actions workflow that automates selector and job generation when your dbt project changes:
+
+```yaml
+# .github/workflows/maestro-sync.yml
+name: Sync dbt Selectors and Jobs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'models/**'
+      - 'dbt_project.yml'
+      - 'maestro-config.yml'
+  workflow_dispatch:  # Allow manual triggers
+
+env:
+  DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}
+
+jobs:
+  generate-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install dbt-core dbt-postgres  # or your adapter
+          pip install dbt-job-maestro
+          pip install dbt-jobs-as-code
+
+      - name: Compile dbt project
+        run: dbt compile
+
+      - name: Generate selectors
+        run: maestro generate --config maestro-config.yml
+
+      - name: Generate jobs
+        run: maestro generate-jobs --config maestro-config.yml
+
+      - name: Deploy jobs to dbt Cloud
+        run: dbt-jobs-as-code sync jobs.yml
+        env:
+          DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}
+
+      - name: Commit generated files
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update selectors and jobs [skip ci]"
+          file_pattern: "selectors.yml jobs.yml"
+```
+
+### Workflow Variants
+
+#### PR Preview (No Deploy)
+
+Generate selectors on PRs for review without deploying:
+
+```yaml
+# .github/workflows/maestro-preview.yml
+name: Preview Selector Changes
+
+on:
+  pull_request:
+    paths:
+      - 'models/**'
+      - 'dbt_project.yml'
+      - 'maestro-config.yml'
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install dbt-core dbt-postgres
+          pip install dbt-job-maestro
+
+      - name: Compile dbt project
+        run: dbt compile
+
+      - name: Generate selectors (preview)
+        run: maestro generate --config maestro-config.yml
+
+      - name: Show selector diff
+        run: git diff selectors.yml || echo "No changes to selectors"
+
+      - name: Upload selectors artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: selectors-preview
+          path: selectors.yml
+```
+
+#### Scheduled Sync
+
+Run maestro on a schedule to keep jobs in sync:
+
+```yaml
+# .github/workflows/maestro-scheduled.yml
+name: Scheduled Maestro Sync
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6 AM
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install dbt-core dbt-postgres
+          pip install dbt-job-maestro
+          pip install dbt-jobs-as-code
+
+      - name: Compile and generate
+        run: |
+          dbt compile
+          maestro generate --config maestro-config.yml
+          maestro generate-jobs --config maestro-config.yml
+
+      - name: Deploy to dbt Cloud
+        run: dbt-jobs-as-code sync jobs.yml
+        env:
+          DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}
+
+      - name: Create PR if changes
+        uses: peter-evans/create-pull-request@v6
+        with:
+          title: "chore: weekly maestro sync"
+          commit-message: "chore: update selectors and jobs"
+          branch: maestro-sync
+          delete-branch: true
+```
+
+### Required Secrets
+
+Configure these secrets in your GitHub repository settings:
+
+| Secret | Description |
+|--------|-------------|
+| `DBT_CLOUD_API_TOKEN` | Your dbt Cloud API token (Service Account recommended) |
+
+### Tips for CI/CD
+
+1. **Use a config file**: Always use `--config maestro-config.yml` for reproducible builds
+2. **Pin versions**: Pin dbt-job-maestro version in requirements.txt
+3. **Skip CI on commits**: Use `[skip ci]` in auto-commit messages to avoid infinite loops
+4. **Separate preview from deploy**: Use PRs for preview, main branch for deployment
+5. **Cache dbt artifacts**: Consider caching `target/` directory for faster runs
 
 ---
 

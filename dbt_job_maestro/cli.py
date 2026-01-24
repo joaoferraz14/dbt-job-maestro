@@ -4,12 +4,17 @@ import click
 import sys
 from pathlib import Path
 
-from dbt_job_maestro.config import Config, SelectorConfig
+from dbt_job_maestro.config import Config
 from dbt_job_maestro.manifest_parser import ManifestParser
 from dbt_job_maestro.graph_builder import GraphBuilder
 from dbt_job_maestro.selector_generator import SelectorGenerator
 from dbt_job_maestro.selector_orchestrator import SelectorOrchestrator
 from dbt_job_maestro.job_generator import JobGenerator
+from dbt_job_maestro.deployment import (
+    check_dbt_jobs_as_code_installed,
+    check_packages_yml,
+    get_current_branch,
+)
 
 
 @click.group()
@@ -62,6 +67,16 @@ def main():
     help="Tags to exclude from selectors (can be used multiple times, adds to config)",
 )
 @click.option(
+    "--exclude-path",
+    multiple=True,
+    help="Paths to exclude from selectors (can be used multiple times, adds to config)",
+)
+@click.option(
+    "--exclude-model",
+    multiple=True,
+    help="Models to exclude from selectors (can be used multiple times, adds to config)",
+)
+@click.option(
     "--path-level",
     type=int,
     help="Directory level for path grouping (overrides config)",
@@ -84,6 +99,8 @@ def generate(
     method,
     group_by_dependencies,
     exclude_tag,
+    exclude_path,
+    exclude_model,
     path_level,
     min_models,
     no_freshness,
@@ -125,6 +142,12 @@ def generate(
         if exclude_tag:
             # Add to existing exclude tags
             cfg.selector.exclude_tags = list(set(cfg.selector.exclude_tags + list(exclude_tag)))
+        if exclude_path:
+            # Add to existing exclude paths
+            cfg.selector.exclude_paths = list(set(cfg.selector.exclude_paths + list(exclude_path)))
+        if exclude_model:
+            # Add to existing exclude models
+            cfg.selector.exclude_models = list(set(cfg.selector.exclude_models + list(exclude_model)))
         if path_level is not None:
             cfg.selector.path_grouping_level = path_level
         if min_models is not None:
@@ -144,6 +167,10 @@ def generate(
         click.echo(f"Generating selectors using method: {cfg.selector.method}...")
         if cfg.selector.exclude_tags:
             click.echo(f"Excluding tags: {', '.join(cfg.selector.exclude_tags)}")
+        if cfg.selector.exclude_paths:
+            click.echo(f"Excluding paths: {', '.join(cfg.selector.exclude_paths)}")
+        if cfg.selector.exclude_models:
+            click.echo(f"Excluding models: {', '.join(cfg.selector.exclude_models)}")
 
         # Use new SelectorOrchestrator for supported methods
         if cfg.selector.method in ["fqn", "mixed"]:
@@ -420,6 +447,119 @@ def init(output):
         click.echo(click.style(f"\n✓ Configuration template created: {output}", fg="green", bold=True))
         click.echo("\nEdit this file to customize selector generation for your project.")
         click.echo(f"\nThen run: maestro generate --config {output}")
+
+    except Exception as e:
+        click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--config",
+    "-c",
+    help="Path to configuration YAML file",
+    type=click.Path(exists=True),
+)
+@click.option(
+    "--dbt-project",
+    "-p",
+    default=".",
+    help="Path to dbt project directory",
+    type=click.Path(exists=True),
+)
+def check(config, dbt_project):
+    """
+    Check deployment requirements for dbt-jobs-as-code
+
+    Validates that your environment is ready to deploy jobs to dbt Cloud:
+    - dbt-jobs-as-code package is installed
+    - Current git branch matches deployment branch
+    - packages.yml is configured (optional)
+
+    Examples:
+
+      # Basic check
+      maestro check
+
+      # Check with config file
+      maestro check --config maestro-config.yml
+
+      # Check specific dbt project
+      maestro check --dbt-project ./my-dbt-project
+    """
+    try:
+        # Load config for deployment settings
+        if config:
+            cfg = Config.from_yaml(config)
+            deploy_branch = cfg.deployment.deploy_branch
+        else:
+            deploy_branch = "main"
+
+        click.echo("\n" + "=" * 60)
+        click.echo("Deployment Requirements Check")
+        click.echo("=" * 60)
+
+        all_passed = True
+
+        # Check 1: dbt-jobs-as-code installed
+        click.echo("\n1. dbt-jobs-as-code package:")
+        if check_dbt_jobs_as_code_installed():
+            click.echo(click.style("   ✓ Installed", fg="green"))
+        else:
+            click.echo(click.style("   ✗ Not installed", fg="red"))
+            click.echo("     Install with: pip install dbt-jobs-as-code")
+            all_passed = False
+
+        # Check 2: Current branch
+        click.echo(f"\n2. Git branch (expected: {deploy_branch}):")
+        current_branch = get_current_branch()
+        if current_branch is None:
+            click.echo(click.style("   ⚠ Not in a git repository", fg="yellow"))
+        elif current_branch == deploy_branch:
+            click.echo(click.style(f"   ✓ On {current_branch}", fg="green"))
+        else:
+            click.echo(click.style(f"   ⚠ On {current_branch} (not {deploy_branch})", fg="yellow"))
+            click.echo("     This is fine for testing, but deployment typically happens on main")
+
+        # Check 3: packages.yml
+        click.echo("\n3. packages.yml configuration:")
+        in_packages, packages_path = check_packages_yml(dbt_project)
+        if packages_path is None:
+            click.echo(click.style("   ⚠ packages.yml not found (optional)", fg="yellow"))
+        elif in_packages:
+            click.echo(click.style(f"   ✓ dbt-jobs-as-code found in {packages_path}", fg="green"))
+        else:
+            click.echo(click.style(f"   ⚠ dbt-jobs-as-code not in {packages_path} (optional)", fg="yellow"))
+
+        # Check 4: Required files
+        click.echo("\n4. Required files:")
+        selectors_file = Path(dbt_project) / "selectors.yml"
+        jobs_file = Path(dbt_project) / "jobs.yml"
+
+        if selectors_file.exists():
+            click.echo(click.style(f"   ✓ selectors.yml exists", fg="green"))
+        else:
+            click.echo(click.style(f"   ⚠ selectors.yml not found", fg="yellow"))
+            click.echo("     Run: maestro generate")
+
+        if jobs_file.exists():
+            click.echo(click.style(f"   ✓ jobs.yml exists", fg="green"))
+        else:
+            click.echo(click.style(f"   ⚠ jobs.yml not found", fg="yellow"))
+            click.echo("     Run: maestro generate-jobs")
+
+        # Summary
+        click.echo("\n" + "=" * 60)
+        if all_passed:
+            click.echo(click.style("✓ All checks passed!", fg="green", bold=True))
+            click.echo("\nYou can deploy with:")
+            click.echo("  dbt-jobs-as-code sync jobs.yml")
+        else:
+            click.echo(click.style("⚠ Some checks failed", fg="yellow", bold=True))
+            click.echo("\nFix the issues above before deploying.")
+            sys.exit(1)
+
+        click.echo("")
 
     except Exception as e:
         click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)

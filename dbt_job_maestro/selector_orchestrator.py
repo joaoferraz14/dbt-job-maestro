@@ -63,14 +63,47 @@ class SelectorOrchestrator:
         else:
             raise ValueError(f"Unknown selector method: {method}")
 
+    def _get_config_excluded_models(self) -> Set[str]:
+        """Get models to exclude based on config's exclude_paths and exclude_models.
+
+        Returns:
+            Set of model names to exclude from selector generation
+        """
+        excluded = set()
+
+        # Exclude models matching exclude_paths
+        if self.config.exclude_paths:
+            path_excluded = self.graph.get_models_in_paths(self.config.exclude_paths)
+            if path_excluded:
+                logger.info(
+                    f"Excluding {len(path_excluded)} models based on exclude_paths: "
+                    f"{', '.join(self.config.exclude_paths)}"
+                )
+            excluded.update(path_excluded)
+
+        # Exclude models by name
+        if self.config.exclude_models:
+            model_excluded = self.graph.get_models_by_names(self.config.exclude_models)
+            if model_excluded:
+                logger.info(
+                    f"Excluding {len(model_excluded)} models based on exclude_models: "
+                    f"{', '.join(model_excluded)}"
+                )
+            excluded.update(model_excluded)
+
+        return excluded
+
     def _generate_fqn_only(self) -> List[Dict[str, Any]]:
         """Generate only FQN-based selectors.
 
         Returns:
             List of FQN selector definitions
         """
+        # Get models excluded by config (exclude_paths and exclude_models)
+        config_excluded = self._get_config_excluded_models()
+
         generator = self.generators[SelectorPriority.AUTO_FQN]
-        return generator.generate(excluded_models=set())
+        return generator.generate(excluded_models=config_excluded)
 
     def _generate_mixed(self) -> List[Dict[str, Any]]:
         """Generate selectors using mixed mode with priority system.
@@ -84,7 +117,9 @@ class SelectorOrchestrator:
         """
         all_selectors = []
         selector_metadata = {}
-        excluded_models = set()
+
+        # Start with models excluded by config (exclude_paths and exclude_models)
+        excluded_models = self._get_config_excluded_models()
 
         # Priority 1: Manual selectors (HIGHEST)
         if self.config.preserve_manual_selectors:
