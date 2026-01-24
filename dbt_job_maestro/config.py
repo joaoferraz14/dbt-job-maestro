@@ -236,7 +236,9 @@ class Config:
         # Create job config
         job_data = data.get("job", {})
         # Use selector prefix from selector config, fallback to job config, then default
-        selector_prefix = selector_data.get("selector_prefix", job_data.get("selector_prefix", "maestro"))
+        selector_prefix = selector_data.get(
+            "selector_prefix", job_data.get("selector_prefix", "maestro")
+        )
         job_config = JobConfig(
             account_id=job_data.get("account_id"),
             project_id=job_data.get("project_id"),
@@ -256,8 +258,12 @@ class Config:
             cron_days_of_week=job_data.get("cron_days_of_week", []),
             cascade_initial_deployment=job_data.get("cascade_initial_deployment", True),
             job_id_mapping=job_data.get("job_id_mapping", {}),
-            include_maestro_selectors_in_jobs=job_data.get("include_maestro_selectors_in_jobs", False),
-            include_manual_selectors_in_jobs=job_data.get("include_manual_selectors_in_jobs", False),
+            include_maestro_selectors_in_jobs=job_data.get(
+                "include_maestro_selectors_in_jobs", False
+            ),
+            include_manual_selectors_in_jobs=job_data.get(
+                "include_manual_selectors_in_jobs", False
+            ),
             selector_prefix=selector_prefix,
         )
 

@@ -2,11 +2,7 @@
 
 import logging
 from typing import Dict, List, Any
-from dbt_job_maestro.selector_types import (
-    SelectorPriority,
-    SelectorMetadata,
-    OverlapWarning
-)
+from dbt_job_maestro.selector_types import SelectorPriority, SelectorMetadata, OverlapWarning
 from dbt_job_maestro.model_resolver import ModelResolver
 
 logger = logging.getLogger(__name__)
@@ -28,9 +24,7 @@ class OverlapDetector:
         self.resolver = model_resolver
 
     def detect_overlaps(
-        self,
-        selectors: List[Dict[str, Any]],
-        selector_metadata: Dict[str, SelectorMetadata] = None
+        self, selectors: List[Dict[str, Any]], selector_metadata: Dict[str, SelectorMetadata] = None
     ) -> List[OverlapWarning]:
         """Detect overlapping models between selectors.
 
@@ -65,24 +59,19 @@ class OverlapDetector:
                     models_covered=resolution.models,
                     paths_used=resolution.paths,
                     tags_used=resolution.tags,
-                    fqns_used=resolution.fqns
+                    fqns_used=resolution.fqns,
                 )
 
             # Track which selectors contain each model
             for model in metadata.models_covered:
                 if model not in model_to_selectors:
                     model_to_selectors[model] = []
-                model_to_selectors[model].append(
-                    (selector_name, metadata.priority)
-                )
+                model_to_selectors[model].append((selector_name, metadata.priority))
 
         # Identify overlaps
         for model, selector_list in model_to_selectors.items():
             if len(selector_list) > 1:
-                warning = self._create_overlap_warning(
-                    model,
-                    selector_list
-                )
+                warning = self._create_overlap_warning(model, selector_list)
                 warnings.append(warning)
 
         return warnings
@@ -112,16 +101,9 @@ class OverlapDetector:
                 logger.warning(f"  ⚠️  {warning.message}")
 
         # Summary
-        logger.info(
-            f"\nOverlap Summary: {len(errors)} errors, "
-            f"{len(warnings_list)} warnings"
-        )
+        logger.info(f"\nOverlap Summary: {len(errors)} errors, " f"{len(warnings_list)} warnings")
 
-    def _create_overlap_warning(
-        self,
-        model_name: str,
-        selectors: List[tuple]
-    ) -> OverlapWarning:
+    def _create_overlap_warning(self, model_name: str, selectors: List[tuple]) -> OverlapWarning:
         """Create an overlap warning with appropriate severity.
 
         Args:
@@ -132,18 +114,12 @@ class OverlapDetector:
             OverlapWarning instance
         """
         # Check if any manual selectors are involved
-        has_manual = any(
-            priority == SelectorPriority.MANUAL
-            for _, priority in selectors
-        )
+        has_manual = any(priority == SelectorPriority.MANUAL for _, priority in selectors)
 
         # Determine severity
         if has_manual and len(selectors) > 1:
             # Manual selector overlap with others
-            manual_count = sum(
-                1 for _, p in selectors
-                if p == SelectorPriority.MANUAL
-            )
+            manual_count = sum(1 for _, p in selectors if p == SelectorPriority.MANUAL)
 
             if manual_count > 1:
                 # Multiple manual selectors - WARNING
@@ -173,10 +149,7 @@ class OverlapDetector:
             )
 
         return OverlapWarning(
-            model_name=model_name,
-            selectors=selectors,
-            severity=severity,
-            message=message
+            model_name=model_name, selectors=selectors, severity=severity, message=message
         )
 
     def _infer_priority(self, selector_def: Dict[str, Any]) -> SelectorPriority:

@@ -26,7 +26,7 @@ def sample_manifest():
                 "original_file_path": "models/staging/stg_users.sql",
                 "tags": ["staging"],
                 "resource_type": "model",
-                "depends_on": {"nodes": []}
+                "depends_on": {"nodes": []},
             },
             "model.project.stg_orders": {
                 "name": "stg_orders",
@@ -35,7 +35,7 @@ def sample_manifest():
                 "original_file_path": "models/staging/stg_orders.sql",
                 "tags": ["staging"],
                 "resource_type": "model",
-                "depends_on": {"nodes": []}
+                "depends_on": {"nodes": []},
             },
             "model.project.stg_legacy_data": {
                 "name": "stg_legacy_data",
@@ -44,7 +44,7 @@ def sample_manifest():
                 "original_file_path": "models/staging/legacy/stg_legacy_data.sql",
                 "tags": ["staging", "legacy"],
                 "resource_type": "model",
-                "depends_on": {"nodes": []}
+                "depends_on": {"nodes": []},
             },
             "model.project.fct_orders": {
                 "name": "fct_orders",
@@ -53,7 +53,7 @@ def sample_manifest():
                 "original_file_path": "models/marts/fct_orders.sql",
                 "tags": ["marts"],
                 "resource_type": "model",
-                "depends_on": {"nodes": ["model.project.stg_orders"]}
+                "depends_on": {"nodes": ["model.project.stg_orders"]},
             },
             "model.project.fct_users": {
                 "name": "fct_users",
@@ -62,7 +62,7 @@ def sample_manifest():
                 "original_file_path": "models/marts/fct_users.sql",
                 "tags": ["marts"],
                 "resource_type": "model",
-                "depends_on": {"nodes": ["model.project.stg_users"]}
+                "depends_on": {"nodes": ["model.project.stg_users"]},
             },
             "model.project.temp_debug": {
                 "name": "temp_debug",
@@ -71,8 +71,8 @@ def sample_manifest():
                 "original_file_path": "models/temp/temp_debug.sql",
                 "tags": ["temp"],
                 "resource_type": "model",
-                "depends_on": {"nodes": []}
-            }
+                "depends_on": {"nodes": []},
+            },
         }
     }
 
@@ -80,7 +80,7 @@ def sample_manifest():
 @pytest.fixture
 def temp_manifest(sample_manifest):
     """Create a temporary manifest file."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(sample_manifest, f)
         return f.name
 
@@ -117,7 +117,7 @@ class TestPathExclusionConfig:
         config = SelectorConfig(
             exclude_paths=["staging/legacy"],
             exclude_models=["temp_debug"],
-            exclude_tags=["deprecated"]
+            exclude_tags=["deprecated"],
         )
         assert len(config.exclude_paths) == 1
         assert len(config.exclude_models) == 1
@@ -129,10 +129,7 @@ class TestSelectorGeneratorPathExclusion:
 
     def test_fqn_excludes_paths(self, parser, graph):
         """Test FQN method excludes models from specified paths."""
-        config = SelectorConfig(
-            method="fqn",
-            exclude_paths=["staging/legacy", "temp"]
-        )
+        config = SelectorConfig(method="fqn", exclude_paths=["staging/legacy", "temp"])
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()
 
@@ -153,10 +150,7 @@ class TestSelectorGeneratorPathExclusion:
 
     def test_path_method_excludes_paths(self, parser, graph):
         """Test path method excludes models from specified paths."""
-        config = SelectorConfig(
-            method="path",
-            exclude_paths=["staging/legacy"]
-        )
+        config = SelectorConfig(method="path", exclude_paths=["staging/legacy"])
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()
 
@@ -168,10 +162,7 @@ class TestSelectorGeneratorPathExclusion:
 
     def test_tag_method_excludes_paths(self, parser, graph):
         """Test tag method excludes models from specified paths."""
-        config = SelectorConfig(
-            method="tag",
-            exclude_paths=["temp"]
-        )
+        config = SelectorConfig(method="tag", exclude_paths=["temp"])
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()
 
@@ -186,9 +177,7 @@ class TestSelectorGeneratorPathExclusion:
             os.chdir(tmp_path)
 
             config = SelectorConfig(
-                method="mixed",
-                exclude_paths=["temp"],
-                group_by_dependencies=True
+                method="mixed", exclude_paths=["temp"], group_by_dependencies=True
             )
             generator = SelectorGenerator(parser, graph, config)
             selectors = generator.generate_selectors()
@@ -208,10 +197,7 @@ class TestSelectorGeneratorPathExclusion:
 
     def test_exclude_models_by_name(self, parser, graph):
         """Test excluding specific models by name."""
-        config = SelectorConfig(
-            method="fqn",
-            exclude_models=["temp_debug", "stg_legacy_data"]
-        )
+        config = SelectorConfig(method="fqn", exclude_models=["temp_debug", "stg_legacy_data"])
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()
 
@@ -229,9 +215,7 @@ class TestSelectorGeneratorPathExclusion:
     def test_combined_path_and_model_exclusion(self, parser, graph):
         """Test combining path and model exclusions."""
         config = SelectorConfig(
-            method="fqn",
-            exclude_paths=["temp"],
-            exclude_models=["stg_legacy_data"]
+            method="fqn", exclude_paths=["temp"], exclude_models=["stg_legacy_data"]
         )
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()
@@ -254,9 +238,7 @@ class TestSelectorOrchestratorPathExclusion:
     def test_fqn_only_excludes_paths(self, parser, graph):
         """Test FQN-only mode excludes paths."""
         config = SelectorConfig(
-            method="fqn",
-            exclude_paths=["staging/legacy", "temp"],
-            group_by_dependencies=True
+            method="fqn", exclude_paths=["staging/legacy", "temp"], group_by_dependencies=True
         )
         orchestrator = SelectorOrchestrator(parser, graph, config)
         selectors = orchestrator.generate_selectors()
@@ -281,7 +263,7 @@ class TestSelectorOrchestratorPathExclusion:
                 method="mixed",
                 exclude_paths=["temp"],
                 exclude_models=["stg_legacy_data"],
-                group_by_dependencies=True
+                group_by_dependencies=True,
             )
             orchestrator = SelectorOrchestrator(parser, graph, config)
             selectors = orchestrator.generate_selectors()
@@ -314,7 +296,7 @@ class TestExclusionWithManualSelectors:
             # Create manual selector
             manual_selector = {
                 "name": "manual_marts",
-                "definition": {"union": [{"method": "fqn", "value": "fct_orders"}]}
+                "definition": {"union": [{"method": "fqn", "value": "fct_orders"}]},
             }
             with open("selectors.yml", "w") as f:
                 yaml.dump({"selectors": [manual_selector]}, f)
@@ -323,7 +305,7 @@ class TestExclusionWithManualSelectors:
                 method="mixed",
                 exclude_paths=["temp"],
                 preserve_manual_selectors=True,
-                group_by_dependencies=True
+                group_by_dependencies=True,
             )
             orchestrator = SelectorOrchestrator(parser, graph, config)
             selectors = orchestrator.generate_selectors()
@@ -351,11 +333,7 @@ class TestExclusionLogging:
         """Test that excluded paths are logged."""
         import logging
 
-        config = SelectorConfig(
-            method="fqn",
-            exclude_paths=["temp"],
-            group_by_dependencies=True
-        )
+        config = SelectorConfig(method="fqn", exclude_paths=["temp"], group_by_dependencies=True)
 
         with caplog.at_level(logging.INFO):
             orchestrator = SelectorOrchestrator(parser, graph, config)
@@ -370,9 +348,7 @@ class TestExclusionLogging:
         import logging
 
         config = SelectorConfig(
-            method="fqn",
-            exclude_models=["temp_debug"],
-            group_by_dependencies=True
+            method="fqn", exclude_models=["temp_debug"], group_by_dependencies=True
         )
 
         with caplog.at_level(logging.INFO):
@@ -391,7 +367,7 @@ class TestExclusionEdgeCases:
         config = SelectorConfig(
             method="fqn",
             exclude_paths=["staging", "marts", "temp"],  # Exclude all paths
-            group_by_dependencies=True
+            group_by_dependencies=True,
         )
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()
@@ -402,9 +378,7 @@ class TestExclusionEdgeCases:
     def test_exclude_nonexistent_path(self, parser, graph):
         """Test excluding non-existent path doesn't cause errors."""
         config = SelectorConfig(
-            method="fqn",
-            exclude_paths=["nonexistent/path"],
-            group_by_dependencies=True
+            method="fqn", exclude_paths=["nonexistent/path"], group_by_dependencies=True
         )
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()
@@ -415,9 +389,7 @@ class TestExclusionEdgeCases:
     def test_exclude_nonexistent_model(self, parser, graph):
         """Test excluding non-existent model doesn't cause errors."""
         config = SelectorConfig(
-            method="fqn",
-            exclude_models=["nonexistent_model"],
-            group_by_dependencies=True
+            method="fqn", exclude_models=["nonexistent_model"], group_by_dependencies=True
         )
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()
@@ -428,10 +400,7 @@ class TestExclusionEdgeCases:
     def test_empty_exclusion_lists(self, parser, graph):
         """Test with empty exclusion lists."""
         config = SelectorConfig(
-            method="fqn",
-            exclude_paths=[],
-            exclude_models=[],
-            group_by_dependencies=True
+            method="fqn", exclude_paths=[], exclude_models=[], group_by_dependencies=True
         )
         generator = SelectorGenerator(parser, graph, config)
         selectors = generator.generate_selectors()

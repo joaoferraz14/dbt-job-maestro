@@ -40,12 +40,8 @@ class SelectorOrchestrator:
 
         # Initialize selector generators (in priority order)
         self.generators = {
-            SelectorPriority.MANUAL: ManualSelector(
-                manifest_parser, graph_builder, config
-            ),
-            SelectorPriority.AUTO_FQN: FQNSelector(
-                manifest_parser, graph_builder, config
-            ),
+            SelectorPriority.MANUAL: ManualSelector(manifest_parser, graph_builder, config),
+            SelectorPriority.AUTO_FQN: FQNSelector(manifest_parser, graph_builder, config),
         }
 
     def generate_selectors(self) -> List[Dict[str, Any]]:
@@ -188,16 +184,11 @@ class SelectorOrchestrator:
             all_selectors.extend(fqn_selectors)
 
         # Detect and report overlaps
-        overlap_warnings = self.overlap_detector.detect_overlaps(
-            all_selectors,
-            selector_metadata
-        )
+        overlap_warnings = self.overlap_detector.detect_overlaps(all_selectors, selector_metadata)
         self.overlap_detector.report_overlaps(overlap_warnings)
 
         # Report summary of invalid FQNs
-        total_invalid_fqns = sum(
-            len(meta.invalid_fqns) for meta in selector_metadata.values()
-        )
+        total_invalid_fqns = sum(len(meta.invalid_fqns) for meta in selector_metadata.values())
         if total_invalid_fqns > 0:
             logger.warning(
                 f"\n⚠️  Found {total_invalid_fqns} invalid FQN references across all selectors. "
@@ -206,11 +197,7 @@ class SelectorOrchestrator:
 
         return all_selectors
 
-    def write_selectors(
-        self,
-        selectors: List[Dict[str, Any]],
-        output_path: str
-    ) -> None:
+    def write_selectors(self, selectors: List[Dict[str, Any]], output_path: str) -> None:
         """Write selectors to YAML file with blank lines between selectors.
 
         Args:
@@ -227,23 +214,20 @@ class SelectorOrchestrator:
             for i, selector in enumerate(selectors):
                 # Convert selector to YAML
                 selector_yaml = yaml.dump(
-                    [selector],
-                    default_flow_style=False,
-                    sort_keys=False,
-                    indent=2
+                    [selector], default_flow_style=False, sort_keys=False, indent=2
                 )
 
                 # Remove the leading "- " from the first line and adjust indentation
-                lines = selector_yaml.split('\n')
-                if lines and lines[0].startswith('- '):
-                    lines[0] = '  - ' + lines[0][2:]  # Add proper indentation
+                lines = selector_yaml.split("\n")
+                if lines and lines[0].startswith("- "):
+                    lines[0] = "  - " + lines[0][2:]  # Add proper indentation
                     for j in range(1, len(lines)):
                         if lines[j]:  # Only add indentation to non-empty lines
-                            lines[j] = '  ' + lines[j]
+                            lines[j] = "  " + lines[j]
 
                 # Write the selector
-                f.write('\n'.join(lines))
+                f.write("\n".join(lines))
 
                 # Add blank line between selectors (but not after the last one)
                 if i < len(selectors) - 1:
-                    f.write('\n')
+                    f.write("\n")

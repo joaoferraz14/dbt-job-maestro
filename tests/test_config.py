@@ -35,7 +35,7 @@ class TestSelectorConfig:
             exclude_models=["temp_model"],
             min_models_per_selector=3,
             group_by_dependencies=False,
-            include_freshness_selectors=True
+            include_freshness_selectors=True,
         )
 
         assert config.method == "mixed"
@@ -74,7 +74,7 @@ class TestJobConfig:
             project_id=67890,
             environment_id=11111,
             include_maestro_selectors_in_jobs=True,
-            include_manual_selectors_in_jobs=True
+            include_manual_selectors_in_jobs=True,
         )
 
         assert config.account_id == 12345
@@ -96,10 +96,7 @@ class TestDeploymentConfig:
 
     def test_custom_values(self):
         """Test deployment configuration with custom values."""
-        config = DeploymentConfig(
-            deploy_branch="production",
-            auto_deploy=True
-        )
+        config = DeploymentConfig(deploy_branch="production", auto_deploy=True)
 
         assert config.deploy_branch == "production"
         assert config.auto_deploy is True
@@ -148,7 +145,7 @@ deployment:
   deploy_branch: production
   auto_deploy: true
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(yaml_content)
             config_path = f.name
 
@@ -183,7 +180,7 @@ manifest_path: custom/manifest.json
 selector:
   method: tag
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(yaml_content)
             config_path = f.name
 
@@ -208,7 +205,7 @@ selector:
         config.selector.method = "mixed"
         config.selector.exclude_tags = ["deprecated"]
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             config_path = f.name
 
         try:
@@ -228,7 +225,7 @@ selector:
 
     def test_from_yaml_empty_file(self):
         """Test loading from empty YAML file."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("")
             config_path = f.name
 
@@ -260,38 +257,24 @@ class TestConfigExclusionLists:
 
     def test_exclude_paths_list(self):
         """Test exclude_paths as list."""
-        config = SelectorConfig(exclude_paths=[
-            "staging/legacy",
-            "models/temp",
-            "marts/deprecated"
-        ])
+        config = SelectorConfig(exclude_paths=["staging/legacy", "models/temp", "marts/deprecated"])
         assert len(config.exclude_paths) == 3
         assert "staging/legacy" in config.exclude_paths
 
     def test_exclude_models_list(self):
         """Test exclude_models as list."""
-        config = SelectorConfig(exclude_models=[
-            "temp_model",
-            "debug_model",
-            "test_model"
-        ])
+        config = SelectorConfig(exclude_models=["temp_model", "debug_model", "test_model"])
         assert len(config.exclude_models) == 3
         assert "temp_model" in config.exclude_models
 
     def test_include_path_groups(self):
         """Test include_path_groups configuration."""
-        config = SelectorConfig(include_path_groups=[
-            "staging/critical",
-            "marts/revenue"
-        ])
+        config = SelectorConfig(include_path_groups=["staging/critical", "marts/revenue"])
         assert len(config.include_path_groups) == 2
 
     def test_freshness_selector_names(self):
         """Test freshness_selector_names configuration."""
-        config = SelectorConfig(freshness_selector_names=[
-            "selector_staging",
-            "selector_marts"
-        ])
+        config = SelectorConfig(freshness_selector_names=["selector_staging", "selector_marts"])
         assert len(config.freshness_selector_names) == 2
 
 
@@ -309,7 +292,7 @@ class TestConfigIntegration:
         original.job.account_id = 12345
         original.deployment.deploy_branch = "production"
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             config_path = f.name
 
         try:

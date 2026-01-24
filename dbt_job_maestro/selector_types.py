@@ -11,8 +11,9 @@ class SelectorPriority(Enum):
     Lower numeric values indicate higher priority.
     Manual selectors always have the highest priority.
     """
-    MANUAL = 1      # Highest priority - never modified
-    AUTO_FQN = 2    # Auto-generated FQN-based selectors
+
+    MANUAL = 1  # Highest priority - never modified
+    AUTO_FQN = 2  # Auto-generated FQN-based selectors
 
 
 @dataclass
@@ -29,6 +30,7 @@ class SelectorMetadata:
         fqns_used: Set of FQN values referenced in the selector definition
         invalid_fqns: Set of FQN references that don't exist in the manifest
     """
+
     name: str
     priority: SelectorPriority
     manually_created: bool
@@ -50,6 +52,7 @@ class ModelResolution:
         fqns: Set of FQN values referenced
         invalid_fqns: Set of FQN references that don't exist in the manifest
     """
+
     models: Set[str] = field(default_factory=set)
     paths: Set[str] = field(default_factory=set)
     tags: Set[str] = field(default_factory=set)
@@ -67,6 +70,7 @@ class OverlapWarning:
         severity: Severity level ("ERROR", "WARNING", "INFO")
         message: Human-readable warning message
     """
+
     model_name: str
     selectors: List[Tuple[str, SelectorPriority]]
     severity: str  # "ERROR", "WARNING", "INFO"

@@ -44,7 +44,8 @@ class JobGenerator:
 
         # Filter out freshness selectors
         non_freshness_selectors = [
-            s for s in selectors
+            s
+            for s in selectors
             if not s["name"].startswith("freshness_")
             and not s["name"].startswith("automatically_generated_freshness_")
         ]
@@ -81,7 +82,11 @@ class JobGenerator:
                 selector_name,
                 job_index=idx,
                 total_jobs=len(filtered_selectors),
-                previous_job_name=self._generate_job_name(filtered_selectors[idx-1]["name"]) if idx > 0 else None
+                previous_job_name=(
+                    self._generate_job_name(filtered_selectors[idx - 1]["name"])
+                    if idx > 0
+                    else None
+                ),
             )
             jobs[job_name] = job
 
@@ -117,7 +122,7 @@ class JobGenerator:
         selector_name: str,
         job_index: int = 0,
         total_jobs: int = 1,
-        previous_job_name: str = None
+        previous_job_name: str = None,
     ) -> Dict[str, Any]:
         """
         Create job definition for a selector
@@ -182,8 +187,12 @@ class JobGenerator:
                         "schedule": False,
                         "on_job_completion": {
                             "job_id": previous_job_id,
-                            "statuses": ["success", "error", "cancelled"]  # Any status triggers next
-                        }
+                            "statuses": [
+                                "success",
+                                "error",
+                                "cancelled",
+                            ],  # Any status triggers next
+                        },
                     }
                     schedule = None
         else:  # simple mode (default)
@@ -251,9 +260,9 @@ class JobGenerator:
         """
         # Calculate total minutes from start time
         total_minutes = (
-            self.config.start_hour * 60 +
-            self.config.start_minute +
-            (job_index * self.config.cron_increment_minutes)
+            self.config.start_hour * 60
+            + self.config.start_minute
+            + (job_index * self.config.cron_increment_minutes)
         )
 
         # Handle wrap-around for 24-hour clock
@@ -264,13 +273,17 @@ class JobGenerator:
         if self.config.cron_days_of_week:
             # Map day names to cron values (0=Sunday, 1=Monday, etc.)
             day_mapping = {
-                "SUN": "0", "MON": "1", "TUE": "2", "WED": "3",
-                "THU": "4", "FRI": "5", "SAT": "6"
+                "SUN": "0",
+                "MON": "1",
+                "TUE": "2",
+                "WED": "3",
+                "THU": "4",
+                "FRI": "5",
+                "SAT": "6",
             }
-            days = ",".join([
-                day_mapping.get(day.upper(), "*")
-                for day in self.config.cron_days_of_week
-            ])
+            days = ",".join(
+                [day_mapping.get(day.upper(), "*") for day in self.config.cron_days_of_week]
+            )
         else:
             days = "*"
 
@@ -287,13 +300,17 @@ class JobGenerator:
         # Build day of week part
         if self.config.cron_days_of_week:
             day_mapping = {
-                "SUN": "0", "MON": "1", "TUE": "2", "WED": "3",
-                "THU": "4", "FRI": "5", "SAT": "6"
+                "SUN": "0",
+                "MON": "1",
+                "TUE": "2",
+                "WED": "3",
+                "THU": "4",
+                "FRI": "5",
+                "SAT": "6",
             }
-            days = ",".join([
-                day_mapping.get(day.upper(), "*")
-                for day in self.config.cron_days_of_week
-            ])
+            days = ",".join(
+                [day_mapping.get(day.upper(), "*") for day in self.config.cron_days_of_week]
+            )
         else:
             days = "*"
 

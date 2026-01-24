@@ -107,9 +107,7 @@ class SelectorGenerator:
 
             # Generate selector for each component
             for component in components:
-                filtered_component = [
-                    m for m in component if m not in manually_generated_models
-                ]
+                filtered_component = [m for m in component if m not in manually_generated_models]
 
                 if filtered_component:
                     selector = self._create_fqn_selector_for_component(filtered_component)
@@ -127,9 +125,7 @@ class SelectorGenerator:
             ]
 
             if filtered_independent:
-                independent_selector = self._create_independent_selector(
-                    list(filtered_independent)
-                )
+                independent_selector = self._create_independent_selector(list(filtered_independent))
                 selectors.append(independent_selector)
 
                 if self.config.include_freshness_selectors:
@@ -169,9 +165,7 @@ class SelectorGenerator:
 
                 # Add exclusions if configured
                 if self.config.exclude_tags:
-                    selector["definition"]["union"].append(
-                        self._create_tag_exclusion()
-                    )
+                    selector["definition"]["union"].append(self._create_tag_exclusion())
 
                 selectors.append(selector)
 
@@ -209,9 +203,7 @@ class SelectorGenerator:
                 selectors.append(selector)
 
                 if self.config.include_freshness_selectors:
-                    freshness_selector = self._create_freshness_selector(
-                        f"tag_{tag}", models
-                    )
+                    freshness_selector = self._create_freshness_selector(f"tag_{tag}", models)
                     selectors.append(freshness_selector)
 
         return selectors
@@ -230,7 +222,9 @@ class SelectorGenerator:
         """
         selectors = []
         # Start with models excluded by config (exclude_paths and exclude_models)
-        assigned_models = self._get_excluded_models()  # Track models assigned in automated selectors
+        assigned_models = (
+            self._get_excluded_models()
+        )  # Track models assigned in automated selectors
 
         # Stage 0: Preserve manually created selectors (can have duplicates)
         manual_selectors = []
@@ -300,9 +294,7 @@ class SelectorGenerator:
 
         return selectors
 
-    def _create_fqn_selector_for_component(
-        self, models: List[str]
-    ) -> Dict[str, Any]:
+    def _create_fqn_selector_for_component(self, models: List[str]) -> Dict[str, Any]:
         """Create a selector for a component using FQN method"""
         sorted_models = self._custom_sort(models)
         first_model = sorted_models[0]
@@ -403,9 +395,7 @@ class SelectorGenerator:
         """Create tag exclusion definition"""
         return {
             "exclude": {
-                "union": [
-                    {"method": "tag", "value": tag} for tag in self.config.exclude_tags
-                ]
+                "union": [{"method": "tag", "value": tag} for tag in self.config.exclude_tags]
             }
         }
 
@@ -474,7 +464,9 @@ class SelectorGenerator:
         for selector in existing:
             description = selector.get("description", "")
             # Check if selector is manually created
-            if "manually_created" in description.lower() or not description.startswith("Selector for"):
+            if "manually_created" in description.lower() or not description.startswith(
+                "Selector for"
+            ):
                 manual_selectors.append(selector)
                 # Extract models, paths, and tags from this selector
                 models, paths, tags = self._extract_selector_components(selector)
@@ -497,7 +489,9 @@ class SelectorGenerator:
         models, _, _ = self._extract_selector_components(selector)
         return models
 
-    def _extract_selector_components(self, selector: Dict[str, Any]) -> Tuple[Set[str], Set[str], Set[str]]:
+    def _extract_selector_components(
+        self, selector: Dict[str, Any]
+    ) -> Tuple[Set[str], Set[str], Set[str]]:
         """
         Extract models, paths, and tags from a selector definition.
 
@@ -551,7 +545,9 @@ class SelectorGenerator:
         path_models = set()
 
         # Use provided path_groups or fall back to config
-        paths_to_process = path_groups if path_groups is not None else self.config.include_path_groups
+        paths_to_process = (
+            path_groups if path_groups is not None else self.config.include_path_groups
+        )
 
         for path_group in paths_to_process:
             models = self.graph.group_by_path(path_group)
@@ -568,9 +564,7 @@ class SelectorGenerator:
 
                 # Add exclusions if configured
                 if self.config.exclude_tags:
-                    selector["definition"]["union"].append(
-                        self._create_tag_exclusion()
-                    )
+                    selector["definition"]["union"].append(self._create_tag_exclusion())
 
                 selectors.append(selector)
                 path_models.update(unassigned_models)

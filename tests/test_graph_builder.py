@@ -14,7 +14,7 @@ def sample_models():
             "original_file_path": "models/staging/model_a.sql",
             "tags": ["staging", "daily"],
             "dependencies": [],
-            "sources": ["source.raw.users"]
+            "sources": ["source.raw.users"],
         },
         "model_b": {
             "name": "model_b",
@@ -22,7 +22,7 @@ def sample_models():
             "original_file_path": "models/staging/model_b.sql",
             "tags": ["staging"],
             "dependencies": ["model_a"],
-            "sources": []
+            "sources": [],
         },
         "model_c": {
             "name": "model_c",
@@ -30,7 +30,7 @@ def sample_models():
             "original_file_path": "models/marts/model_c.sql",
             "tags": ["marts", "daily"],
             "dependencies": ["model_b"],
-            "sources": []
+            "sources": [],
         },
         "model_d": {
             "name": "model_d",
@@ -38,7 +38,7 @@ def sample_models():
             "original_file_path": "models/marts/model_d.sql",
             "tags": ["marts", "weekly"],
             "dependencies": [],
-            "sources": []
+            "sources": [],
         },
         "model_e": {
             "name": "model_e",
@@ -46,8 +46,8 @@ def sample_models():
             "original_file_path": "models/staging/legacy/model_e.sql",
             "tags": ["staging", "legacy"],
             "dependencies": [],
-            "sources": []
-        }
+            "sources": [],
+        },
     }
 
 
@@ -301,7 +301,7 @@ class TestModelsWithSources:
                 "path": "staging/model_a.sql",
                 "tags": [],
                 "dependencies": [],
-                "sources": []
+                "sources": [],
             }
         }
         graph = GraphBuilder(models_without_sources)
@@ -343,7 +343,7 @@ class TestEdgeCases:
                 "path": "model_a.sql",
                 "tags": ["test"],
                 "dependencies": [],
-                "sources": []
+                "sources": [],
             }
         }
         graph = GraphBuilder(models)
@@ -363,15 +363,15 @@ class TestEdgeCases:
                 "path": "model_a.sql",
                 "tags": [],
                 "dependencies": ["model_b"],
-                "sources": []
+                "sources": [],
             },
             "model_b": {
                 "name": "model_b",
                 "path": "model_b.sql",
                 "tags": [],
                 "dependencies": ["model_a"],
-                "sources": []
-            }
+                "sources": [],
+            },
         }
         graph = GraphBuilder(models)
 
@@ -389,7 +389,7 @@ class TestEdgeCases:
                 "path": "model_a.sql",
                 "tags": [],
                 "dependencies": ["model_a"],  # Self reference
-                "sources": []
+                "sources": [],
             }
         }
         graph = GraphBuilder(models)
@@ -406,7 +406,7 @@ class TestEdgeCases:
                 "path": "model_a.sql",
                 "tags": [],
                 "dependencies": ["nonexistent_model"],
-                "sources": []
+                "sources": [],
             }
         }
         graph = GraphBuilder(models)

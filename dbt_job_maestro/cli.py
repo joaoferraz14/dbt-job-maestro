@@ -147,7 +147,9 @@ def generate(
             cfg.selector.exclude_paths = list(set(cfg.selector.exclude_paths + list(exclude_path)))
         if exclude_model:
             # Add to existing exclude models
-            cfg.selector.exclude_models = list(set(cfg.selector.exclude_models + list(exclude_model)))
+            cfg.selector.exclude_models = list(
+                set(cfg.selector.exclude_models + list(exclude_model))
+            )
         if path_level is not None:
             cfg.selector.path_grouping_level = path_level
         if min_models is not None:
@@ -190,7 +192,9 @@ def generate(
 
         if cfg.selector.method == "fqn":
             components = graph.find_connected_components()
-            click.echo(f"Generated {len([s for s in selectors if not s['name'].startswith('freshness_')])} selector groups")
+            click.echo(
+                f"Generated {len([s for s in selectors if not s['name'].startswith('freshness_')])} selector groups"
+            )
 
         click.echo("\n" + "=" * 60)
         click.echo("Next Steps:")
@@ -207,6 +211,7 @@ def generate(
     except Exception as e:
         click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -292,9 +297,7 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
             selector_list = selector_data.get("selectors", [])
 
         if not selector_list:
-            click.echo(
-                click.style("✗ No selectors found in file", fg="red", bold=True), err=True
-            )
+            click.echo(click.style("✗ No selectors found in file", fg="red", bold=True), err=True)
             sys.exit(1)
 
         click.echo(f"Generating jobs for {len(selector_list)} selectors...")
@@ -334,6 +337,7 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
     except Exception as e:
         click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -444,7 +448,9 @@ def init(output):
         config = Config()
         config.to_yaml(output)
 
-        click.echo(click.style(f"\n✓ Configuration template created: {output}", fg="green", bold=True))
+        click.echo(
+            click.style(f"\n✓ Configuration template created: {output}", fg="green", bold=True)
+        )
         click.echo("\nEdit this file to customize selector generation for your project.")
         click.echo(f"\nThen run: maestro generate --config {output}")
 
@@ -529,7 +535,9 @@ def check(config, dbt_project):
         elif in_packages:
             click.echo(click.style(f"   ✓ dbt-jobs-as-code found in {packages_path}", fg="green"))
         else:
-            click.echo(click.style(f"   ⚠ dbt-jobs-as-code not in {packages_path} (optional)", fg="yellow"))
+            click.echo(
+                click.style(f"   ⚠ dbt-jobs-as-code not in {packages_path} (optional)", fg="yellow")
+            )
 
         # Check 4: Required files
         click.echo("\n4. Required files:")

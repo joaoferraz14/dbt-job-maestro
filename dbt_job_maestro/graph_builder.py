@@ -38,9 +38,7 @@ class GraphBuilder:
 
         return dict(graph)
 
-    def find_connected_components(
-        self, exclude_models: Set[str] = None
-    ) -> List[List[str]]:
+    def find_connected_components(self, exclude_models: Set[str] = None) -> List[List[str]]:
         """
         Find connected components in the dependency graph
 
@@ -118,11 +116,7 @@ class GraphBuilder:
         Returns:
             Set of model names that have source dependencies
         """
-        return {
-            name
-            for name, data in self.models.items()
-            if data.get("sources", [])
-        }
+        return {name for name, data in self.models.items() if data.get("sources", [])}
 
     def group_by_path(self, path_prefix: str) -> List[str]:
         """
@@ -138,7 +132,7 @@ class GraphBuilder:
         normalized_prefix = path_prefix
         for common_prefix in ["models/", "model/"]:
             if normalized_prefix.startswith(common_prefix):
-                normalized_prefix = normalized_prefix[len(common_prefix):]
+                normalized_prefix = normalized_prefix[len(common_prefix) :]
                 break
 
         # Match against both the manifest path and original_file_path
@@ -148,10 +142,12 @@ class GraphBuilder:
             original_path = data.get("original_file_path", "")
 
             # Check if either path starts with the normalized prefix
-            if model_path.startswith(normalized_prefix) or \
-               model_path.startswith(path_prefix) or \
-               original_path.startswith(normalized_prefix) or \
-               original_path.startswith(path_prefix):
+            if (
+                model_path.startswith(normalized_prefix)
+                or model_path.startswith(path_prefix)
+                or original_path.startswith(normalized_prefix)
+                or original_path.startswith(path_prefix)
+            ):
                 matched_models.append(name)
 
         return sorted(matched_models)
@@ -166,11 +162,7 @@ class GraphBuilder:
         Returns:
             List of model names with the tag
         """
-        return sorted([
-            name
-            for name, data in self.models.items()
-            if tag in data["tags"]
-        ])
+        return sorted([name for name, data in self.models.items() if tag in data["tags"]])
 
     def get_models_in_paths(self, paths: List[str]) -> Set[str]:
         """
