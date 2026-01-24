@@ -128,6 +128,24 @@ class JobConfig:
     # Example: {"dbt_revenue_critical": 12345, "dbt_customer_analytics": 12346}
     job_id_mapping: Dict[str, int] = field(default_factory=dict)
 
+    # Whether to automatically create jobs for maestro_ selectors (auto-generated)
+    # When True: maestro_ selectors automatically become dbt Cloud jobs
+    # When False: teams manage job creation manually in dbt Cloud
+    # Default: False (explicit opt-in required for dbt-jobs-as-code deployment)
+    include_maestro_selectors_in_jobs: bool = False
+
+    # Whether to create jobs for manual selectors (selectors without maestro_ prefix)
+    # When True: manual selectors are included in jobs.yml
+    # When False: manual selectors are ignored (must be created manually in dbt Cloud)
+    # Default: False (explicit opt-in required for dbt-jobs-as-code deployment)
+    include_manual_selectors_in_jobs: bool = False
+
+    # Selector prefix for identifying auto-generated selectors
+    # Must match selector.selector_prefix for consistent behavior
+    # Selectors starting with "{selector_prefix}_" are auto-generated
+    # Selectors NOT starting with this prefix are manual
+    selector_prefix: str = "maestro"
+
     # Starting hour for first job (0-23) when using cron_incremental or cascade modes
     start_hour: int = 6
 
@@ -217,6 +235,8 @@ class Config:
 
         # Create job config
         job_data = data.get("job", {})
+        # Use selector prefix from selector config, fallback to job config, then default
+        selector_prefix = selector_data.get("selector_prefix", job_data.get("selector_prefix", "maestro"))
         job_config = JobConfig(
             account_id=job_data.get("account_id"),
             project_id=job_data.get("project_id"),
@@ -236,6 +256,9 @@ class Config:
             cron_days_of_week=job_data.get("cron_days_of_week", []),
             cascade_initial_deployment=job_data.get("cascade_initial_deployment", True),
             job_id_mapping=job_data.get("job_id_mapping", {}),
+            include_maestro_selectors_in_jobs=job_data.get("include_maestro_selectors_in_jobs", False),
+            include_manual_selectors_in_jobs=job_data.get("include_manual_selectors_in_jobs", False),
+            selector_prefix=selector_prefix,
         )
 
         # Create deployment config
@@ -307,6 +330,9 @@ class Config:
                 "cron_days_of_week": self.job.cron_days_of_week,
                 "cascade_initial_deployment": self.job.cascade_initial_deployment,
                 "job_id_mapping": self.job.job_id_mapping,
+                "include_maestro_selectors_in_jobs": self.job.include_maestro_selectors_in_jobs,
+                "include_manual_selectors_in_jobs": self.job.include_manual_selectors_in_jobs,
+                "selector_prefix": self.job.selector_prefix,
             },
             "deployment": {
                 "deploy_branch": self.deployment.deploy_branch,
