@@ -49,7 +49,24 @@ class JobGenerator:
             and not s["name"].startswith("automatically_generated_freshness_")
         ]
 
-        for idx, selector in enumerate(non_freshness_selectors):
+        # Filter based on maestro/manual selector inclusion settings
+        filtered_selectors = []
+        auto_prefix = f"{self.config.selector_prefix}_"
+        for selector in non_freshness_selectors:
+            selector_name = selector["name"]
+            is_auto_generated = selector_name.startswith(auto_prefix)
+
+            # Skip auto-generated selectors if they're excluded
+            if is_auto_generated and not self.config.include_maestro_selectors_in_jobs:
+                continue
+
+            # Skip manual selectors if they're excluded
+            if not is_auto_generated and not self.config.include_manual_selectors_in_jobs:
+                continue
+
+            filtered_selectors.append(selector)
+
+        for idx, selector in enumerate(filtered_selectors):
             selector_name = selector["name"]
 
             # Generate job name
@@ -63,8 +80,8 @@ class JobGenerator:
             job = self._create_job_definition(
                 selector_name,
                 job_index=idx,
-                total_jobs=len(non_freshness_selectors),
-                previous_job_name=self._generate_job_name(non_freshness_selectors[idx-1]["name"]) if idx > 0 else None
+                total_jobs=len(filtered_selectors),
+                previous_job_name=self._generate_job_name(filtered_selectors[idx-1]["name"]) if idx > 0 else None
             )
             jobs[job_name] = job
 
