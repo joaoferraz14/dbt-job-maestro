@@ -35,8 +35,10 @@ class SelectorOrchestrator:
         # Initialize model resolver
         self.resolver = ModelResolver(manifest_parser, graph_builder)
 
-        # Initialize overlap detector
-        self.overlap_detector = OverlapDetector(self.resolver)
+        # Initialize overlap detector with selector prefix from config
+        self.overlap_detector = OverlapDetector(
+            self.resolver, selector_prefix=config.selector_prefix
+        )
 
         # Initialize selector generators (in priority order)
         self.generators = {

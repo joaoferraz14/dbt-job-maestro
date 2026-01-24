@@ -15,13 +15,15 @@ class OverlapDetector:
     selectors and reports them with appropriate severity levels.
     """
 
-    def __init__(self, model_resolver: ModelResolver):
+    def __init__(self, model_resolver: ModelResolver, selector_prefix: str = "maestro"):
         """Initialize the overlap detector.
 
         Args:
             model_resolver: ModelResolver instance for extracting models
+            selector_prefix: Prefix used for auto-generated selectors (default: "maestro")
         """
         self.resolver = model_resolver
+        self.selector_prefix = selector_prefix
 
     def detect_overlaps(
         self, selectors: List[Dict[str, Any]], selector_metadata: Dict[str, SelectorMetadata] = None
@@ -161,18 +163,17 @@ class OverlapDetector:
         Returns:
             SelectorPriority enum value
         """
-        name = selector_def.get("name", "")
-
         if self._is_manual(selector_def):
             return SelectorPriority.MANUAL
-        elif name.startswith("automatically_generated_selector_") or name.startswith("selector_"):
-            return SelectorPriority.AUTO_FQN
         else:
-            # Default to manual for unknown patterns
-            return SelectorPriority.MANUAL
+            # Selector starts with auto-generated prefix (e.g., "maestro_")
+            return SelectorPriority.AUTO_FQN
 
     def _is_manual(self, selector_def: Dict[str, Any]) -> bool:
         """Check if selector is manually created.
+
+        A selector is considered manual if it does NOT start with the
+        auto-generated selector prefix (e.g., "maestro_").
 
         Args:
             selector_def: Selector definition dictionary
@@ -181,16 +182,7 @@ class OverlapDetector:
             True if manually created, False otherwise
         """
         name = selector_def.get("name", "")
+        auto_prefix = f"{self.selector_prefix}_"
 
-        if name.startswith("manually_created_"):
-            return True
-
-        metadata = selector_def.get("metadata", {})
-        if metadata.get("manually_created", False):
-            return True
-
-        description = selector_def.get("description", "")
-        if "manually_created" in description.lower():
-            return True
-
-        return False
+        # Selector is manual if it does NOT start with the auto-generated prefix
+        return not name.startswith(auto_prefix)

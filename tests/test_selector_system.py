@@ -98,14 +98,15 @@ class TestManualSelectorIdentification:
 
         assert selector.is_manually_created(selector_def) is True
 
-    def test_description_based_detection(self, mock_parser, mock_graph):
-        """Test manual selector identification via description (fallback)."""
+    def test_non_prefixed_selector_is_manual(self, mock_parser, mock_graph):
+        """Test that selectors without maestro_ prefix are detected as manual."""
         config = SelectorConfig()
         selector = ManualSelector(mock_parser, mock_graph, config)
 
+        # Any selector without the maestro_ prefix is considered manual
         selector_def = {
             "name": "revenue_selector",
-            "description": "manually_created Revenue models",
+            "description": "Revenue models selector",
             "definition": {"union": [{"method": "fqn", "value": "fct_revenue"}]},
         }
 
@@ -116,8 +117,9 @@ class TestManualSelectorIdentification:
         config = SelectorConfig()
         selector = ManualSelector(mock_parser, mock_graph, config)
 
+        # Auto-generated selectors use the maestro_ prefix
         selector_def = {
-            "name": "automatically_generated_selector_model_a",
+            "name": "maestro_model_a",
             "description": "Selector for models in component",
             "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
         }
@@ -212,13 +214,14 @@ class TestOverlapDetector:
         resolver = ModelResolver(mock_parser, mock_graph)
         detector = OverlapDetector(resolver)
 
+        # Manual selectors do NOT start with "maestro_" prefix
         selectors = [
             {
-                "name": "manually_created_revenue",
+                "name": "critical_revenue",
                 "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
-                "name": "manually_created_finance",
+                "name": "critical_finance",
                 "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
         ]
@@ -234,13 +237,14 @@ class TestOverlapDetector:
         resolver = ModelResolver(mock_parser, mock_graph)
         detector = OverlapDetector(resolver)
 
+        # Auto-generated selectors start with "maestro_" prefix
         selectors = [
             {
-                "name": "automatically_generated_selector_model_a",
+                "name": "maestro_model_a",
                 "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
-                "name": "automatically_generated_selector_model_b",
+                "name": "maestro_model_b",
                 "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
         ]
@@ -256,13 +260,14 @@ class TestOverlapDetector:
         resolver = ModelResolver(mock_parser, mock_graph)
         detector = OverlapDetector(resolver)
 
+        # Auto-generated selectors with no overlapping models
         selectors = [
             {
-                "name": "automatically_generated_selector_model_a",
+                "name": "maestro_model_a",
                 "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
-                "name": "automatically_generated_selector_model_b",
+                "name": "maestro_model_b",
                 "definition": {"union": [{"method": "fqn", "value": "model_b"}]},
             },
         ]
@@ -283,9 +288,9 @@ class TestFQNSelector:
         selectors = selector.generate(excluded_models=set())
 
         assert len(selectors) > 0
-        # Check that selector uses FQN method
+        # Check that selector uses maestro_ prefix and FQN method
         first_selector = selectors[0]
-        assert "automatically_generated_selector" in first_selector["name"]
+        assert first_selector["name"].startswith("maestro_")
         assert "union" in first_selector["definition"]
 
     def test_excluded_models_not_generated(self, mock_parser, mock_graph):
@@ -323,12 +328,10 @@ class TestSelectorOrchestrator:
         selectors = orchestrator.generate_selectors()
 
         assert len(selectors) > 0
-        # All selectors should be FQN-based
+        # All selectors should be auto-generated with maestro_ prefix
         for selector in selectors:
             if not selector["name"].startswith("freshness_"):
-                assert "automatically_generated" in selector["name"] or selector["name"].startswith(
-                    "selector_"
-                )
+                assert selector["name"].startswith("maestro_")
 
 
 class TestManualSelectorPreservation:
@@ -811,13 +814,14 @@ class TestEdgeCases:
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
 
-            # Should have only auto-generated selectors
-            manual_selectors = [s for s in selectors if s["name"].startswith("manually_created_")]
-            auto_selectors = [
-                s for s in selectors if s["name"].startswith("automatically_generated_")
-            ]
+            # All selectors should be auto-generated (maestro_ prefix)
+            # since there's no existing selectors.yml with manual selectors
+            for selector in selectors:
+                if not selector["name"].startswith("freshness_"):
+                    assert selector["name"].startswith("maestro_")
 
-            assert len(manual_selectors) == 0
+            # Should have at least one auto-generated selector
+            auto_selectors = [s for s in selectors if s["name"].startswith("maestro_")]
             assert len(auto_selectors) > 0
 
         finally:

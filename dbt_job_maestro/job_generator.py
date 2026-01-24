@@ -142,9 +142,8 @@ class JobGenerator:
         if self.config.orchestration_mode == "cron_incremental":
             cron_schedule = self._generate_incremental_cron(job_index)
             triggers = {
-                "github_webhook": False,
                 "git_provider_webhook": False,
-                "custom_branch_only": True,
+                "github_webhook": False,
                 "schedule": True,
             }
             schedule = {"cron": cron_schedule}
@@ -153,9 +152,8 @@ class JobGenerator:
                 # First job is always scheduled
                 cron_schedule = self._generate_start_time_cron()
                 triggers = {
-                    "github_webhook": False,
                     "git_provider_webhook": False,
-                    "custom_branch_only": True,
+                    "github_webhook": False,
                     "schedule": True,
                 }
                 schedule = {"cron": cron_schedule}
@@ -166,9 +164,8 @@ class JobGenerator:
                     # (Need job IDs first, so temporarily use cron schedule)
                     cron_schedule = self._generate_start_time_cron()
                     triggers = {
-                        "github_webhook": False,
                         "git_provider_webhook": False,
-                        "custom_branch_only": True,
+                        "github_webhook": False,
                         "schedule": True,
                     }
                     schedule = {"cron": cron_schedule}
@@ -181,57 +178,48 @@ class JobGenerator:
                             f"Make sure to populate job_id_mapping after initial deployment."
                         )
                     triggers = {
-                        "github_webhook": False,
                         "git_provider_webhook": False,
-                        "custom_branch_only": True,
+                        "github_webhook": False,
                         "schedule": False,
                         "on_job_completion": {
                             "job_id": previous_job_id,
-                            "statuses": [
-                                "success",
-                                "error",
-                                "cancelled",
-                            ],  # Any status triggers next
+                            "statuses": ["success", "error", "cancelled"],
                         },
                     }
                     schedule = None
         else:  # simple mode (default)
             triggers = {
-                "github_webhook": False,
                 "git_provider_webhook": False,
-                "custom_branch_only": True,
+                "github_webhook": False,
                 "schedule": True,
             }
             schedule = {"cron": self.config.cron_schedule}
 
+        # Build job definition matching dbt-jobs-as-code schema
         job = {
-            "identifier": self._generate_job_name(selector_name),
-            "name": job_dbt_name,
-            "dbt_version": self.config.dbt_version or None,
-            "triggers": triggers,
+            "account_id": self.config.account_id,
+            "dbt_version": self.config.dbt_version if self.config.dbt_version else None,
+            "deferring_job_definition_id": None,
+            "environment_id": self.config.environment_id,
+            "execute_steps": [f"dbt build --selector {selector_name}"],
             "execution": {
                 "timeout_seconds": self.config.timeout_seconds,
             },
-            "settings": {
-                "threads": self.config.threads,
-                "target_name": self.config.target_name,
-            },
             "generate_docs": self.config.generate_docs,
+            "name": job_dbt_name,
+            "project_id": self.config.project_id,
             "run_generate_sources": self.config.run_generate_sources,
-            "execute_steps": [f"dbt build --selector {selector_name}"],
+            "settings": {
+                "target_name": self.config.target_name,
+                "threads": self.config.threads,
+            },
+            "state": 1,
+            "triggers": triggers,
         }
 
         # Add schedule if applicable
         if schedule:
             job["schedule"] = schedule
-
-        # Add dbt Cloud IDs if provided
-        if self.config.account_id:
-            job["account_id"] = self.config.account_id
-        if self.config.project_id:
-            job["project_id"] = self.config.project_id
-        if self.config.environment_id:
-            job["environment_id"] = self.config.environment_id
 
         return job
 

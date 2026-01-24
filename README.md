@@ -111,20 +111,16 @@ maestro uses a simple naming convention to distinguish selector types:
 
 maestro can generate dbt Cloud job definitions compatible with [dbt-jobs-as-code](https://github.com/dbt-labs/dbt-jobs-as-code):
 
-| Selector Type | Default Job Behavior | Enable Job Generation |
+| Selector Type | Default Job Behavior | Disable Job Generation |
 |--------------|---------------------|----------------------|
-| `maestro_*` selectors | ❌ **Excluded (explicit opt-in required)** | Set `include_maestro_selectors_in_jobs: true` |
-| Manual selectors | ❌ **Excluded (explicit opt-in required)** | Set `include_manual_selectors_in_jobs: true` |
-
-**Why explicit opt-in?**
-- **Safety first**: Prevents accidental dbt Cloud job creation via dbt-jobs-as-code
-- **Team control**: Orchestration config must be perfect before deployment
-- **Flexibility**: Choose exactly which selectors become automated jobs
+| `maestro_*` selectors | ✅ **Included** (default) | Set `include_maestro_selectors_in_jobs: false` |
+| Manual selectors | ✅ **Included** (default) | Set `include_manual_selectors_in_jobs: false` |
 
 **Common patterns:**
-- **Automated maestro jobs**: Set `include_maestro_selectors_in_jobs: true` (most common)
-- **All selectors as jobs**: Set both flags to `true`
-- **Manual management only**: Keep both flags `false` (default), manage all jobs in dbt Cloud UI
+- **All selectors as jobs**: Keep both flags `true` (default)
+- **Maestro jobs only**: Set `include_manual_selectors_in_jobs: false`
+- **Manual jobs only**: Set `include_maestro_selectors_in_jobs: false`
+- **No jobs generated**: Set both flags to `false`, manage all jobs in dbt Cloud UI
 
 ---
 
@@ -368,27 +364,18 @@ job:
   job_name_prefix: dbt      # Job names: {prefix}_{selector_name}
 
   # -------------------------------------------------------------------------
-  # SELECTOR INCLUSION CONTROL (Explicit Opt-In Required)
+  # SELECTOR INCLUSION CONTROL
   # -------------------------------------------------------------------------
 
   # Whether to create jobs for auto-generated selectors (maestro_ prefix)
-  # ❌ Default: false - EXPLICIT OPT-IN REQUIRED
-  # ✅ Set to true to enable dbt-jobs-as-code deployment for auto-generated selectors
-  #
-  # IMPORTANT: Must explicitly set to true to generate jobs
-  include_maestro_selectors_in_jobs: false
+  # ✅ Default: true - jobs are generated for all maestro_ selectors
+  # Set to false to exclude auto-generated selectors from job generation
+  include_maestro_selectors_in_jobs: true
 
   # Whether to create jobs for manual selectors (non-maestro_ prefix)
-  # ❌ Default: false - EXPLICIT OPT-IN REQUIRED
-  # ✅ Set to true to enable dbt-jobs-as-code deployment for manual selectors
-  #
-  # IMPORTANT: Must explicitly set to true to generate jobs
-  include_manual_selectors_in_jobs: false
-
-  # Why explicit opt-in?
-  # - Prevents accidental job creation via dbt-jobs-as-code API
-  # - Ensures orchestration config is perfect before deployment
-  # - Teams have full control over what becomes automated
+  # ✅ Default: true - jobs are generated for all manual selectors
+  # Set to false to exclude manual selectors from job generation
+  include_manual_selectors_in_jobs: true
 
   # Selector prefix for identifying auto-generated selectors
   # Should match selector.selector_prefix (synced automatically from config)
@@ -610,25 +597,23 @@ git diff selectors.yml
 
 maestro generates dbt Cloud job definitions compatible with [dbt-jobs-as-code](https://github.com/dbt-labs/dbt-jobs-as-code).
 
-### Job Inclusion (Explicit Opt-In Required)
+### Job Inclusion
 
-| Selector Type | Included in jobs.yml? | To Enable |
+| Selector Type | Included in jobs.yml? | To Disable |
 |--------------|----------------------|-----------|
-| `maestro_*` | ❌ **No** (default) | Set `include_maestro_selectors_in_jobs: true` |
-| Manual | ❌ **No** (default) | Set `include_manual_selectors_in_jobs: true` |
+| `maestro_*` | ✅ **Yes** (default) | Set `include_maestro_selectors_in_jobs: false` |
+| Manual | ✅ **Yes** (default) | Set `include_manual_selectors_in_jobs: false` |
 
-**Both selector types require explicit opt-in** to prevent accidental job creation.
-
-**Enable job generation in config:**
+**Customize job generation in config:**
 ```yaml
 job:
-  # Enable job generation for auto-generated selectors (most common)
+  # Default: true - generates jobs for auto-generated selectors
   include_maestro_selectors_in_jobs: true
 
-  # Enable job generation for manual selectors (optional)
+  # Default: true - generates jobs for manual selectors
   include_manual_selectors_in_jobs: true
 
-  # Keep both false (default) to manage all jobs manually in dbt Cloud
+  # Set both to false to manage all jobs manually in dbt Cloud
 ```
 
 ### Orchestration Modes
@@ -993,10 +978,10 @@ job:
   orchestration_mode: simple
   cron_schedule: "0 6 * * *"
 
-  # EXPLICIT OPT-IN: Enable maestro selectors → jobs
+  # Enable maestro selectors → jobs (default: true)
   include_maestro_selectors_in_jobs: true
 
-  # Manual selectors NOT included (manage in dbt Cloud UI)
+  # Disable manual selectors from jobs (manage in dbt Cloud UI)
   include_manual_selectors_in_jobs: false
 ```
 
@@ -1155,32 +1140,32 @@ Use descriptive names WITHOUT `maestro_` prefix:
 
 ### 4. Job Management Strategy
 
-Choose based on your needs (both default to `false` - explicit opt-in required):
+Choose based on your needs (both default to `true`):
 
-**Option A: Hybrid (Recommended)**
+**Option A: Full Automation (Default)**
+- All selectors → Automated jobs
+```yaml
+job:
+  include_maestro_selectors_in_jobs: true   # Default
+  include_manual_selectors_in_jobs: true    # Default
+```
+
+**Option B: Hybrid**
 - Maestro selectors → Automated jobs ✅
 - Manual selectors → dbt Cloud UI ❌
 ```yaml
 job:
-  include_maestro_selectors_in_jobs: true   # Explicit opt-in
-  include_manual_selectors_in_jobs: false   # Keep default
+  include_maestro_selectors_in_jobs: true   # Default
+  include_manual_selectors_in_jobs: false   # Override default
 ```
 
-**Option B: Full Automation**
-- All selectors → Automated jobs
-```yaml
-job:
-  include_maestro_selectors_in_jobs: true   # Explicit opt-in
-  include_manual_selectors_in_jobs: true    # Explicit opt-in
-```
-
-**Option C: Manual Management (Default)**
+**Option C: Manual Management**
 - All jobs managed in dbt Cloud UI
 - No job generation via dbt-jobs-as-code
 ```yaml
 job:
-  include_maestro_selectors_in_jobs: false  # Default
-  include_manual_selectors_in_jobs: false   # Default
+  include_maestro_selectors_in_jobs: false  # Override default
+  include_manual_selectors_in_jobs: false   # Override default
 ```
 
 ### 5. Regeneration Workflow
@@ -1248,19 +1233,19 @@ dbt list --selector SELECTOR_NAME
 
 ### "Jobs not generating"
 
-**Cause:** Job inclusion defaults are `false` - explicit opt-in required
+**Cause:** Job inclusion flags may be set to `false` in config
 
-**Fix:** Enable job generation in config:
+**Fix:** Check job generation settings in config:
 ```yaml
 job:
-  # For maestro_ selectors (REQUIRED - defaults to false)
+  # Default: true - set to false to exclude maestro_ selectors
   include_maestro_selectors_in_jobs: true
 
-  # For manual selectors (REQUIRED - defaults to false)
+  # Default: true - set to false to exclude manual selectors
   include_manual_selectors_in_jobs: true
 ```
 
-**Note:** Both settings default to `false` to prevent accidental job creation.
+**Note:** Both settings default to `true`. If jobs aren't generating, check your config file for explicit `false` values.
 
 ### "Path selector not matching models"
 

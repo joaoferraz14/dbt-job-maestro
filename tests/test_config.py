@@ -65,7 +65,7 @@ class TestJobConfig:
         assert config.project_id is None
         assert config.environment_id is None
         assert config.include_maestro_selectors_in_jobs is True
-        assert config.include_manual_selectors_in_jobs is False
+        assert config.include_manual_selectors_in_jobs is True
 
     def test_custom_values(self):
         """Test job configuration with custom values."""
@@ -92,14 +92,20 @@ class TestDeploymentConfig:
         config = DeploymentConfig()
 
         assert config.deploy_branch == "main"
-        assert config.auto_deploy is False
+        assert config.require_dbt_jobs_as_code is True
+        assert config.dbt_project_path == "."
 
     def test_custom_values(self):
         """Test deployment configuration with custom values."""
-        config = DeploymentConfig(deploy_branch="production", auto_deploy=True)
+        config = DeploymentConfig(
+            deploy_branch="production",
+            require_dbt_jobs_as_code=False,
+            dbt_project_path="./dbt_project"
+        )
 
         assert config.deploy_branch == "production"
-        assert config.auto_deploy is True
+        assert config.require_dbt_jobs_as_code is False
+        assert config.dbt_project_path == "./dbt_project"
 
 
 class TestConfig:
@@ -143,7 +149,7 @@ job:
 
 deployment:
   deploy_branch: production
-  auto_deploy: true
+  require_dbt_jobs_as_code: false
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(yaml_content)
@@ -168,7 +174,7 @@ deployment:
             assert config.job.environment_id == 11111
 
             assert config.deployment.deploy_branch == "production"
-            assert config.deployment.auto_deploy is True
+            assert config.deployment.require_dbt_jobs_as_code is False
 
         finally:
             os.unlink(config_path)
