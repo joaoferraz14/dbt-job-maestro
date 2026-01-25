@@ -100,7 +100,7 @@ class TestDeploymentConfig:
         config = DeploymentConfig(
             deploy_branch="production",
             require_dbt_jobs_as_code=False,
-            dbt_project_path="./dbt_project"
+            dbt_project_path="./dbt_project",
         )
 
         assert config.deploy_branch == "production"

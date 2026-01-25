@@ -275,7 +275,10 @@ class SelectorGenerator:
             for component in components:
                 # Filter out excluded models from each component
                 filtered_component = [m for m in component if m not in assigned_models]
-                if filtered_component and len(filtered_component) >= self.config.min_models_per_selector:
+                if (
+                    filtered_component
+                    and len(filtered_component) >= self.config.min_models_per_selector
+                ):
                     selector = self._create_fqn_selector_for_component(filtered_component)
                     selectors.append(selector)
                     assigned_models.update(filtered_component)
