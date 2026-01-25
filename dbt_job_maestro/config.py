@@ -59,14 +59,12 @@ class SelectorConfig:
     min_models_per_selector: int = 1
 
     # Selector name prefix for auto-generated selectors
+    # Selectors starting with "{selector_prefix}_" are auto-generated
+    # Selectors NOT starting with this prefix are considered manual
     selector_prefix: str = "maestro"
 
     # Whether to preserve manually created selectors
     preserve_manual_selectors: bool = True
-
-    # Prefix for manually created selectors (used for identification)
-    # Note: Any selector NOT starting with "maestro_" is considered manual
-    manual_selector_identifier: str = "maestro_"
 
     # Whether to warn about overlaps in manual selectors
     warn_on_manual_overlaps: bool = True
@@ -131,14 +129,12 @@ class JobConfig:
     # Whether to automatically create jobs for maestro_ selectors (auto-generated)
     # When True: maestro_ selectors automatically become dbt Cloud jobs
     # When False: teams manage job creation manually in dbt Cloud
-    # Default: False (explicit opt-in required for dbt-jobs-as-code deployment)
-    include_maestro_selectors_in_jobs: bool = False
+    include_maestro_selectors_in_jobs: bool = True
 
     # Whether to create jobs for manual selectors (selectors without maestro_ prefix)
     # When True: manual selectors are included in jobs.yml
     # When False: manual selectors are ignored (must be created manually in dbt Cloud)
-    # Default: False (explicit opt-in required for dbt-jobs-as-code deployment)
-    include_manual_selectors_in_jobs: bool = False
+    include_manual_selectors_in_jobs: bool = True
 
     # Selector prefix for identifying auto-generated selectors
     # Must match selector.selector_prefix for consistent behavior
@@ -228,7 +224,6 @@ class Config:
             min_models_per_selector=selector_data.get("min_models_per_selector", 1),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
             preserve_manual_selectors=selector_data.get("preserve_manual_selectors", True),
-            manual_selector_identifier=selector_data.get("manual_selector_identifier", "maestro_"),
             warn_on_manual_overlaps=selector_data.get("warn_on_manual_overlaps", True),
             fail_on_auto_overlaps=selector_data.get("fail_on_auto_overlaps", True),
         )
@@ -236,7 +231,9 @@ class Config:
         # Create job config
         job_data = data.get("job", {})
         # Use selector prefix from selector config, fallback to job config, then default
-        selector_prefix = selector_data.get("selector_prefix", job_data.get("selector_prefix", "maestro"))
+        selector_prefix = selector_data.get(
+            "selector_prefix", job_data.get("selector_prefix", "maestro")
+        )
         job_config = JobConfig(
             account_id=job_data.get("account_id"),
             project_id=job_data.get("project_id"),
@@ -256,8 +253,12 @@ class Config:
             cron_days_of_week=job_data.get("cron_days_of_week", []),
             cascade_initial_deployment=job_data.get("cascade_initial_deployment", True),
             job_id_mapping=job_data.get("job_id_mapping", {}),
-            include_maestro_selectors_in_jobs=job_data.get("include_maestro_selectors_in_jobs", False),
-            include_manual_selectors_in_jobs=job_data.get("include_manual_selectors_in_jobs", False),
+            include_maestro_selectors_in_jobs=job_data.get(
+                "include_maestro_selectors_in_jobs", True
+            ),
+            include_manual_selectors_in_jobs=job_data.get(
+                "include_manual_selectors_in_jobs", True
+            ),
             selector_prefix=selector_prefix,
         )
 
@@ -307,7 +308,6 @@ class Config:
                 "min_models_per_selector": self.selector.min_models_per_selector,
                 "selector_prefix": self.selector.selector_prefix,
                 "preserve_manual_selectors": self.selector.preserve_manual_selectors,
-                "manual_selector_identifier": self.selector.manual_selector_identifier,
                 "warn_on_manual_overlaps": self.selector.warn_on_manual_overlaps,
                 "fail_on_auto_overlaps": self.selector.fail_on_auto_overlaps,
             },

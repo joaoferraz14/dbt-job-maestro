@@ -41,19 +41,14 @@ class FQNSelector(BaseSelector):
                     selectors.append(selector)
         else:
             # Find connected components (excluding already assigned models)
-            components = self.graph.find_connected_components(
-                exclude_models=excluded_models
-            )
+            components = self.graph.find_connected_components(exclude_models=excluded_models)
 
             # Track models added to component selectors
             component_models = set()
 
             # Generate selector for each component
             for component in components:
-                filtered_component = [
-                    m for m in component
-                    if m not in excluded_models
-                ]
+                filtered_component = [m for m in component if m not in excluded_models]
 
                 if len(filtered_component) >= self.config.min_models_per_selector:
                     selector = self._create_component_selector(filtered_component)
@@ -65,16 +60,14 @@ class FQNSelector(BaseSelector):
                     # Optionally create freshness selector
                     if self._should_create_freshness(selector["name"]):
                         freshness = self._create_freshness_selector(
-                            selector["name"],
-                            filtered_component
+                            selector["name"], filtered_component
                         )
                         selectors.append(freshness)
 
             # Handle independent models (exclude models already in components)
             independent = set(self.graph.find_independent_models())
             filtered_independent = [
-                m for m in independent
-                if m not in excluded_models and m not in component_models
+                m for m in independent if m not in excluded_models and m not in component_models
             ]
 
             if filtered_independent:
@@ -83,8 +76,7 @@ class FQNSelector(BaseSelector):
 
                 if self._should_create_freshness("selector_independent"):
                     freshness = self._create_freshness_selector(
-                        "selector_independent",
-                        filtered_independent
+                        "selector_independent", filtered_independent
                     )
                     selectors.append(freshness)
 
@@ -110,7 +102,7 @@ class FQNSelector(BaseSelector):
             paths_used=resolution.paths,
             tags_used=resolution.tags,
             fqns_used=resolution.fqns,
-            invalid_fqns=resolution.invalid_fqns
+            invalid_fqns=resolution.invalid_fqns,
         )
 
     def _create_component_selector(self, models: List[str]) -> Dict[str, Any]:
@@ -135,21 +127,14 @@ class FQNSelector(BaseSelector):
 
         for model in sorted_models:
             if model in models_with_sources and self.config.include_parent_sources:
-                selector["definition"]["union"].append({
-                    "method": "fqn",
-                    "value": model,
-                    "parents": True
-                })
+                selector["definition"]["union"].append(
+                    {"method": "fqn", "value": model, "parents": True}
+                )
             else:
-                selector["definition"]["union"].append({
-                    "method": "fqn",
-                    "value": model
-                })
+                selector["definition"]["union"].append({"method": "fqn", "value": model})
 
         if self.config.exclude_tags:
-            selector["definition"]["union"].append(
-                self._create_tag_exclusion()
-            )
+            selector["definition"]["union"].append(self._create_tag_exclusion())
 
         return selector
 
@@ -171,21 +156,14 @@ class FQNSelector(BaseSelector):
         }
 
         if model_name in models_with_sources and self.config.include_parent_sources:
-            selector["definition"]["union"].append({
-                "method": "fqn",
-                "value": model_name,
-                "parents": True
-            })
+            selector["definition"]["union"].append(
+                {"method": "fqn", "value": model_name, "parents": True}
+            )
         else:
-            selector["definition"]["union"].append({
-                "method": "fqn",
-                "value": model_name
-            })
+            selector["definition"]["union"].append({"method": "fqn", "value": model_name})
 
         if self.config.exclude_tags:
-            selector["definition"]["union"].append(
-                self._create_tag_exclusion()
-            )
+            selector["definition"]["union"].append(self._create_tag_exclusion())
 
         return selector
 
@@ -209,29 +187,18 @@ class FQNSelector(BaseSelector):
 
         for model in sorted_models:
             if model in models_with_sources and self.config.include_parent_sources:
-                selector["definition"]["union"].append({
-                    "method": "fqn",
-                    "value": model,
-                    "parents": True
-                })
+                selector["definition"]["union"].append(
+                    {"method": "fqn", "value": model, "parents": True}
+                )
             else:
-                selector["definition"]["union"].append({
-                    "method": "fqn",
-                    "value": model
-                })
+                selector["definition"]["union"].append({"method": "fqn", "value": model})
 
         if self.config.exclude_tags:
-            selector["definition"]["union"].append(
-                self._create_tag_exclusion()
-            )
+            selector["definition"]["union"].append(self._create_tag_exclusion())
 
         return selector
 
-    def _create_freshness_selector(
-        self,
-        base_name: str,
-        models: List[str]
-    ) -> Dict[str, Any]:
+    def _create_freshness_selector(self, base_name: str, models: List[str]) -> Dict[str, Any]:
         """Create freshness selector.
 
         Args:
@@ -245,17 +212,15 @@ class FQNSelector(BaseSelector):
             "name": f"freshness_{base_name}",
             "description": f"Freshness selector for {base_name}",
             "definition": {
-                "union": [{
-                    "intersection": [
-                        {"method": "selector", "value": base_name},
-                        {
-                            "method": "source_status",
-                            "value": "fresher",
-                            "children": True
-                        }
-                    ]
-                }]
-            }
+                "union": [
+                    {
+                        "intersection": [
+                            {"method": "selector", "value": base_name},
+                            {"method": "source_status", "value": "fresher", "children": True},
+                        ]
+                    }
+                ]
+            },
         }
 
     def _create_tag_exclusion(self) -> Dict[str, Any]:
@@ -266,10 +231,7 @@ class FQNSelector(BaseSelector):
         """
         return {
             "exclude": {
-                "union": [
-                    {"method": "tag", "value": tag}
-                    for tag in self.config.exclude_tags
-                ]
+                "union": [{"method": "tag", "value": tag} for tag in self.config.exclude_tags]
             }
         }
 
@@ -288,15 +250,15 @@ class FQNSelector(BaseSelector):
         if not self.config.prefix_order:
             return sorted(models, reverse=True)
 
-        sorted_with_prefix = sorted([
-            m for m in models
-            if any(m.startswith(p) for p in self.config.prefix_order)
-        ], reverse=True)
+        sorted_with_prefix = sorted(
+            [m for m in models if any(m.startswith(p) for p in self.config.prefix_order)],
+            reverse=True,
+        )
 
-        sorted_without_prefix = sorted([
-            m for m in models
-            if not any(m.startswith(p) for p in self.config.prefix_order)
-        ], reverse=True)
+        sorted_without_prefix = sorted(
+            [m for m in models if not any(m.startswith(p) for p in self.config.prefix_order)],
+            reverse=True,
+        )
 
         return sorted_with_prefix + sorted_without_prefix
 

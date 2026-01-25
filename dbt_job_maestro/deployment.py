@@ -1,6 +1,5 @@
 """Deployment helpers for dbt-jobs-as-code integration"""
 
-import os
 import subprocess
 import yaml
 from pathlib import Path
@@ -16,6 +15,7 @@ def check_dbt_jobs_as_code_installed() -> bool:
     """
     try:
         import importlib.util
+
         spec = importlib.util.find_spec("dbt_jobs_as_code")
         return spec is not None
     except (ImportError, AttributeError):
@@ -90,10 +90,12 @@ def add_to_packages_yml(dbt_project_path: str = ".") -> bool:
                     return True  # Already present
 
         # Add dbt-jobs-as-code
-        packages["packages"].append({
-            "git": "https://github.com/dbt-labs/dbt-jobs-as-code.git",
-            "revision": "main",  # Use latest or specify version
-        })
+        packages["packages"].append(
+            {
+                "git": "https://github.com/dbt-labs/dbt-jobs-as-code.git",
+                "revision": "main",  # Use latest or specify version
+            }
+        )
 
         # Write back
         with open(packages_path, "w") as f:

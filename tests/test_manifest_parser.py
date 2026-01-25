@@ -1,6 +1,5 @@
 """Tests for ManifestParser"""
 
-import pytest
 import json
 import tempfile
 from pathlib import Path
@@ -20,9 +19,7 @@ def test_manifest_parser_basic():
                 "original_file_path": "models/staging/model_a.sql",
                 "tags": ["staging"],
                 "resource_type": "model",
-                "depends_on": {
-                    "nodes": ["source.my_project.raw.users"]
-                }
+                "depends_on": {"nodes": ["source.my_project.raw.users"]},
             },
             "model.my_project.model_b": {
                 "name": "model_b",
@@ -31,15 +28,13 @@ def test_manifest_parser_basic():
                 "original_file_path": "models/marts/model_b.sql",
                 "tags": ["marts"],
                 "resource_type": "model",
-                "depends_on": {
-                    "nodes": ["model.my_project.model_a"]
-                }
-            }
+                "depends_on": {"nodes": ["model.my_project.model_a"]},
+            },
         }
     }
 
     # Write manifest to temp file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(manifest, f)
         manifest_path = f.name
 
@@ -76,7 +71,7 @@ def test_get_models_by_tag():
                 "original_file_path": "models/model_a.sql",
                 "tags": ["daily"],
                 "resource_type": "model",
-                "depends_on": {"nodes": []}
+                "depends_on": {"nodes": []},
             },
             "model.my_project.model_b": {
                 "name": "model_b",
@@ -85,12 +80,12 @@ def test_get_models_by_tag():
                 "original_file_path": "models/model_b.sql",
                 "tags": ["hourly"],
                 "resource_type": "model",
-                "depends_on": {"nodes": []}
-            }
+                "depends_on": {"nodes": []},
+            },
         }
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(manifest, f)
         manifest_path = f.name
 

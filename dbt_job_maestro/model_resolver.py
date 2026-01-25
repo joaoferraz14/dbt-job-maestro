@@ -72,11 +72,7 @@ class ModelResolver:
             models = models - excluded.models
 
         return ModelResolution(
-            models=models,
-            paths=paths,
-            tags=tags,
-            fqns=fqns,
-            invalid_fqns=invalid_fqns
+            models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns
         )
 
     def _resolve_item(self, item: Dict[str, Any]) -> ModelResolution:
@@ -95,7 +91,9 @@ class ModelResolver:
         invalid_fqns = set()
 
         if not isinstance(item, dict):
-            return ModelResolution(models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns)
+            return ModelResolution(
+                models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns
+            )
 
         method = item.get("method", "")
         value = item.get("value", "")
@@ -172,11 +170,7 @@ class ModelResolver:
             models = models - excluded.models
 
         return ModelResolution(
-            models=models,
-            paths=paths,
-            tags=tags,
-            fqns=fqns,
-            invalid_fqns=invalid_fqns
+            models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns
         )
 
     def _resolve_exclusions(self, exclude_def: Dict[str, Any]) -> ModelResolution:
@@ -195,7 +189,9 @@ class ModelResolver:
                 resolved = self._resolve_item(item)
                 models.update(resolved.models)
 
-        return ModelResolution(models=models, paths=set(), tags=set(), fqns=set(), invalid_fqns=set())
+        return ModelResolution(
+            models=models, paths=set(), tags=set(), fqns=set(), invalid_fqns=set()
+        )
 
     def _get_parents(self, model_name: str) -> Set[str]:
         """Get all parent models (dependencies).

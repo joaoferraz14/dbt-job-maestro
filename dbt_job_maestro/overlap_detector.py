@@ -2,11 +2,7 @@
 
 import logging
 from typing import Dict, List, Any
-from dbt_job_maestro.selector_types import (
-    SelectorPriority,
-    SelectorMetadata,
-    OverlapWarning
-)
+from dbt_job_maestro.selector_types import SelectorPriority, SelectorMetadata, OverlapWarning
 from dbt_job_maestro.model_resolver import ModelResolver
 
 logger = logging.getLogger(__name__)
@@ -19,18 +15,18 @@ class OverlapDetector:
     selectors and reports them with appropriate severity levels.
     """
 
-    def __init__(self, model_resolver: ModelResolver):
+    def __init__(self, model_resolver: ModelResolver, selector_prefix: str = "maestro"):
         """Initialize the overlap detector.
 
         Args:
             model_resolver: ModelResolver instance for extracting models
+            selector_prefix: Prefix used for auto-generated selectors (default: "maestro")
         """
         self.resolver = model_resolver
+        self.selector_prefix = selector_prefix
 
     def detect_overlaps(
-        self,
-        selectors: List[Dict[str, Any]],
-        selector_metadata: Dict[str, SelectorMetadata] = None
+        self, selectors: List[Dict[str, Any]], selector_metadata: Dict[str, SelectorMetadata] = None
     ) -> List[OverlapWarning]:
         """Detect overlapping models between selectors.
 
@@ -65,24 +61,19 @@ class OverlapDetector:
                     models_covered=resolution.models,
                     paths_used=resolution.paths,
                     tags_used=resolution.tags,
-                    fqns_used=resolution.fqns
+                    fqns_used=resolution.fqns,
                 )
 
             # Track which selectors contain each model
             for model in metadata.models_covered:
                 if model not in model_to_selectors:
                     model_to_selectors[model] = []
-                model_to_selectors[model].append(
-                    (selector_name, metadata.priority)
-                )
+                model_to_selectors[model].append((selector_name, metadata.priority))
 
         # Identify overlaps
         for model, selector_list in model_to_selectors.items():
             if len(selector_list) > 1:
-                warning = self._create_overlap_warning(
-                    model,
-                    selector_list
-                )
+                warning = self._create_overlap_warning(model, selector_list)
                 warnings.append(warning)
 
         return warnings
@@ -112,16 +103,9 @@ class OverlapDetector:
                 logger.warning(f"  ⚠️  {warning.message}")
 
         # Summary
-        logger.info(
-            f"\nOverlap Summary: {len(errors)} errors, "
-            f"{len(warnings_list)} warnings"
-        )
+        logger.info(f"\nOverlap Summary: {len(errors)} errors, " f"{len(warnings_list)} warnings")
 
-    def _create_overlap_warning(
-        self,
-        model_name: str,
-        selectors: List[tuple]
-    ) -> OverlapWarning:
+    def _create_overlap_warning(self, model_name: str, selectors: List[tuple]) -> OverlapWarning:
         """Create an overlap warning with appropriate severity.
 
         Args:
@@ -132,18 +116,12 @@ class OverlapDetector:
             OverlapWarning instance
         """
         # Check if any manual selectors are involved
-        has_manual = any(
-            priority == SelectorPriority.MANUAL
-            for _, priority in selectors
-        )
+        has_manual = any(priority == SelectorPriority.MANUAL for _, priority in selectors)
 
         # Determine severity
         if has_manual and len(selectors) > 1:
             # Manual selector overlap with others
-            manual_count = sum(
-                1 for _, p in selectors
-                if p == SelectorPriority.MANUAL
-            )
+            manual_count = sum(1 for _, p in selectors if p == SelectorPriority.MANUAL)
 
             if manual_count > 1:
                 # Multiple manual selectors - WARNING
@@ -173,10 +151,7 @@ class OverlapDetector:
             )
 
         return OverlapWarning(
-            model_name=model_name,
-            selectors=selectors,
-            severity=severity,
-            message=message
+            model_name=model_name, selectors=selectors, severity=severity, message=message
         )
 
     def _infer_priority(self, selector_def: Dict[str, Any]) -> SelectorPriority:
@@ -188,18 +163,17 @@ class OverlapDetector:
         Returns:
             SelectorPriority enum value
         """
-        name = selector_def.get("name", "")
-
         if self._is_manual(selector_def):
             return SelectorPriority.MANUAL
-        elif name.startswith("automatically_generated_selector_") or name.startswith("selector_"):
-            return SelectorPriority.AUTO_FQN
         else:
-            # Default to manual for unknown patterns
-            return SelectorPriority.MANUAL
+            # Selector starts with auto-generated prefix (e.g., "maestro_")
+            return SelectorPriority.AUTO_FQN
 
     def _is_manual(self, selector_def: Dict[str, Any]) -> bool:
         """Check if selector is manually created.
+
+        A selector is considered manual if it does NOT start with the
+        auto-generated selector prefix (e.g., "maestro_").
 
         Args:
             selector_def: Selector definition dictionary
@@ -208,16 +182,7 @@ class OverlapDetector:
             True if manually created, False otherwise
         """
         name = selector_def.get("name", "")
+        auto_prefix = f"{self.selector_prefix}_"
 
-        if name.startswith("manually_created_"):
-            return True
-
-        metadata = selector_def.get("metadata", {})
-        if metadata.get("manually_created", False):
-            return True
-
-        description = selector_def.get("description", "")
-        if "manually_created" in description.lower():
-            return True
-
-        return False
+        # Selector is manual if it does NOT start with the auto-generated prefix
+        return not name.startswith(auto_prefix)

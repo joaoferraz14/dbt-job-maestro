@@ -1,5 +1,6 @@
 """Generate dbt selectors from model dependencies"""
 
+import logging
 import os
 import yaml
 from typing import Any, Dict, List, Set, Tuple
@@ -8,6 +9,8 @@ from pathlib import Path
 from dbt_job_maestro.config import SelectorConfig
 from dbt_job_maestro.manifest_parser import ManifestParser
 from dbt_job_maestro.graph_builder import GraphBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class SelectorGenerator:
@@ -50,12 +53,53 @@ class SelectorGenerator:
         else:
             raise ValueError(f"Unknown selector method: {self.config.method}")
 
+    def _get_excluded_models(self) -> Set[str]:
+        """
+        Get models to exclude based on config's exclude_paths and exclude_models.
+
+        Returns:
+            Set of model names to exclude from selector generation
+        """
+        excluded = set()
+
+        # Exclude models matching exclude_paths
+        if self.config.exclude_paths:
+            for path_prefix in self.config.exclude_paths:
+                excluded.update(self.graph.group_by_path(path_prefix))
+
+        # Exclude models by name
+        if self.config.exclude_models:
+            for model_name in self.config.exclude_models:
+                if model_name in self.models:
+                    excluded.add(model_name)
+
+        return excluded
+
+    def _should_include_model(self, model_name: str, excluded_models: Set[str] = None) -> bool:
+        """
+        Check if a model should be included in selector generation.
+
+        Args:
+            model_name: Name of the model to check
+            excluded_models: Optional set of already excluded models
+
+        Returns:
+            True if model should be included, False otherwise
+        """
+        if excluded_models is None:
+            excluded_models = self._get_excluded_models()
+        return model_name not in excluded_models
+
     def _generate_fqn_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors using FQN (fully qualified names)"""
         selectors = []
 
+        # Get models to exclude from config (exclude_paths and exclude_models)
+        excluded_models = self._get_excluded_models()
+
         # Get manually generated models to exclude
         manually_generated_models = set()
+        manually_generated_models.update(excluded_models)
 
         if self.config.group_by_dependencies:
             # Find connected components
@@ -66,9 +110,7 @@ class SelectorGenerator:
 
             # Generate selector for each component
             for component in components:
-                filtered_component = [
-                    m for m in component if m not in manually_generated_models
-                ]
+                filtered_component = [m for m in component if m not in manually_generated_models]
 
                 if filtered_component:
                     selector = self._create_fqn_selector_for_component(filtered_component)
@@ -86,9 +128,7 @@ class SelectorGenerator:
             ]
 
             if filtered_independent:
-                independent_selector = self._create_independent_selector(
-                    list(filtered_independent)
-                )
+                independent_selector = self._create_independent_selector(list(filtered_independent))
                 selectors.append(independent_selector)
 
                 if self.config.include_freshness_selectors:
@@ -108,12 +148,15 @@ class SelectorGenerator:
     def _generate_path_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors based on directory paths"""
         selectors = []
+        excluded_models = self._get_excluded_models()
 
         # Get path prefixes at configured level
         path_prefixes = self.parser.get_path_prefixes(self.config.path_grouping_level)
 
         for path_prefix in sorted(path_prefixes):
             models = self.graph.group_by_path(path_prefix)
+            # Filter out excluded models
+            models = [m for m in models if m not in excluded_models]
 
             if len(models) >= self.config.min_models_per_selector:
                 selector_name = self._path_to_selector_name(path_prefix)
@@ -125,9 +168,7 @@ class SelectorGenerator:
 
                 # Add exclusions if configured
                 if self.config.exclude_tags:
-                    selector["definition"]["union"].append(
-                        self._create_tag_exclusion()
-                    )
+                    selector["definition"]["union"].append(self._create_tag_exclusion())
 
                 selectors.append(selector)
 
@@ -142,6 +183,7 @@ class SelectorGenerator:
     def _generate_tag_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors based on tags"""
         selectors = []
+        excluded_models = self._get_excluded_models()
 
         # Get all unique tags
         all_tags = self.parser.get_all_tags()
@@ -149,8 +191,15 @@ class SelectorGenerator:
         # Filter out excluded tags
         included_tags = all_tags - set(self.config.exclude_tags)
 
+        # Find models without any tags and warn about them
+        all_model_names = set(self.models.keys()) - excluded_models
+        tagged_models = set()
+
         for tag in sorted(included_tags):
             models = self.graph.group_by_tag(tag)
+            # Filter out excluded models
+            models = [m for m in models if m not in excluded_models]
+            tagged_models.update(models)
 
             if len(models) >= self.config.min_models_per_selector:
                 selector = {
@@ -162,10 +211,25 @@ class SelectorGenerator:
                 selectors.append(selector)
 
                 if self.config.include_freshness_selectors:
-                    freshness_selector = self._create_freshness_selector(
-                        f"tag_{tag}", models
-                    )
+                    freshness_selector = self._create_freshness_selector(f"tag_{tag}", models)
                     selectors.append(freshness_selector)
+
+        # Warn about untagged models
+        untagged_models = all_model_names - tagged_models
+        if untagged_models:
+            logger.warning(
+                f"\n⚠️  WARNING: {len(untagged_models)} model(s) have no tags and will NOT be "
+                f"included in any selector when using method='tag':"
+            )
+            for model in sorted(untagged_models)[:10]:
+                logger.warning(f"    - {model}")
+            if len(untagged_models) > 10:
+                logger.warning(f"    ... and {len(untagged_models) - 10} more")
+            logger.warning(
+                "\n💡 RECOMMENDATION: Use method='mixed' or method='fqn' to ensure all models "
+                "are included in selectors. The 'mixed' method combines manual selectors with "
+                "auto-generated FQN-based selectors for complete coverage."
+            )
 
         return selectors
 
@@ -182,7 +246,10 @@ class SelectorGenerator:
         Overlaps are detected and reported as warnings.
         """
         selectors = []
-        assigned_models = set()  # Track models assigned in automated selectors
+        # Start with models excluded by config (exclude_paths and exclude_models)
+        assigned_models = (
+            self._get_excluded_models()
+        )  # Track models assigned in automated selectors
 
         # Stage 0: Preserve manually created selectors (can have duplicates)
         manual_selectors = []
@@ -202,17 +269,20 @@ class SelectorGenerator:
 
         # Stage 1: Create FQN-based selectors (HIGHEST PRIORITY)
         if self.config.group_by_dependencies:
-            components = self.graph.find_connected_components(exclude_models=set())
+            # Pass excluded models to find_connected_components
+            components = self.graph.find_connected_components(exclude_models=assigned_models)
 
             for component in components:
-                if component and len(component) >= self.config.min_models_per_selector:
-                    selector = self._create_fqn_selector_for_component(component)
+                # Filter out excluded models from each component
+                filtered_component = [m for m in component if m not in assigned_models]
+                if filtered_component and len(filtered_component) >= self.config.min_models_per_selector:
+                    selector = self._create_fqn_selector_for_component(filtered_component)
                     selectors.append(selector)
-                    assigned_models.update(component)
+                    assigned_models.update(filtered_component)
 
                     if self.config.include_freshness_selectors:
                         freshness_selector = self._create_freshness_selector(
-                            selector["name"], component
+                            selector["name"], filtered_component
                         )
                         selectors.append(freshness_selector)
 
@@ -247,14 +317,24 @@ class SelectorGenerator:
                     )
                     selectors.append(freshness_selector)
 
-        # Detect and report overlaps
-        self._detect_and_report_overlaps(selectors, manual_model_assignments)
-
         return selectors
 
-    def _create_fqn_selector_for_component(
-        self, models: List[str]
-    ) -> Dict[str, Any]:
+    def _detect_and_report_overlaps(
+        self, selectors: List[Dict[str, Any]], manual_model_assignments: Dict[str, Any]
+    ) -> None:
+        """
+        Detect and report overlaps in selectors.
+
+        Note: Overlap detection is handled by the OverlapDetector class when using
+        SelectorOrchestrator. This method is kept for backwards compatibility.
+
+        Args:
+            selectors: List of all selector definitions
+            manual_model_assignments: Dict of model to manual selector assignments
+        """
+        pass  # Overlap detection is handled by OverlapDetector in SelectorOrchestrator
+
+    def _create_fqn_selector_for_component(self, models: List[str]) -> Dict[str, Any]:
         """Create a selector for a component using FQN method"""
         sorted_models = self._custom_sort(models)
         first_model = sorted_models[0]
@@ -355,9 +435,7 @@ class SelectorGenerator:
         """Create tag exclusion definition"""
         return {
             "exclude": {
-                "union": [
-                    {"method": "tag", "value": tag} for tag in self.config.exclude_tags
-                ]
+                "union": [{"method": "tag", "value": tag} for tag in self.config.exclude_tags]
             }
         }
 
@@ -426,7 +504,9 @@ class SelectorGenerator:
         for selector in existing:
             description = selector.get("description", "")
             # Check if selector is manually created
-            if "manually_created" in description.lower() or not description.startswith("Selector for"):
+            if "manually_created" in description.lower() or not description.startswith(
+                "Selector for"
+            ):
                 manual_selectors.append(selector)
                 # Extract models, paths, and tags from this selector
                 models, paths, tags = self._extract_selector_components(selector)
@@ -449,7 +529,9 @@ class SelectorGenerator:
         models, _, _ = self._extract_selector_components(selector)
         return models
 
-    def _extract_selector_components(self, selector: Dict[str, Any]) -> Tuple[Set[str], Set[str], Set[str]]:
+    def _extract_selector_components(
+        self, selector: Dict[str, Any]
+    ) -> Tuple[Set[str], Set[str], Set[str]]:
         """
         Extract models, paths, and tags from a selector definition.
 
@@ -503,7 +585,9 @@ class SelectorGenerator:
         path_models = set()
 
         # Use provided path_groups or fall back to config
-        paths_to_process = path_groups if path_groups is not None else self.config.include_path_groups
+        paths_to_process = (
+            path_groups if path_groups is not None else self.config.include_path_groups
+        )
 
         for path_group in paths_to_process:
             models = self.graph.group_by_path(path_group)
@@ -520,9 +604,7 @@ class SelectorGenerator:
 
                 # Add exclusions if configured
                 if self.config.exclude_tags:
-                    selector["definition"]["union"].append(
-                        self._create_tag_exclusion()
-                    )
+                    selector["definition"]["union"].append(self._create_tag_exclusion())
 
                 selectors.append(selector)
                 path_models.update(unassigned_models)

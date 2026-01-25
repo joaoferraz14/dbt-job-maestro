@@ -1,18 +1,10 @@
 """Comprehensive tests for refactored selector system."""
 
 import pytest
-import tempfile
 import os
 import yaml
 from unittest.mock import Mock
 
-from dbt_job_maestro.selector_types import (
-    SelectorPriority,
-    SelectorMetadata,
-    ModelResolution,
-    OverlapWarning
-)
-from dbt_job_maestro.base_selector import BaseSelector
 from dbt_job_maestro.model_resolver import ModelResolver
 from dbt_job_maestro.selectors.manual_selector import ManualSelector
 from dbt_job_maestro.selectors.fqn_selector import FQNSelector
@@ -33,7 +25,7 @@ def sample_models():
             "path": "staging/model_a.sql",
             "tags": ["staging", "daily"],
             "dependencies": [],
-            "sources": ["source.raw.users"]
+            "sources": ["source.raw.users"],
         },
         "model_b": {
             "name": "model_b",
@@ -41,7 +33,7 @@ def sample_models():
             "path": "staging/model_b.sql",
             "tags": ["staging"],
             "dependencies": ["model_a"],
-            "sources": []
+            "sources": [],
         },
         "model_c": {
             "name": "model_c",
@@ -49,8 +41,8 @@ def sample_models():
             "path": "marts/model_c.sql",
             "tags": ["marts", "daily"],
             "dependencies": ["model_b"],
-            "sources": []
-        }
+            "sources": [],
+        },
     }
 
 
@@ -87,7 +79,7 @@ class TestManualSelectorIdentification:
         selector_def = {
             "name": "manually_created_critical_revenue",
             "description": "Revenue models",
-            "definition": {"union": [{"method": "fqn", "value": "fct_revenue"}]}
+            "definition": {"union": [{"method": "fqn", "value": "fct_revenue"}]},
         }
 
         assert selector.is_manually_created(selector_def) is True
@@ -101,20 +93,21 @@ class TestManualSelectorIdentification:
             "name": "revenue_selector",
             "metadata": {"manually_created": True},
             "description": "Revenue models",
-            "definition": {"union": [{"method": "fqn", "value": "fct_revenue"}]}
+            "definition": {"union": [{"method": "fqn", "value": "fct_revenue"}]},
         }
 
         assert selector.is_manually_created(selector_def) is True
 
-    def test_description_based_detection(self, mock_parser, mock_graph):
-        """Test manual selector identification via description (fallback)."""
+    def test_non_prefixed_selector_is_manual(self, mock_parser, mock_graph):
+        """Test that selectors without maestro_ prefix are detected as manual."""
         config = SelectorConfig()
         selector = ManualSelector(mock_parser, mock_graph, config)
 
+        # Any selector without the maestro_ prefix is considered manual
         selector_def = {
             "name": "revenue_selector",
-            "description": "manually_created Revenue models",
-            "definition": {"union": [{"method": "fqn", "value": "fct_revenue"}]}
+            "description": "Revenue models selector",
+            "definition": {"union": [{"method": "fqn", "value": "fct_revenue"}]},
         }
 
         assert selector.is_manually_created(selector_def) is True
@@ -124,10 +117,11 @@ class TestManualSelectorIdentification:
         config = SelectorConfig()
         selector = ManualSelector(mock_parser, mock_graph, config)
 
+        # Auto-generated selectors use the maestro_ prefix
         selector_def = {
-            "name": "automatically_generated_selector_model_a",
+            "name": "maestro_model_a",
             "description": "Selector for models in component",
-            "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
         }
 
         assert selector.is_manually_created(selector_def) is False
@@ -145,9 +139,9 @@ class TestModelResolver:
             "definition": {
                 "union": [
                     {"method": "fqn", "value": "model_a"},
-                    {"method": "fqn", "value": "model_b"}
+                    {"method": "fqn", "value": "model_b"},
                 ]
-            }
+            },
         }
 
         resolution = resolver.resolve_selector(selector_def)
@@ -164,9 +158,7 @@ class TestModelResolver:
 
         selector_def = {
             "name": "test_selector",
-            "definition": {
-                "union": [{"method": "tag", "value": "staging"}]
-            }
+            "definition": {"union": [{"method": "tag", "value": "staging"}]},
         }
 
         resolution = resolver.resolve_selector(selector_def)
@@ -182,9 +174,7 @@ class TestModelResolver:
 
         selector_def = {
             "name": "test_selector",
-            "definition": {
-                "union": [{"method": "path", "value": "staging/"}]
-            }
+            "definition": {"union": [{"method": "path", "value": "staging/"}]},
         }
 
         resolution = resolver.resolve_selector(selector_def)
@@ -197,7 +187,7 @@ class TestModelResolver:
         """Test resolving models with exclusions."""
         mock_graph.group_by_tag.side_effect = [
             ["model_a", "model_b", "model_c"],  # staging tag
-            ["model_c"]  # marts tag for exclusion
+            ["model_c"],  # marts tag for exclusion
         ]
         resolver = ModelResolver(mock_parser, mock_graph)
 
@@ -205,10 +195,8 @@ class TestModelResolver:
             "name": "test_selector",
             "definition": {
                 "union": [{"method": "tag", "value": "staging"}],
-                "exclude": {
-                    "union": [{"method": "tag", "value": "marts"}]
-                }
-            }
+                "exclude": {"union": [{"method": "tag", "value": "marts"}]},
+            },
         }
 
         resolution = resolver.resolve_selector(selector_def)
@@ -226,15 +214,16 @@ class TestOverlapDetector:
         resolver = ModelResolver(mock_parser, mock_graph)
         detector = OverlapDetector(resolver)
 
+        # Manual selectors do NOT start with "maestro_" prefix
         selectors = [
             {
-                "name": "manually_created_revenue",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+                "name": "critical_revenue",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
-                "name": "manually_created_finance",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
-            }
+                "name": "critical_finance",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
+            },
         ]
 
         warnings = detector.detect_overlaps(selectors, {})
@@ -248,15 +237,16 @@ class TestOverlapDetector:
         resolver = ModelResolver(mock_parser, mock_graph)
         detector = OverlapDetector(resolver)
 
+        # Auto-generated selectors start with "maestro_" prefix
         selectors = [
             {
-                "name": "automatically_generated_selector_model_a",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+                "name": "maestro_model_a",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
-                "name": "automatically_generated_selector_model_b",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
-            }
+                "name": "maestro_model_b",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
+            },
         ]
 
         warnings = detector.detect_overlaps(selectors, {})
@@ -270,15 +260,16 @@ class TestOverlapDetector:
         resolver = ModelResolver(mock_parser, mock_graph)
         detector = OverlapDetector(resolver)
 
+        # Auto-generated selectors with no overlapping models
         selectors = [
             {
-                "name": "automatically_generated_selector_model_a",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+                "name": "maestro_model_a",
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
-                "name": "automatically_generated_selector_model_b",
-                "definition": {"union": [{"method": "fqn", "value": "model_b"}]}
-            }
+                "name": "maestro_model_b",
+                "definition": {"union": [{"method": "fqn", "value": "model_b"}]},
+            },
         ]
 
         warnings = detector.detect_overlaps(selectors, {})
@@ -297,9 +288,9 @@ class TestFQNSelector:
         selectors = selector.generate(excluded_models=set())
 
         assert len(selectors) > 0
-        # Check that selector uses FQN method
+        # Check that selector uses maestro_ prefix and FQN method
         first_selector = selectors[0]
-        assert "automatically_generated_selector" in first_selector["name"]
+        assert first_selector["name"].startswith("maestro_")
         assert "union" in first_selector["definition"]
 
     def test_excluded_models_not_generated(self, mock_parser, mock_graph):
@@ -320,9 +311,7 @@ class TestSelectorOrchestrator:
     def test_mixed_mode_priority_system(self, mock_parser, mock_graph):
         """Test that mixed mode generates selectors with correct priority."""
         config = SelectorConfig(
-            method="mixed",
-            group_by_dependencies=True,
-            preserve_manual_selectors=True
+            method="mixed", group_by_dependencies=True, preserve_manual_selectors=True
         )
 
         orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
@@ -333,19 +322,16 @@ class TestSelectorOrchestrator:
 
     def test_fqn_only_mode(self, mock_parser, mock_graph):
         """Test FQN-only mode generates only FQN selectors."""
-        config = SelectorConfig(
-            method="fqn",
-            group_by_dependencies=True
-        )
+        config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
         orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
         selectors = orchestrator.generate_selectors()
 
         assert len(selectors) > 0
-        # All selectors should be FQN-based
+        # All selectors should be auto-generated with maestro_ prefix
         for selector in selectors:
             if not selector["name"].startswith("freshness_"):
-                assert "automatically_generated" in selector["name"] or selector["name"].startswith("selector_")
+                assert selector["name"].startswith("maestro_")
 
 
 class TestManualSelectorPreservation:
@@ -358,7 +344,7 @@ class TestManualSelectorPreservation:
         manual_selector = {
             "name": "manually_created_critical",
             "description": "Critical models",
-            "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
         }
 
         with open(selectors_file, "w") as f:
@@ -369,16 +355,15 @@ class TestManualSelectorPreservation:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(
-                method="mixed",
-                preserve_manual_selectors=True
-            )
+            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
 
             # Should include the manual selector
-            manual_names = [s["name"] for s in selectors if s["name"].startswith("manually_created_")]
+            manual_names = [
+                s["name"] for s in selectors if s["name"].startswith("manually_created_")
+            ]
             assert "manually_created_critical" in manual_names
 
         finally:
@@ -395,7 +380,7 @@ class TestIntegration:
         manual_selector = {
             "name": "manually_created_revenue",
             "description": "Revenue models",
-            "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+            "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
         }
 
         with open(selectors_file, "w") as f:
@@ -406,9 +391,7 @@ class TestIntegration:
             os.chdir(tmp_path)
 
             config = SelectorConfig(
-                method="mixed",
-                group_by_dependencies=True,
-                preserve_manual_selectors=True
+                method="mixed", group_by_dependencies=True, preserve_manual_selectors=True
             )
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
@@ -419,7 +402,9 @@ class TestIntegration:
 
             # Manual selector should be first (highest priority)
             manual_selectors = [s for s in selectors if s["name"].startswith("manually_created_")]
-            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_selectors = [
+                s for s in selectors if s["name"].startswith("automatically_generated_")
+            ]
 
             assert len(manual_selectors) >= 1
             assert len(auto_selectors) >= 0  # May be 0 if all models covered by manual
@@ -439,13 +424,13 @@ class TestManualSelectorOverlaps:
             {
                 "name": "manually_created_revenue",
                 "description": "Revenue models",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
                 "name": "manually_created_finance",
                 "description": "Finance models",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
-            }
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
+            },
         ]
 
         with open(selectors_file, "w") as f:
@@ -455,16 +440,15 @@ class TestManualSelectorOverlaps:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(
-                method="mixed",
-                preserve_manual_selectors=True
-            )
+            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
 
             # Both manual selectors should be preserved
-            manual_names = [s["name"] for s in selectors if s["name"].startswith("manually_created_")]
+            manual_names = [
+                s["name"] for s in selectors if s["name"].startswith("manually_created_")
+            ]
             assert "manually_created_revenue" in manual_names
             assert "manually_created_finance" in manual_names
             assert len(manual_names) == 2
@@ -479,13 +463,13 @@ class TestManualSelectorOverlaps:
             {
                 "name": "manually_created_revenue",
                 "description": "Revenue models",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
                 "name": "manually_created_finance",
                 "description": "Finance models",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
-            }
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
+            },
         ]
 
         with open(selectors_file, "w") as f:
@@ -512,7 +496,9 @@ class TestManualSelectorOverlaps:
 class TestManualSelectorPersistence:
     """Test that manual selectors are never deleted during regeneration."""
 
-    def test_manual_selectors_never_deleted_on_regeneration(self, mock_parser, mock_graph, tmp_path):
+    def test_manual_selectors_never_deleted_on_regeneration(
+        self, mock_parser, mock_graph, tmp_path
+    ):
         """Test that manual selectors persist across multiple regenerations."""
         selectors_file = tmp_path / "selectors.yml"
 
@@ -521,13 +507,13 @@ class TestManualSelectorPersistence:
             {
                 "name": "manually_created_critical",
                 "description": "Critical models",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
                 "name": "manually_created_legacy",
                 "description": "Legacy models",
-                "definition": {"union": [{"method": "path", "value": "staging/"}]}
-            }
+                "definition": {"union": [{"method": "path", "value": "staging/"}]},
+            },
         ]
 
         with open(selectors_file, "w") as f:
@@ -550,7 +536,9 @@ class TestManualSelectorPersistence:
             selectors2 = orchestrator2.generate_selectors()
 
             # Both manual selectors should still be present
-            manual_names = [s["name"] for s in selectors2 if s["name"].startswith("manually_created_")]
+            manual_names = [
+                s["name"] for s in selectors2 if s["name"].startswith("manually_created_")
+            ]
             assert "manually_created_critical" in manual_names
             assert "manually_created_legacy" in manual_names
             assert len(manual_names) == 2
@@ -572,13 +560,13 @@ class TestManualSelectorPersistence:
             {
                 "name": "manually_created_critical",
                 "description": "Critical models",
-                "definition": {"union": [{"method": "fqn", "value": "model_a"}]}
+                "definition": {"union": [{"method": "fqn", "value": "model_a"}]},
             },
             {
                 "name": "automatically_generated_selector_model_b",
                 "description": "Auto generated",
-                "definition": {"union": [{"method": "fqn", "value": "model_b"}]}
-            }
+                "definition": {"union": [{"method": "fqn", "value": "model_b"}]},
+            },
         ]
 
         with open(selectors_file, "w") as f:
@@ -595,7 +583,9 @@ class TestManualSelectorPersistence:
             # Manual selector should be preserved exactly
             manual_selectors = [s for s in selectors if s["name"] == "manually_created_critical"]
             assert len(manual_selectors) == 1
-            assert manual_selectors[0]["definition"] == {"union": [{"method": "fqn", "value": "model_a"}]}
+            assert manual_selectors[0]["definition"] == {
+                "union": [{"method": "fqn", "value": "model_a"}]
+            }
 
         finally:
             os.chdir(original_dir)
@@ -615,9 +605,9 @@ class TestManualSelectorModelExclusion:
             "definition": {
                 "union": [
                     {"method": "fqn", "value": "model_a"},
-                    {"method": "fqn", "value": "model_b"}
+                    {"method": "fqn", "value": "model_b"},
                 ]
-            }
+            },
         }
 
         with open(selectors_file, "w") as f:
@@ -632,7 +622,9 @@ class TestManualSelectorModelExclusion:
             selectors = orchestrator.generate_selectors()
 
             # Extract all models from auto-generated selectors
-            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_selectors = [
+                s for s in selectors if s["name"].startswith("automatically_generated_")
+            ]
             auto_models = set()
             resolver = ModelResolver(mock_parser, mock_graph)
 
@@ -658,11 +650,7 @@ class TestManualSelectorModelExclusion:
         manual_selector = {
             "name": "manually_created_staging",
             "description": "Staging models",
-            "definition": {
-                "union": [
-                    {"method": "tag", "value": "staging"}
-                ]
-            }
+            "definition": {"union": [{"method": "tag", "value": "staging"}]},
         }
 
         with open(selectors_file, "w") as f:
@@ -677,7 +665,9 @@ class TestManualSelectorModelExclusion:
             selectors = orchestrator.generate_selectors()
 
             # Extract all models from auto-generated selectors
-            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_selectors = [
+                s for s in selectors if s["name"].startswith("automatically_generated_")
+            ]
             auto_models = set()
             resolver = ModelResolver(mock_parser, mock_graph)
 
@@ -703,11 +693,7 @@ class TestManualSelectorModelExclusion:
         manual_selector = {
             "name": "manually_created_legacy",
             "description": "Legacy models",
-            "definition": {
-                "union": [
-                    {"method": "path", "value": "staging/legacy"}
-                ]
-            }
+            "definition": {"union": [{"method": "path", "value": "staging/legacy"}]},
         }
 
         with open(selectors_file, "w") as f:
@@ -722,7 +708,9 @@ class TestManualSelectorModelExclusion:
             selectors = orchestrator.generate_selectors()
 
             # Extract all models from auto-generated selectors
-            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_selectors = [
+                s for s in selectors if s["name"].startswith("automatically_generated_")
+            ]
             auto_models = set()
             resolver = ModelResolver(mock_parser, mock_graph)
 
@@ -737,7 +725,9 @@ class TestManualSelectorModelExclusion:
         finally:
             os.chdir(original_dir)
 
-    def test_mixed_methods_manual_selector_excludes_all_models(self, mock_parser, mock_graph, tmp_path):
+    def test_mixed_methods_manual_selector_excludes_all_models(
+        self, mock_parser, mock_graph, tmp_path
+    ):
         """Test that manual selector using multiple methods excludes all referenced models."""
         # Setup mocks
         mock_graph.group_by_tag.return_value = ["model_a"]
@@ -753,9 +743,9 @@ class TestManualSelectorModelExclusion:
                 "union": [
                     {"method": "fqn", "value": "model_c"},
                     {"method": "tag", "value": "critical"},
-                    {"method": "path", "value": "marts/revenue"}
+                    {"method": "path", "value": "marts/revenue"},
                 ]
-            }
+            },
         }
 
         with open(selectors_file, "w") as f:
@@ -770,7 +760,9 @@ class TestManualSelectorModelExclusion:
             selectors = orchestrator.generate_selectors()
 
             # Extract all models from auto-generated selectors
-            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_selectors = [
+                s for s in selectors if s["name"].startswith("automatically_generated_")
+            ]
             auto_models = set()
             resolver = ModelResolver(mock_parser, mock_graph)
 
@@ -822,11 +814,14 @@ class TestEdgeCases:
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
 
-            # Should have only auto-generated selectors
-            manual_selectors = [s for s in selectors if s["name"].startswith("manually_created_")]
-            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            # All selectors should be auto-generated (maestro_ prefix)
+            # since there's no existing selectors.yml with manual selectors
+            for selector in selectors:
+                if not selector["name"].startswith("freshness_"):
+                    assert selector["name"].startswith("maestro_")
 
-            assert len(manual_selectors) == 0
+            # Should have at least one auto-generated selector
+            auto_selectors = [s for s in selectors if s["name"].startswith("maestro_")]
             assert len(auto_selectors) > 0
 
         finally:
@@ -840,11 +835,7 @@ class TestEdgeCases:
         manual_selector = {
             "name": "manually_created_test",
             "description": "Test selector",
-            "definition": {
-                "union": [
-                    {"method": "fqn", "value": "nonexistent_model"}
-                ]
-            }
+            "definition": {"union": [{"method": "fqn", "value": "nonexistent_model"}]},
         }
 
         with open(selectors_file, "w") as f:
@@ -859,13 +850,17 @@ class TestEdgeCases:
             selectors = orchestrator.generate_selectors()
 
             # Manual selector should still be preserved (even if model doesn't exist)
-            manual_names = [s["name"] for s in selectors if s["name"].startswith("manually_created_")]
+            manual_names = [
+                s["name"] for s in selectors if s["name"].startswith("manually_created_")
+            ]
             assert "manually_created_test" in manual_names
 
         finally:
             os.chdir(original_dir)
 
-    def test_all_models_in_manual_selectors_no_auto_generated(self, mock_parser, mock_graph, tmp_path):
+    def test_all_models_in_manual_selectors_no_auto_generated(
+        self, mock_parser, mock_graph, tmp_path
+    ):
         """Test that if all models are in manual selectors, no auto selectors are generated."""
         selectors_file = tmp_path / "selectors.yml"
 
@@ -877,9 +872,9 @@ class TestEdgeCases:
                 "union": [
                     {"method": "fqn", "value": "model_a"},
                     {"method": "fqn", "value": "model_b"},
-                    {"method": "fqn", "value": "model_c"}
+                    {"method": "fqn", "value": "model_c"},
                 ]
-            }
+            },
         }
 
         with open(selectors_file, "w") as f:
@@ -895,7 +890,9 @@ class TestEdgeCases:
 
             # Should have manual selector but no auto-generated selectors
             manual_selectors = [s for s in selectors if s["name"].startswith("manually_created_")]
-            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_selectors = [
+                s for s in selectors if s["name"].startswith("automatically_generated_")
+            ]
 
             assert len(manual_selectors) == 1
             assert len(auto_selectors) == 0
@@ -911,11 +908,7 @@ class TestEdgeCases:
         manual_selector = {
             "name": "manually_created_with_parents",
             "description": "Models with sources",
-            "definition": {
-                "union": [
-                    {"method": "fqn", "value": "model_a", "parents": True}
-                ]
-            }
+            "definition": {"union": [{"method": "fqn", "value": "model_a", "parents": True}]},
         }
 
         with open(selectors_file, "w") as f:
@@ -930,7 +923,9 @@ class TestEdgeCases:
             selectors = orchestrator.generate_selectors()
 
             # model_a should be excluded from auto-generated selectors
-            auto_selectors = [s for s in selectors if s["name"].startswith("automatically_generated_")]
+            auto_selectors = [
+                s for s in selectors if s["name"].startswith("automatically_generated_")
+            ]
             auto_models = set()
             resolver = ModelResolver(mock_parser, mock_graph)
 

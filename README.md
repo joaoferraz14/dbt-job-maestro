@@ -17,6 +17,7 @@
 - [Configuration File Usage](#configuration-file-usage)
 - [Selector Generation Methods](#selector-generation-methods)
 - [Job Generation & Orchestration](#job-generation--orchestration)
+- [CI/CD Integration](#cicd-integration)
 - [Advanced Usage](#advanced-usage)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
@@ -110,20 +111,16 @@ maestro uses a simple naming convention to distinguish selector types:
 
 maestro can generate dbt Cloud job definitions compatible with [dbt-jobs-as-code](https://github.com/dbt-labs/dbt-jobs-as-code):
 
-| Selector Type | Default Job Behavior | Enable Job Generation |
+| Selector Type | Default Job Behavior | Disable Job Generation |
 |--------------|---------------------|----------------------|
-| `maestro_*` selectors | ❌ **Excluded (explicit opt-in required)** | Set `include_maestro_selectors_in_jobs: true` |
-| Manual selectors | ❌ **Excluded (explicit opt-in required)** | Set `include_manual_selectors_in_jobs: true` |
-
-**Why explicit opt-in?**
-- **Safety first**: Prevents accidental dbt Cloud job creation via dbt-jobs-as-code
-- **Team control**: Orchestration config must be perfect before deployment
-- **Flexibility**: Choose exactly which selectors become automated jobs
+| `maestro_*` selectors | ✅ **Included** (default) | Set `include_maestro_selectors_in_jobs: false` |
+| Manual selectors | ✅ **Included** (default) | Set `include_manual_selectors_in_jobs: false` |
 
 **Common patterns:**
-- **Automated maestro jobs**: Set `include_maestro_selectors_in_jobs: true` (most common)
-- **All selectors as jobs**: Set both flags to `true`
-- **Manual management only**: Keep both flags `false` (default), manage all jobs in dbt Cloud UI
+- **All selectors as jobs**: Keep both flags `true` (default)
+- **Maestro jobs only**: Set `include_manual_selectors_in_jobs: false`
+- **Manual jobs only**: Set `include_maestro_selectors_in_jobs: false`
+- **No jobs generated**: Set both flags to `false`, manage all jobs in dbt Cloud UI
 
 ---
 
@@ -147,7 +144,8 @@ maestro generate --method tag        # Tag-based
 
 # Exclude models/tags/paths
 maestro generate --exclude-tag deprecated --exclude-tag archived
-maestro generate --exclude-model temp_model
+maestro generate --exclude-path models/staging/legacy --exclude-path models/temp
+maestro generate --exclude-model temp_model --exclude-model debug_model
 
 # Use configuration file
 maestro generate --config maestro-config.yml
@@ -162,8 +160,11 @@ maestro generate --config maestro-config.yml --method fqn
 - `--output, -o`: Output file (default: `selectors.yml`)
 - `--method`: Generation method (`fqn`, `path`, `tag`, `mixed`)
 - `--exclude-tag`: Tags to exclude (can specify multiple)
+- `--exclude-path`: Paths to exclude (can specify multiple, e.g., `models/staging/legacy`)
 - `--exclude-model`: Models to exclude (can specify multiple)
+- `--path-level`: Directory level for path grouping (default: 1)
 - `--min-models`: Minimum models per selector (default: 1)
+- `--no-freshness`: Disable freshness selector generation
 
 ### `maestro generate-jobs`
 
@@ -212,6 +213,31 @@ maestro init --output maestro-config.yml
 ```
 
 Generates a fully-commented configuration file you can customize.
+
+### `maestro check`
+
+Validate deployment requirements before deploying to dbt Cloud.
+
+```bash
+# Basic check
+maestro check
+
+# Check with config file (uses deployment.deploy_branch setting)
+maestro check --config maestro-config.yml
+
+# Check specific dbt project directory
+maestro check --dbt-project ./my-dbt-project
+```
+
+Checks:
+- dbt-jobs-as-code package is installed
+- Current git branch matches deployment branch
+- packages.yml configuration (optional)
+- Required files exist (selectors.yml, jobs.yml)
+
+**Options:**
+- `--config, -c`: Path to configuration YAML file
+- `--dbt-project, -p`: Path to dbt project directory (default: current directory)
 
 ---
 
@@ -338,27 +364,18 @@ job:
   job_name_prefix: dbt      # Job names: {prefix}_{selector_name}
 
   # -------------------------------------------------------------------------
-  # SELECTOR INCLUSION CONTROL (Explicit Opt-In Required)
+  # SELECTOR INCLUSION CONTROL
   # -------------------------------------------------------------------------
 
   # Whether to create jobs for auto-generated selectors (maestro_ prefix)
-  # ❌ Default: false - EXPLICIT OPT-IN REQUIRED
-  # ✅ Set to true to enable dbt-jobs-as-code deployment for auto-generated selectors
-  #
-  # IMPORTANT: Must explicitly set to true to generate jobs
-  include_maestro_selectors_in_jobs: false
+  # ✅ Default: true - jobs are generated for all maestro_ selectors
+  # Set to false to exclude auto-generated selectors from job generation
+  include_maestro_selectors_in_jobs: true
 
   # Whether to create jobs for manual selectors (non-maestro_ prefix)
-  # ❌ Default: false - EXPLICIT OPT-IN REQUIRED
-  # ✅ Set to true to enable dbt-jobs-as-code deployment for manual selectors
-  #
-  # IMPORTANT: Must explicitly set to true to generate jobs
-  include_manual_selectors_in_jobs: false
-
-  # Why explicit opt-in?
-  # - Prevents accidental job creation via dbt-jobs-as-code API
-  # - Ensures orchestration config is perfect before deployment
-  # - Teams have full control over what becomes automated
+  # ✅ Default: true - jobs are generated for all manual selectors
+  # Set to false to exclude manual selectors from job generation
+  include_manual_selectors_in_jobs: true
 
   # Selector prefix for identifying auto-generated selectors
   # Should match selector.selector_prefix (synced automatically from config)
@@ -580,25 +597,23 @@ git diff selectors.yml
 
 maestro generates dbt Cloud job definitions compatible with [dbt-jobs-as-code](https://github.com/dbt-labs/dbt-jobs-as-code).
 
-### Job Inclusion (Explicit Opt-In Required)
+### Job Inclusion
 
-| Selector Type | Included in jobs.yml? | To Enable |
+| Selector Type | Included in jobs.yml? | To Disable |
 |--------------|----------------------|-----------|
-| `maestro_*` | ❌ **No** (default) | Set `include_maestro_selectors_in_jobs: true` |
-| Manual | ❌ **No** (default) | Set `include_manual_selectors_in_jobs: true` |
+| `maestro_*` | ✅ **Yes** (default) | Set `include_maestro_selectors_in_jobs: false` |
+| Manual | ✅ **Yes** (default) | Set `include_manual_selectors_in_jobs: false` |
 
-**Both selector types require explicit opt-in** to prevent accidental job creation.
-
-**Enable job generation in config:**
+**Customize job generation in config:**
 ```yaml
 job:
-  # Enable job generation for auto-generated selectors (most common)
+  # Default: true - generates jobs for auto-generated selectors
   include_maestro_selectors_in_jobs: true
 
-  # Enable job generation for manual selectors (optional)
+  # Default: true - generates jobs for manual selectors
   include_manual_selectors_in_jobs: true
 
-  # Keep both false (default) to manage all jobs manually in dbt Cloud
+  # Set both to false to manage all jobs manually in dbt Cloud
 ```
 
 ### Orchestration Modes
@@ -750,6 +765,185 @@ dbt-jobs-as-code sync jobs.yml
 
 ---
 
+## CI/CD Integration
+
+### GitHub Actions Workflow
+
+Here's a complete GitHub Actions workflow that automates selector and job generation when your dbt project changes:
+
+```yaml
+# .github/workflows/maestro-sync.yml
+name: Sync dbt Selectors and Jobs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'models/**'
+      - 'dbt_project.yml'
+      - 'maestro-config.yml'
+  workflow_dispatch:  # Allow manual triggers
+
+env:
+  DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}
+
+jobs:
+  generate-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install dbt-core dbt-postgres  # or your adapter
+          pip install dbt-job-maestro
+          pip install dbt-jobs-as-code
+
+      - name: Compile dbt project
+        run: dbt compile
+
+      - name: Generate selectors
+        run: maestro generate --config maestro-config.yml
+
+      - name: Generate jobs
+        run: maestro generate-jobs --config maestro-config.yml
+
+      - name: Deploy jobs to dbt Cloud
+        run: dbt-jobs-as-code sync jobs.yml
+        env:
+          DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}
+
+      - name: Commit generated files
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update selectors and jobs [skip ci]"
+          file_pattern: "selectors.yml jobs.yml"
+```
+
+### Workflow Variants
+
+#### PR Preview (No Deploy)
+
+Generate selectors on PRs for review without deploying:
+
+```yaml
+# .github/workflows/maestro-preview.yml
+name: Preview Selector Changes
+
+on:
+  pull_request:
+    paths:
+      - 'models/**'
+      - 'dbt_project.yml'
+      - 'maestro-config.yml'
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install dbt-core dbt-postgres
+          pip install dbt-job-maestro
+
+      - name: Compile dbt project
+        run: dbt compile
+
+      - name: Generate selectors (preview)
+        run: maestro generate --config maestro-config.yml
+
+      - name: Show selector diff
+        run: git diff selectors.yml || echo "No changes to selectors"
+
+      - name: Upload selectors artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: selectors-preview
+          path: selectors.yml
+```
+
+#### Scheduled Sync
+
+Run maestro on a schedule to keep jobs in sync:
+
+```yaml
+# .github/workflows/maestro-scheduled.yml
+name: Scheduled Maestro Sync
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6 AM
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install dbt-core dbt-postgres
+          pip install dbt-job-maestro
+          pip install dbt-jobs-as-code
+
+      - name: Compile and generate
+        run: |
+          dbt compile
+          maestro generate --config maestro-config.yml
+          maestro generate-jobs --config maestro-config.yml
+
+      - name: Deploy to dbt Cloud
+        run: dbt-jobs-as-code sync jobs.yml
+        env:
+          DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}
+
+      - name: Create PR if changes
+        uses: peter-evans/create-pull-request@v6
+        with:
+          title: "chore: weekly maestro sync"
+          commit-message: "chore: update selectors and jobs"
+          branch: maestro-sync
+          delete-branch: true
+```
+
+### Required Secrets
+
+Configure these secrets in your GitHub repository settings:
+
+| Secret | Description |
+|--------|-------------|
+| `DBT_CLOUD_API_TOKEN` | Your dbt Cloud API token (Service Account recommended) |
+
+### Tips for CI/CD
+
+1. **Use a config file**: Always use `--config maestro-config.yml` for reproducible builds
+2. **Pin versions**: Pin dbt-job-maestro version in requirements.txt
+3. **Skip CI on commits**: Use `[skip ci]` in auto-commit messages to avoid infinite loops
+4. **Separate preview from deploy**: Use PRs for preview, main branch for deployment
+5. **Cache dbt artifacts**: Consider caching `target/` directory for faster runs
+
+---
+
 ## Advanced Usage
 
 ### Example: E-commerce Project
@@ -784,10 +978,10 @@ job:
   orchestration_mode: simple
   cron_schedule: "0 6 * * *"
 
-  # EXPLICIT OPT-IN: Enable maestro selectors → jobs
+  # Enable maestro selectors → jobs (default: true)
   include_maestro_selectors_in_jobs: true
 
-  # Manual selectors NOT included (manage in dbt Cloud UI)
+  # Disable manual selectors from jobs (manage in dbt Cloud UI)
   include_manual_selectors_in_jobs: false
 ```
 
@@ -946,32 +1140,32 @@ Use descriptive names WITHOUT `maestro_` prefix:
 
 ### 4. Job Management Strategy
 
-Choose based on your needs (both default to `false` - explicit opt-in required):
+Choose based on your needs (both default to `true`):
 
-**Option A: Hybrid (Recommended)**
+**Option A: Full Automation (Default)**
+- All selectors → Automated jobs
+```yaml
+job:
+  include_maestro_selectors_in_jobs: true   # Default
+  include_manual_selectors_in_jobs: true    # Default
+```
+
+**Option B: Hybrid**
 - Maestro selectors → Automated jobs ✅
 - Manual selectors → dbt Cloud UI ❌
 ```yaml
 job:
-  include_maestro_selectors_in_jobs: true   # Explicit opt-in
-  include_manual_selectors_in_jobs: false   # Keep default
+  include_maestro_selectors_in_jobs: true   # Default
+  include_manual_selectors_in_jobs: false   # Override default
 ```
 
-**Option B: Full Automation**
-- All selectors → Automated jobs
-```yaml
-job:
-  include_maestro_selectors_in_jobs: true   # Explicit opt-in
-  include_manual_selectors_in_jobs: true    # Explicit opt-in
-```
-
-**Option C: Manual Management (Default)**
+**Option C: Manual Management**
 - All jobs managed in dbt Cloud UI
 - No job generation via dbt-jobs-as-code
 ```yaml
 job:
-  include_maestro_selectors_in_jobs: false  # Default
-  include_manual_selectors_in_jobs: false   # Default
+  include_maestro_selectors_in_jobs: false  # Override default
+  include_manual_selectors_in_jobs: false   # Override default
 ```
 
 ### 5. Regeneration Workflow
@@ -1039,19 +1233,19 @@ dbt list --selector SELECTOR_NAME
 
 ### "Jobs not generating"
 
-**Cause:** Job inclusion defaults are `false` - explicit opt-in required
+**Cause:** Job inclusion flags may be set to `false` in config
 
-**Fix:** Enable job generation in config:
+**Fix:** Check job generation settings in config:
 ```yaml
 job:
-  # For maestro_ selectors (REQUIRED - defaults to false)
+  # Default: true - set to false to exclude maestro_ selectors
   include_maestro_selectors_in_jobs: true
 
-  # For manual selectors (REQUIRED - defaults to false)
+  # Default: true - set to false to exclude manual selectors
   include_manual_selectors_in_jobs: true
 ```
 
-**Note:** Both settings default to `false` to prevent accidental job creation.
+**Note:** Both settings default to `true`. If jobs aren't generating, check your config file for explicit `false` values.
 
 ### "Path selector not matching models"
 

@@ -65,24 +65,13 @@ Combines multiple methods with NO DUPLICATES using a priority system:
 
 **Priority Order:**
 1. **Manual Selectors** - Preserved from existing `selectors.yml`
-   - Identified by description containing "manually_created"
+   - Identified by NOT having the `maestro_` prefix (configurable via `selector_prefix`)
+   - Examples: `critical_revenue`, `my_custom_selector` → Manual (preserved)
+   - Examples: `maestro_stg_customers` → Auto-generated (replaced on regeneration)
    - Models in manual selectors are excluded from automated generation
-   - **Smart exclusion:** Paths and tags used in manual selectors are also excluded
-     - If manual selector uses `method: path`, that path won't get auto-generated selector
-     - If manual selector uses `method: tag`, that tag won't get auto-generated selector
 
-2. **Path Groups** - From `include_path_groups` config
-   - Specific paths get dedicated selectors (e.g., `models/staging/legacy`)
-   - Models in these paths excluded from subsequent grouping
-   - Paths already used in manual selectors are automatically skipped
-
-3. **Tag-Based** - Models with tags
-   - Only unassigned models (not in manual or path selectors)
-   - Creates one selector per tag
-   - Tags already used in manual selectors are automatically skipped
-
-4. **FQN-Based** - Remaining models
-   - Dependency analysis on models not yet assigned
+2. **FQN-Based** - Remaining models
+   - Dependency analysis on models not yet assigned to manual selectors
    - Groups by connected components
 
 **Example:**
@@ -143,9 +132,9 @@ deployment:
 - Verifies it's in packages.yml
 - Fails fast if requirements not met
 
-### 3. Manual Override Protection
-- Jobs marked `manually_created` are preserved
-- Won't overwrite custom configurations
+### 3. Manual Selector Protection
+- Selectors NOT starting with `maestro_` prefix are preserved
+- Won't overwrite custom selector configurations during regeneration
 
 ## Files Generated
 
@@ -164,17 +153,28 @@ selectors:
 ```yaml
 jobs:
   dbt_stg_customers:
-    identifier: dbt_stg_customers
-    name: dbt-maestro_stg_customers
     account_id: 12345
-    project_id: 67890
+    dbt_version: null
+    deferring_job_definition_id: null
     environment_id: 11111
     execute_steps:
       - dbt build --selector maestro_stg_customers
-    triggers:
-      schedule: true
+    execution:
+      timeout_seconds: 0
+    generate_docs: false
+    name: dbt-maestro_stg_customers
+    project_id: 67890
+    run_generate_sources: false
     schedule:
       cron: "0 */6 * * *"
+    settings:
+      target_name: prod
+      threads: 8
+    state: 1
+    triggers:
+      git_provider_webhook: false
+      github_webhook: false
+      schedule: true
 ```
 
 ## CLI Commands
