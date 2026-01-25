@@ -39,10 +39,7 @@ def fetch_job_ids(account_id: int, project_id: int = None, api_token: str = None
                 "Set it with: export DBT_API_TOKEN='your_token'"
             )
 
-    headers = {
-        "Authorization": f"Token {api_token}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Token {api_token}", "Content-Type": "application/json"}
 
     # Fetch jobs from dbt Cloud API
     url = f"https://cloud.getdbt.com/api/v2/accounts/{account_id}/jobs/"
@@ -76,26 +73,20 @@ def main():
     parser = argparse.ArgumentParser(
         description="Fetch dbt Cloud job IDs for cascade mode configuration"
     )
-    parser.add_argument(
-        "--account-id",
-        type=int,
-        required=True,
-        help="dbt Cloud account ID"
-    )
+    parser.add_argument("--account-id", type=int, required=True, help="dbt Cloud account ID")
     parser.add_argument(
         "--project-id",
         type=int,
-        help="dbt Cloud project ID (optional, filters jobs to this project)"
+        help="dbt Cloud project ID (optional, filters jobs to this project)",
     )
     parser.add_argument(
-        "--api-token",
-        help="dbt Cloud API token (defaults to DBT_API_TOKEN env var)"
+        "--api-token", help="dbt Cloud API token (defaults to DBT_API_TOKEN env var)"
     )
     parser.add_argument(
         "--format",
         choices=["yaml", "json", "table"],
         default="yaml",
-        help="Output format (default: yaml)"
+        help="Output format (default: yaml)",
     )
 
     args = parser.parse_args()
@@ -105,9 +96,7 @@ def main():
         print(f"Filtering to project {args.project_id}...", file=sys.stderr)
 
     job_mapping = fetch_job_ids(
-        account_id=args.account_id,
-        project_id=args.project_id,
-        api_token=args.api_token
+        account_id=args.account_id, project_id=args.project_id, api_token=args.api_token
     )
 
     if not job_mapping:
@@ -125,6 +114,7 @@ def main():
             print(f"  {job_name}: {job_id}")
     elif args.format == "json":
         import json
+
         print(json.dumps(job_mapping, indent=2))
     else:  # table
         print(f"{'Job Name':<50} {'Job ID':<10}")

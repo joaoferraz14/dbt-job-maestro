@@ -256,9 +256,7 @@ class Config:
             include_maestro_selectors_in_jobs=job_data.get(
                 "include_maestro_selectors_in_jobs", True
             ),
-            include_manual_selectors_in_jobs=job_data.get(
-                "include_manual_selectors_in_jobs", True
-            ),
+            include_manual_selectors_in_jobs=job_data.get("include_manual_selectors_in_jobs", True),
             selector_prefix=selector_prefix,
         )
 
