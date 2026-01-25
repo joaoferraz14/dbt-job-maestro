@@ -1,6 +1,5 @@
 """Tests for ManifestParser"""
 
-import pytest
 import json
 import tempfile
 from pathlib import Path

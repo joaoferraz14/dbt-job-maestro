@@ -192,7 +192,6 @@ class SelectorGenerator:
         included_tags = all_tags - set(self.config.exclude_tags)
 
         # Find models without any tags and warn about them
-        model_tags = self.parser.get_model_tags()
         all_model_names = set(self.models.keys()) - excluded_models
         tagged_models = set()
 
