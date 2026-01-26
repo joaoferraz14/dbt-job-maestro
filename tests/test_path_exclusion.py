@@ -220,6 +220,69 @@ class TestSelectorGeneratorPathExclusion:
         assert "temp_debug" not in all_selector_models
         assert "stg_legacy_data" not in all_selector_models
 
+    def test_fqn_selector_definition_includes_path_exclusion(self, parser, graph):
+        """Test that FQN selectors include path exclusion in their definition."""
+        config = SelectorConfig(
+            method="fqn", exclude_paths=["temp", "staging/legacy"], group_by_dependencies=True
+        )
+        generator = SelectorGenerator(parser, graph, config)
+        selectors = generator.generate_selectors()
+
+        # Each non-freshness selector should have an exclude clause for paths
+        for selector in selectors:
+            if selector["name"].startswith("freshness_"):
+                continue
+            union_items = selector["definition"]["union"]
+            exclude_items = [item for item in union_items if "exclude" in item]
+            assert (
+                len(exclude_items) > 0
+            ), f"Selector '{selector['name']}' missing path exclusion in definition"
+            # Verify exclude contains path method entries
+            exclude_union = exclude_items[-1]["exclude"]["union"]
+            path_excludes = [e for e in exclude_union if e.get("method") == "path"]
+            assert len(path_excludes) == 2
+            excluded_paths = {e["value"] for e in path_excludes}
+            assert "temp" in excluded_paths
+            assert "staging/legacy" in excluded_paths
+
+    def test_tag_selector_definition_includes_path_exclusion(self, parser, graph):
+        """Test that tag selectors include path exclusion in their definition."""
+        config = SelectorConfig(method="tag", exclude_paths=["temp"])
+        generator = SelectorGenerator(parser, graph, config)
+        selectors = generator.generate_selectors()
+
+        for selector in selectors:
+            if selector["name"].startswith("freshness_"):
+                continue
+            union_items = selector["definition"]["union"]
+            exclude_items = [item for item in union_items if "exclude" in item]
+            assert (
+                len(exclude_items) > 0
+            ), f"Selector '{selector['name']}' missing path exclusion in definition"
+            exclude_union = exclude_items[0]["exclude"]["union"]
+            path_excludes = [e for e in exclude_union if e.get("method") == "path"]
+            assert len(path_excludes) == 1
+            assert path_excludes[0]["value"] == "temp"
+
+    def test_no_path_exclusion_in_definition_when_empty(self, parser, graph):
+        """Test that no path exclusion is added when exclude_paths is empty."""
+        config = SelectorConfig(method="fqn", exclude_paths=[], group_by_dependencies=True)
+        generator = SelectorGenerator(parser, graph, config)
+        selectors = generator.generate_selectors()
+
+        for selector in selectors:
+            if selector["name"].startswith("freshness_"):
+                continue
+            union_items = selector["definition"]["union"]
+            exclude_items = [item for item in union_items if "exclude" in item]
+            # No exclude items should be present (no tags or paths excluded)
+            path_exclude_items = [
+                e
+                for e in exclude_items
+                if any(u.get("method") == "path" for u in e.get("exclude", {}).get("union", []))
+            ]
+            assert len(path_exclude_items) == 0
+
 
 class TestSelectorOrchestratorPathExclusion:
     """Test path exclusion in SelectorOrchestrator."""

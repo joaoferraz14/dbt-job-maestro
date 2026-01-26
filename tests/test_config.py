@@ -76,6 +76,12 @@ class TestSelectorConfig:
         with pytest.raises(ValueError, match="min_models_per_selector"):
             config.validate()
 
+    def test_validate_method_as_list(self):
+        """Test validation rejects method as a list (only one method allowed)."""
+        config = SelectorConfig(method=["fqn", "path"])
+        with pytest.raises(ValueError, match="must be a single string value"):
+            config.validate()
+
     def test_validate_fqn_valid_config(self):
         """Test validation passes for valid FQN config."""
         config = SelectorConfig(method="fqn", group_by_dependencies=True)

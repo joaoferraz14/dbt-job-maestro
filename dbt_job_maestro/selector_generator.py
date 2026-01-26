@@ -166,6 +166,8 @@ class SelectorGenerator:
                 # Add exclusions if configured
                 if self.config.exclude_tags:
                     selector["definition"]["union"].append(self._create_tag_exclusion())
+                if self.config.exclude_paths:
+                    selector["definition"]["union"].append(self._create_path_exclusion())
 
                 selectors.append(selector)
 
@@ -204,6 +206,10 @@ class SelectorGenerator:
                     "description": f"Selector for models tagged with {tag}",
                     "definition": {"union": [{"method": "tag", "value": tag}]},
                 }
+
+                # Add path exclusions for runtime enforcement
+                if self.config.exclude_paths:
+                    selector["definition"]["union"].append(self._create_path_exclusion())
 
                 selectors.append(selector)
 
@@ -254,6 +260,8 @@ class SelectorGenerator:
         # Add tag exclusions
         if self.config.exclude_tags:
             selector["definition"]["union"].append(self._create_tag_exclusion())
+        if self.config.exclude_paths:
+            selector["definition"]["union"].append(self._create_path_exclusion())
 
         return selector
 
@@ -276,6 +284,8 @@ class SelectorGenerator:
 
         if self.config.exclude_tags:
             selector["definition"]["union"].append(self._create_tag_exclusion())
+        if self.config.exclude_paths:
+            selector["definition"]["union"].append(self._create_path_exclusion())
 
         return selector
 
@@ -300,6 +310,8 @@ class SelectorGenerator:
 
         if self.config.exclude_tags:
             selector["definition"]["union"].append(self._create_tag_exclusion())
+        if self.config.exclude_paths:
+            selector["definition"]["union"].append(self._create_path_exclusion())
 
         return selector
 
@@ -331,6 +343,14 @@ class SelectorGenerator:
         return {
             "exclude": {
                 "union": [{"method": "tag", "value": tag} for tag in self.config.exclude_tags]
+            }
+        }
+
+    def _create_path_exclusion(self) -> Dict[str, Any]:
+        """Create path exclusion definition for runtime enforcement by dbt"""
+        return {
+            "exclude": {
+                "union": [{"method": "path", "value": path} for path in self.config.exclude_paths]
             }
         }
 
