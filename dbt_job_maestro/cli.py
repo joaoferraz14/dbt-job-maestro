@@ -509,7 +509,8 @@ def check(config, dbt_project):
         click.echo("Deployment Requirements Check")
         click.echo("=" * 60)
 
-        all_passed = True
+        errors = 0
+        warnings = 0
 
         # Check 1: dbt-jobs-as-code installed
         click.echo("\n1. dbt-jobs-as-code package:")
@@ -518,30 +519,34 @@ def check(config, dbt_project):
         else:
             click.echo(click.style("   ✗ Not installed", fg="red"))
             click.echo("     Install with: pip install dbt-jobs-as-code")
-            all_passed = False
+            errors += 1
 
         # Check 2: Current branch
         click.echo(f"\n2. Git branch (expected: {deploy_branch}):")
         current_branch = get_current_branch()
         if current_branch is None:
             click.echo(click.style("   ⚠ Not in a git repository", fg="yellow"))
+            warnings += 1
         elif current_branch == deploy_branch:
             click.echo(click.style(f"   ✓ On {current_branch}", fg="green"))
         else:
             click.echo(click.style(f"   ⚠ On {current_branch} (not {deploy_branch})", fg="yellow"))
             click.echo("     This is fine for testing, but deployment typically happens on main")
+            warnings += 1
 
         # Check 3: packages.yml
         click.echo("\n3. packages.yml configuration:")
         in_packages, packages_path = check_packages_yml(dbt_project)
         if packages_path is None:
             click.echo(click.style("   ⚠ packages.yml not found (optional)", fg="yellow"))
+            warnings += 1
         elif in_packages:
             click.echo(click.style(f"   ✓ dbt-jobs-as-code found in {packages_path}", fg="green"))
         else:
             click.echo(
                 click.style(f"   ⚠ dbt-jobs-as-code not in {packages_path} (optional)", fg="yellow")
             )
+            warnings += 1
 
         # Check 4: Required files
         click.echo("\n4. Required files:")
@@ -553,23 +558,35 @@ def check(config, dbt_project):
         else:
             click.echo(click.style("   ⚠ selectors.yml not found", fg="yellow"))
             click.echo("     Run: maestro generate")
+            warnings += 1
 
         if jobs_file.exists():
             click.echo(click.style("   ✓ jobs.yml exists", fg="green"))
         else:
             click.echo(click.style("   ⚠ jobs.yml not found", fg="yellow"))
             click.echo("     Run: maestro generate-jobs")
+            warnings += 1
 
         # Summary
         click.echo("\n" + "=" * 60)
-        if all_passed:
+        if errors > 0:
+            click.echo(
+                click.style(f"✗ {errors} error(s) and {warnings} warning(s)", fg="red", bold=True)
+            )
+            click.echo("\nFix the errors above before deploying.")
+            sys.exit(1)
+        elif warnings > 0:
+            click.echo(
+                click.style(
+                    f"⚠ All checks passed with {warnings} warning(s)", fg="yellow", bold=True
+                )
+            )
+            click.echo("\nReview warnings above. You may still deploy with:")
+            click.echo("  dbt-jobs-as-code sync jobs.yml")
+        else:
             click.echo(click.style("✓ All checks passed!", fg="green", bold=True))
             click.echo("\nYou can deploy with:")
             click.echo("  dbt-jobs-as-code sync jobs.yml")
-        else:
-            click.echo(click.style("⚠ Some checks failed", fg="yellow", bold=True))
-            click.echo("\nFix the issues above before deploying.")
-            sys.exit(1)
 
         click.echo("")
 

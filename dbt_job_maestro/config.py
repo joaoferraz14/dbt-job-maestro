@@ -70,6 +70,14 @@ class SelectorConfig:
         Raises:
             ValueError: If incompatible options are set
         """
+        # Validate method is a single string, not a list
+        if not isinstance(self.method, str):
+            raise ValueError(
+                f"method must be a single string value (e.g., 'fqn'), "
+                f"got {type(self.method).__name__}: {self.method}. "
+                f"Only one method can be used at a time."
+            )
+
         # Validate method
         valid_methods = ["fqn", "path", "tag"]
         if self.method not in valid_methods:

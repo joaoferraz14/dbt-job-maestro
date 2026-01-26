@@ -135,6 +135,8 @@ class FQNSelector(BaseSelector):
 
         if self.config.exclude_tags:
             selector["definition"]["union"].append(self._create_tag_exclusion())
+        if self.config.exclude_paths:
+            selector["definition"]["union"].append(self._create_path_exclusion())
 
         return selector
 
@@ -164,6 +166,8 @@ class FQNSelector(BaseSelector):
 
         if self.config.exclude_tags:
             selector["definition"]["union"].append(self._create_tag_exclusion())
+        if self.config.exclude_paths:
+            selector["definition"]["union"].append(self._create_path_exclusion())
 
         return selector
 
@@ -195,6 +199,8 @@ class FQNSelector(BaseSelector):
 
         if self.config.exclude_tags:
             selector["definition"]["union"].append(self._create_tag_exclusion())
+        if self.config.exclude_paths:
+            selector["definition"]["union"].append(self._create_path_exclusion())
 
         return selector
 
@@ -232,6 +238,18 @@ class FQNSelector(BaseSelector):
         return {
             "exclude": {
                 "union": [{"method": "tag", "value": tag} for tag in self.config.exclude_tags]
+            }
+        }
+
+    def _create_path_exclusion(self) -> Dict[str, Any]:
+        """Create path exclusion definition for runtime enforcement by dbt.
+
+        Returns:
+            Exclusion definition dictionary
+        """
+        return {
+            "exclude": {
+                "union": [{"method": "path", "value": path} for path in self.config.exclude_paths]
             }
         }
 
