@@ -10,10 +10,13 @@ from dataclasses import dataclass, field
 class SelectorConfig:
     """Configuration for selector generation"""
 
-    # Selector generation method: 'fqn', 'path', 'tag', or 'mixed'
+    # Selector generation method: 'fqn', 'path', or 'tag'
+    # - fqn: Group models by dependencies (allows group_by_dependencies)
+    # - path: One selector per path (no dependency grouping)
+    # - tag: One selector per tag (no dependency grouping)
     method: str = "fqn"
 
-    # Whether to group models by shared dependencies
+    # Whether to group models by shared dependencies (only valid for 'fqn' method)
     group_by_dependencies: bool = True
 
     # Tags to exclude from selectors
@@ -24,13 +27,6 @@ class SelectorConfig:
 
     # Paths to exclude from selectors
     exclude_paths: List[str] = field(default_factory=list)
-
-    # Specific paths to create path-based selectors for (used in 'mixed' mode)
-    # Models in these paths get FIRST PRIORITY - their own dedicated selectors
-    # They are then excluded from tag-based and FQN-based grouping to prevent duplicates
-    # This allows you to isolate specific model groups (e.g., legacy, critical, experimental)
-    # Example: ['models/staging/legacy', 'models/marts/finance', 'models/marts/critical']
-    include_path_groups: List[str] = field(default_factory=list)
 
     # Whether to include source freshness selectors (disabled by default)
     # Set to True to generate freshness selectors for all selectors
@@ -56,21 +52,45 @@ class SelectorConfig:
     path_grouping_level: int = 1
 
     # Minimum models per selector (selectors with fewer models will be merged)
+    # Note: Not allowed when method='fqn' and group_by_dependencies=True
     min_models_per_selector: int = 1
 
     # Selector name prefix for auto-generated selectors
     # Selectors starting with "{selector_prefix}_" are auto-generated
-    # Selectors NOT starting with this prefix are considered manual
+    # Selectors NOT starting with this prefix are considered manual (always preserved)
     selector_prefix: str = "maestro"
 
-    # Whether to preserve manually created selectors
-    preserve_manual_selectors: bool = True
-
-    # Whether to warn about overlaps in manual selectors
+    # Whether to warn about overlapping manual selectors
+    # When True, detects and logs warnings when multiple manual selectors cover the same model
     warn_on_manual_overlaps: bool = True
 
-    # Whether to fail on overlaps in auto-generated selectors
-    fail_on_auto_overlaps: bool = True
+    def validate(self) -> None:
+        """Validate configuration options for compatibility.
+
+        Raises:
+            ValueError: If incompatible options are set
+        """
+        # Validate method
+        valid_methods = ["fqn", "path", "tag"]
+        if self.method not in valid_methods:
+            raise ValueError(
+                f"Invalid method '{self.method}'. Must be one of: {', '.join(valid_methods)}"
+            )
+
+        # group_by_dependencies is only allowed for 'fqn' method
+        if self.method in ["path", "tag"] and self.group_by_dependencies:
+            raise ValueError(
+                f"group_by_dependencies is not allowed with method='{self.method}'. "
+                f"Only the 'fqn' method supports dependency grouping."
+            )
+
+        # min_models_per_selector conflicts with group_by_dependencies in fqn mode
+        if self.method == "fqn" and self.group_by_dependencies and self.min_models_per_selector > 1:
+            raise ValueError(
+                "min_models_per_selector > 1 conflicts with group_by_dependencies=True. "
+                "When grouping by dependencies, all connected models are grouped together "
+                "regardless of count. Set group_by_dependencies=False to use min_models_per_selector."
+            )
 
 
 @dataclass
@@ -209,13 +229,15 @@ class Config:
 
         # Create selector config
         selector_data = data.get("selector", {})
+        method = selector_data.get("method", "fqn")
+        # Default group_by_dependencies to False for path/tag methods
+        default_group_by = method == "fqn"
         selector_config = SelectorConfig(
-            method=selector_data.get("method", "fqn"),
-            group_by_dependencies=selector_data.get("group_by_dependencies", True),
+            method=method,
+            group_by_dependencies=selector_data.get("group_by_dependencies", default_group_by),
             exclude_tags=selector_data.get("exclude_tags", []),
             exclude_models=selector_data.get("exclude_models", []),
             exclude_paths=selector_data.get("exclude_paths", []),
-            include_path_groups=selector_data.get("include_path_groups", []),
             include_freshness_selectors=selector_data.get("include_freshness_selectors", False),
             freshness_selector_names=selector_data.get("freshness_selector_names", []),
             include_parent_sources=selector_data.get("include_parent_sources", True),
@@ -223,10 +245,11 @@ class Config:
             path_grouping_level=selector_data.get("path_grouping_level", 1),
             min_models_per_selector=selector_data.get("min_models_per_selector", 1),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
-            preserve_manual_selectors=selector_data.get("preserve_manual_selectors", True),
             warn_on_manual_overlaps=selector_data.get("warn_on_manual_overlaps", True),
-            fail_on_auto_overlaps=selector_data.get("fail_on_auto_overlaps", True),
         )
+
+        # Validate selector config
+        selector_config.validate()
 
         # Create job config
         job_data = data.get("job", {})
@@ -297,7 +320,6 @@ class Config:
                 "exclude_tags": self.selector.exclude_tags,
                 "exclude_models": self.selector.exclude_models,
                 "exclude_paths": self.selector.exclude_paths,
-                "include_path_groups": self.selector.include_path_groups,
                 "include_freshness_selectors": self.selector.include_freshness_selectors,
                 "freshness_selector_names": self.selector.freshness_selector_names,
                 "include_parent_sources": self.selector.include_parent_sources,
@@ -305,9 +327,7 @@ class Config:
                 "path_grouping_level": self.selector.path_grouping_level,
                 "min_models_per_selector": self.selector.min_models_per_selector,
                 "selector_prefix": self.selector.selector_prefix,
-                "preserve_manual_selectors": self.selector.preserve_manual_selectors,
                 "warn_on_manual_overlaps": self.selector.warn_on_manual_overlaps,
-                "fail_on_auto_overlaps": self.selector.fail_on_auto_overlaps,
             },
             "job": {
                 "account_id": self.job.account_id,

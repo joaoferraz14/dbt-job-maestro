@@ -60,33 +60,14 @@ Groups models by dbt tags.
 
 **Use when:** You have a comprehensive tagging strategy
 
-### Method: mixed (Priority System)
-Combines multiple methods with NO DUPLICATES using a priority system:
+## Manual Selector Preservation
 
-**Priority Order:**
-1. **Manual Selectors** - Preserved from existing `selectors.yml`
-   - Identified by NOT having the `maestro_` prefix (configurable via `selector_prefix`)
-   - Examples: `critical_revenue`, `my_custom_selector` → Manual (preserved)
-   - Examples: `maestro_stg_customers` → Auto-generated (replaced on regeneration)
-   - Models in manual selectors are excluded from automated generation
+Across all methods, selectors NOT starting with the configured prefix (`maestro_` by default) are
+considered **manual selectors** and are always preserved. Models covered by manual selectors are
+automatically excluded from auto-generation to prevent duplicates.
 
-2. **FQN-Based** - Remaining models
-   - Dependency analysis on models not yet assigned to manual selectors
-   - Groups by connected components
-
-**Example:**
-```yaml
-selector:
-  method: mixed
-  include_path_groups:
-    - models/staging/legacy    # Priority 2: Gets own selector
-    - models/marts/critical
-  exclude_tags:
-    - deprecated
-  preserve_manual_selectors: true  # Priority 1: Preserve existing
-```
-
-**Result:** Zero overlap - each model appears in exactly ONE selector.
+- `critical_revenue`, `my_custom_selector` → Manual (preserved)
+- `maestro_stg_customers` → Auto-generated (replaced on regeneration)
 
 ## Configuration
 
@@ -100,10 +81,11 @@ jobs_output_file: jobs.yml
 
 # Selector generation
 selector:
-  method: fqn | path | tag | mixed
+  method: fqn | path | tag
   exclude_tags: [deprecated, archived]
-  include_path_groups: []  # For mixed mode priority
-  preserve_manual_selectors: true
+  exclude_paths: []
+  exclude_models: []
+  group_by_dependencies: true  # Only for fqn method
   # ... more options
 
 # Job definitions

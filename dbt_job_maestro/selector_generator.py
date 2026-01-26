@@ -3,8 +3,7 @@
 import logging
 import os
 import yaml
-from typing import Any, Dict, List, Set, Tuple
-from pathlib import Path
+from typing import Any, Dict, List, Set
 
 from dbt_job_maestro.config import SelectorConfig
 from dbt_job_maestro.manifest_parser import ManifestParser
@@ -48,8 +47,6 @@ class SelectorGenerator:
             return self._generate_path_selectors()
         elif self.config.method == "tag":
             return self._generate_tag_selectors()
-        elif self.config.method == "mixed":
-            return self._generate_mixed_selectors()
         else:
             raise ValueError(f"Unknown selector method: {self.config.method}")
 
@@ -226,116 +223,11 @@ class SelectorGenerator:
             if len(untagged_models) > 10:
                 logger.warning(f"    ... and {len(untagged_models) - 10} more")
             logger.warning(
-                "\n💡 RECOMMENDATION: Use method='mixed' or method='fqn' to ensure all models "
-                "are included in selectors. The 'mixed' method combines manual selectors with "
-                "auto-generated FQN-based selectors for complete coverage."
+                "\n💡 RECOMMENDATION: Use method='fqn' to ensure all models are included "
+                "in selectors. The 'fqn' method groups models by dependencies for complete coverage."
             )
 
         return selectors
-
-    def _generate_mixed_selectors(self) -> List[Dict[str, Any]]:
-        """
-        Generate selectors using a mix of methods with priority system.
-
-        Priority order for automated selectors (NO duplicates):
-        1. FQN-based selectors (highest priority - dependency grouping)
-        2. Path-based selectors (from include_path_groups config)
-        3. Tag-based selectors (lowest priority - remaining tagged models)
-
-        Manual selectors are preserved and can have duplicates.
-        Overlaps are detected and reported as warnings.
-        """
-        selectors = []
-        # Start with models excluded by config (exclude_paths and exclude_models)
-        assigned_models = (
-            self._get_excluded_models()
-        )  # Track models assigned in automated selectors
-
-        # Stage 0: Preserve manually created selectors (can have duplicates)
-        manual_selectors = []
-        manual_model_assignments = {}  # Track which models are in which manual selectors
-
-        if self.config.preserve_manual_selectors:
-            manual_selectors, manual_models, _, _ = self._read_manual_selectors()
-            selectors.extend(manual_selectors)
-
-            # Track manual selector assignments for overlap detection
-            for selector in manual_selectors:
-                models = self._extract_models_from_selector(selector)
-                for model in models:
-                    if model not in manual_model_assignments:
-                        manual_model_assignments[model] = []
-                    manual_model_assignments[model].append((selector["name"], "manual"))
-
-        # Stage 1: Create FQN-based selectors (HIGHEST PRIORITY)
-        if self.config.group_by_dependencies:
-            # Pass excluded models to find_connected_components
-            components = self.graph.find_connected_components(exclude_models=assigned_models)
-
-            for component in components:
-                # Filter out excluded models from each component
-                filtered_component = [m for m in component if m not in assigned_models]
-                if (
-                    filtered_component
-                    and len(filtered_component) >= self.config.min_models_per_selector
-                ):
-                    selector = self._create_fqn_selector_for_component(filtered_component)
-                    selectors.append(selector)
-                    assigned_models.update(filtered_component)
-
-                    if self.config.include_freshness_selectors:
-                        freshness_selector = self._create_freshness_selector(
-                            selector["name"], filtered_component
-                        )
-                        selectors.append(freshness_selector)
-
-        # Stage 2: Create path-based selectors (SECOND PRIORITY - exclude FQN models)
-        if self.config.include_path_groups:
-            path_selectors, path_models = self._create_path_group_selectors(
-                assigned_models, self.config.include_path_groups
-            )
-            selectors.extend(path_selectors)
-            assigned_models.update(path_models)
-
-        # Stage 3: Create tag-based selectors (LOWEST PRIORITY - exclude FQN and path models)
-        all_tags = self.parser.get_all_tags() - set(self.config.exclude_tags)
-
-        for tag in sorted(all_tags):
-            tag_models = self.graph.group_by_tag(tag)
-            # Only include models not already assigned
-            unassigned_tag_models = [m for m in tag_models if m not in assigned_models]
-
-            if len(unassigned_tag_models) >= self.config.min_models_per_selector:
-                selector = {
-                    "name": f"tag_{tag}",
-                    "description": f"Selector for models tagged with {tag}",
-                    "definition": {"union": [{"method": "tag", "value": tag}]},
-                }
-                selectors.append(selector)
-                assigned_models.update(unassigned_tag_models)
-
-                if self.config.include_freshness_selectors:
-                    freshness_selector = self._create_freshness_selector(
-                        f"tag_{tag}", unassigned_tag_models
-                    )
-                    selectors.append(freshness_selector)
-
-        return selectors
-
-    def _detect_and_report_overlaps(
-        self, selectors: List[Dict[str, Any]], manual_model_assignments: Dict[str, Any]
-    ) -> None:
-        """
-        Detect and report overlaps in selectors.
-
-        Note: Overlap detection is handled by the OverlapDetector class when using
-        SelectorOrchestrator. This method is kept for backwards compatibility.
-
-        Args:
-            selectors: List of all selector definitions
-            manual_model_assignments: Dict of model to manual selector assignments
-        """
-        pass  # Overlap detection is handled by OverlapDetector in SelectorOrchestrator
 
     def _create_fqn_selector_for_component(self, models: List[str]) -> Dict[str, Any]:
         """Create a selector for a component using FQN method"""
@@ -475,150 +367,6 @@ class SelectorGenerator:
     def _path_to_selector_name(self, path: str) -> str:
         """Convert path to valid selector name"""
         return path.replace("/", "_").replace("\\", "_").replace(".", "_")
-
-    def _read_manual_selectors(self) -> Tuple[List[Dict[str, Any]], Set[str], Set[str], Set[str]]:
-        """
-        Read existing manually created selectors from file.
-
-        Returns:
-            Tuple of (list of manual selectors, set of models, set of paths used, set of tags used)
-        """
-        manual_selectors = []
-        manual_models = set()
-        manual_paths = set()
-        manual_tags = set()
-
-        # Try common locations for selectors file
-        possible_paths = [
-            Path("selectors.yml"),
-            Path("dbt_project/selectors.yml"),
-            Path("./selectors.yml"),
-        ]
-
-        existing = []
-        for path in possible_paths:
-            if path.exists():
-                existing = self.read_existing_selectors(str(path))
-                break
-
-        if not existing:
-            return manual_selectors, manual_models, manual_paths, manual_tags
-
-        for selector in existing:
-            description = selector.get("description", "")
-            # Check if selector is manually created
-            if "manually_created" in description.lower() or not description.startswith(
-                "Selector for"
-            ):
-                manual_selectors.append(selector)
-                # Extract models, paths, and tags from this selector
-                models, paths, tags = self._extract_selector_components(selector)
-                manual_models.update(models)
-                manual_paths.update(paths)
-                manual_tags.update(tags)
-
-        return manual_selectors, manual_models, manual_paths, manual_tags
-
-    def _extract_models_from_selector(self, selector: Dict[str, Any]) -> Set[str]:
-        """
-        Extract model names covered by a selector definition.
-
-        Args:
-            selector: Selector definition
-
-        Returns:
-            Set of model names covered by the selector
-        """
-        models, _, _ = self._extract_selector_components(selector)
-        return models
-
-    def _extract_selector_components(
-        self, selector: Dict[str, Any]
-    ) -> Tuple[Set[str], Set[str], Set[str]]:
-        """
-        Extract models, paths, and tags from a selector definition.
-
-        Args:
-            selector: Selector definition
-
-        Returns:
-            Tuple of (models set, paths set, tags set)
-        """
-        models = set()
-        paths = set()
-        tags = set()
-        definition = selector.get("definition", {})
-
-        # Handle union definitions
-        if "union" in definition:
-            for item in definition["union"]:
-                if "method" in item:
-                    method = item["method"]
-                    value = item.get("value", "")
-
-                    if method == "fqn":
-                        # Direct model reference
-                        if value in self.models:
-                            models.add(value)
-                    elif method == "tag":
-                        # All models with this tag
-                        models.update(self.graph.group_by_tag(value))
-                        tags.add(value)  # Track the tag itself
-                    elif method == "path":
-                        # All models in this path
-                        models.update(self.graph.group_by_path(value))
-                        paths.add(value)  # Track the path itself
-
-        return models, paths, tags
-
-    def _create_path_group_selectors(
-        self, assigned_models: Set[str], path_groups: List[str] = None
-    ) -> Tuple[List[Dict[str, Any]], Set[str]]:
-        """
-        Create selectors for specified path groups.
-
-        Args:
-            assigned_models: Models already assigned to other selectors
-            path_groups: List of paths to create selectors for (defaults to config.include_path_groups)
-
-        Returns:
-            Tuple of (list of path selectors, set of models covered by them)
-        """
-        selectors = []
-        path_models = set()
-
-        # Use provided path_groups or fall back to config
-        paths_to_process = (
-            path_groups if path_groups is not None else self.config.include_path_groups
-        )
-
-        for path_group in paths_to_process:
-            models = self.graph.group_by_path(path_group)
-            # Only include models not already assigned
-            unassigned_models = [m for m in models if m not in assigned_models]
-
-            if len(unassigned_models) >= self.config.min_models_per_selector:
-                selector_name = self._path_to_selector_name(path_group)
-                selector = {
-                    "name": f"path_{selector_name}",
-                    "description": f"Selector for models in {path_group}",
-                    "definition": {"union": [{"method": "path", "value": path_group}]},
-                }
-
-                # Add exclusions if configured
-                if self.config.exclude_tags:
-                    selector["definition"]["union"].append(self._create_tag_exclusion())
-
-                selectors.append(selector)
-                path_models.update(unassigned_models)
-
-                if self.config.include_freshness_selectors:
-                    freshness_selector = self._create_freshness_selector(
-                        f"path_{selector_name}", unassigned_models
-                    )
-                    selectors.append(freshness_selector)
-
-        return selectors, path_models
 
     def write_selectors(self, selectors: List[Dict[str, Any]], output_path: str) -> None:
         """

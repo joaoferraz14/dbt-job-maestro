@@ -168,30 +168,21 @@ class TestSelectorGeneratorPathExclusion:
         # This is verified by checking the model counts in the resulting selectors
         assert len(selectors) >= 0  # Should complete without error
 
-    def test_mixed_method_excludes_paths(self, parser, graph, tmp_path):
-        """Test mixed method excludes models from specified paths."""
-        original_dir = os.getcwd()
-        try:
-            os.chdir(tmp_path)
+    def test_fqn_method_excludes_paths_with_deps(self, parser, graph):
+        """Test FQN method with group_by_dependencies excludes models from specified paths."""
+        config = SelectorConfig(method="fqn", exclude_paths=["temp"], group_by_dependencies=True)
+        generator = SelectorGenerator(parser, graph, config)
+        selectors = generator.generate_selectors()
 
-            config = SelectorConfig(
-                method="mixed", exclude_paths=["temp"], group_by_dependencies=True
-            )
-            generator = SelectorGenerator(parser, graph, config)
-            selectors = generator.generate_selectors()
+        # Check that temp_debug is excluded
+        all_fqn_values = set()
+        for selector in selectors:
+            definition = selector.get("definition", {})
+            for item in definition.get("union", []):
+                if item.get("method") == "fqn":
+                    all_fqn_values.add(item.get("value"))
 
-            # Check that temp_debug is excluded
-            all_fqn_values = set()
-            for selector in selectors:
-                definition = selector.get("definition", {})
-                for item in definition.get("union", []):
-                    if item.get("method") == "fqn":
-                        all_fqn_values.add(item.get("value"))
-
-            assert "temp_debug" not in all_fqn_values
-
-        finally:
-            os.chdir(original_dir)
+        assert "temp_debug" not in all_fqn_values
 
     def test_exclude_models_by_name(self, parser, graph):
         """Test excluding specific models by name."""
@@ -251,33 +242,26 @@ class TestSelectorOrchestratorPathExclusion:
         assert "stg_legacy_data" not in all_fqn_values
         assert "temp_debug" not in all_fqn_values
 
-    def test_mixed_mode_excludes_paths(self, parser, graph, tmp_path):
-        """Test mixed mode excludes paths."""
-        original_dir = os.getcwd()
-        try:
-            os.chdir(tmp_path)
+    def test_fqn_mode_excludes_paths_and_models(self, parser, graph):
+        """Test FQN mode excludes paths and models."""
+        config = SelectorConfig(
+            method="fqn",
+            exclude_paths=["temp"],
+            exclude_models=["stg_legacy_data"],
+            group_by_dependencies=True,
+        )
+        orchestrator = SelectorOrchestrator(parser, graph, config)
+        selectors = orchestrator.generate_selectors()
 
-            config = SelectorConfig(
-                method="mixed",
-                exclude_paths=["temp"],
-                exclude_models=["stg_legacy_data"],
-                group_by_dependencies=True,
-            )
-            orchestrator = SelectorOrchestrator(parser, graph, config)
-            selectors = orchestrator.generate_selectors()
+        all_fqn_values = set()
+        for selector in selectors:
+            definition = selector.get("definition", {})
+            for item in definition.get("union", []):
+                if item.get("method") == "fqn":
+                    all_fqn_values.add(item.get("value"))
 
-            all_fqn_values = set()
-            for selector in selectors:
-                definition = selector.get("definition", {})
-                for item in definition.get("union", []):
-                    if item.get("method") == "fqn":
-                        all_fqn_values.add(item.get("value"))
-
-            assert "temp_debug" not in all_fqn_values
-            assert "stg_legacy_data" not in all_fqn_values
-
-        finally:
-            os.chdir(original_dir)
+        assert "temp_debug" not in all_fqn_values
+        assert "stg_legacy_data" not in all_fqn_values
 
 
 class TestExclusionWithManualSelectors:
@@ -300,9 +284,8 @@ class TestExclusionWithManualSelectors:
                 yaml.dump({"selectors": [manual_selector]}, f)
 
             config = SelectorConfig(
-                method="mixed",
+                method="fqn",
                 exclude_paths=["temp"],
-                preserve_manual_selectors=True,
                 group_by_dependencies=True,
             )
             orchestrator = SelectorOrchestrator(parser, graph, config)

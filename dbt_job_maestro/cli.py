@@ -7,7 +7,6 @@ from pathlib import Path
 from dbt_job_maestro.config import Config
 from dbt_job_maestro.manifest_parser import ManifestParser
 from dbt_job_maestro.graph_builder import GraphBuilder
-from dbt_job_maestro.selector_generator import SelectorGenerator
 from dbt_job_maestro.selector_orchestrator import SelectorOrchestrator
 from dbt_job_maestro.job_generator import JobGenerator
 from dbt_job_maestro.deployment import (
@@ -53,13 +52,13 @@ def main():
 @click.option(
     "--method",
     "-t",
-    type=click.Choice(["fqn", "path", "tag", "mixed"], case_sensitive=False),
-    help="Selector generation method (overrides config)",
+    type=click.Choice(["fqn", "path", "tag"], case_sensitive=False),
+    help="Selector generation method: fqn (dependency grouping), path (per folder), tag (per tag)",
 )
 @click.option(
     "--group-by-dependencies/--no-group-by-dependencies",
     default=None,
-    help="Group models by shared dependencies (overrides config)",
+    help="Group models by shared dependencies (only valid for --method fqn)",
 )
 @click.option(
     "--exclude-tag",
@@ -137,6 +136,9 @@ def generate(
             cfg.selectors_output_file = output
         if method:
             cfg.selector.method = method
+            # Auto-set group_by_dependencies to False for path/tag if not explicitly provided
+            if method in ("path", "tag") and group_by_dependencies is None:
+                cfg.selector.group_by_dependencies = False
         if group_by_dependencies is not None:
             cfg.selector.group_by_dependencies = group_by_dependencies
         if exclude_tag:
@@ -157,6 +159,9 @@ def generate(
         if no_freshness:
             cfg.selector.include_freshness_selectors = False
 
+        # Validate config after all overrides applied
+        cfg.selector.validate()
+
         click.echo(f"Reading manifest from {cfg.manifest_path}...")
         parser = ManifestParser(cfg.manifest_path)
 
@@ -174,12 +179,8 @@ def generate(
         if cfg.selector.exclude_models:
             click.echo(f"Excluding models: {', '.join(cfg.selector.exclude_models)}")
 
-        # Use new SelectorOrchestrator for supported methods
-        if cfg.selector.method in ["fqn", "mixed"]:
-            generator = SelectorOrchestrator(parser, graph, cfg.selector)
-        else:
-            # Fall back to SelectorGenerator for backward compatibility
-            generator = SelectorGenerator(parser, graph, cfg.selector)
+        # Use SelectorOrchestrator for all methods
+        generator = SelectorOrchestrator(parser, graph, cfg.selector)
 
         selectors = generator.generate_selectors()
 

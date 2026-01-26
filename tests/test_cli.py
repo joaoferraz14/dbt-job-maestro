@@ -152,23 +152,6 @@ class TestGenerateCommand:
             )
             assert result.exit_code == 0
 
-    def test_generate_mixed_method(self, runner, temp_manifest):
-        """Test generate with mixed method."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                main,
-                [
-                    "generate",
-                    "--manifest",
-                    temp_manifest,
-                    "--method",
-                    "mixed",
-                    "--output",
-                    "selectors.yml",
-                ],
-            )
-            assert result.exit_code == 0
-
     def test_generate_with_exclude_tag(self, runner, temp_manifest):
         """Test generate with exclude-tag option."""
         with runner.isolated_filesystem():
@@ -253,6 +236,7 @@ class TestGenerateCommand:
                     temp_manifest,
                     "--min-models",
                     "2",
+                    "--no-group-by-dependencies",
                     "--output",
                     "selectors.yml",
                 ],
@@ -507,7 +491,7 @@ manifest_path: {temp_manifest}
 selectors_output_file: selectors.yml
 jobs_output_file: jobs.yml
 selector:
-  method: mixed
+  method: fqn
   exclude_tags:
     - deprecated
 job:

@@ -3,7 +3,7 @@ output_dir: .
 selectors_output_file: selectors.yml
 jobs_output_file: jobs.yml
 selector:
-  method: mixed
+  method: fqn
   group_by_dependencies: true
   exclude_tags:
     - product
@@ -11,7 +11,6 @@ selector:
   exclude_models: []
   exclude_paths:
     - models/1_stage
-  include_path_groups: []
   include_freshness_selectors: false
   freshness_selector_names: []
   include_parent_sources: true
@@ -19,9 +18,7 @@ selector:
   path_grouping_level: 1
   min_models_per_selector: 1
   selector_prefix: bose
-  preserve_manual_selectors: true
   warn_on_manual_overlaps: true
-  fail_on_auto_overlaps: true
 job:
   account_id: 123
   project_id: 444
