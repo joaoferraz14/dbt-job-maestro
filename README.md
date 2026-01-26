@@ -54,11 +54,14 @@ This generates `target/manifest.json` which maestro analyzes.
 ### 2. Generate selectors
 
 ```bash
-# Basic - FQN-based (analyzes dependencies)
+# FQN-based (default - analyzes dependencies, groups by components)
 maestro generate --manifest target/manifest.json
 
-# Recommended - Mixed mode (manual + automated)
-maestro generate --method mixed
+# Path-based (one selector per directory)
+maestro generate --method path
+
+# Tag-based (one selector per tag)
+maestro generate --method tag
 
 # Create configuration file for repeatable generation
 maestro init --output maestro-config.yml
@@ -137,10 +140,9 @@ Generate selectors from manifest.json.
 maestro generate --manifest target/manifest.json
 
 # Specify generation method
-maestro generate --method fqn        # FQN-based (default)
-maestro generate --method mixed      # Manual + auto FQN (recommended)
-maestro generate --method path       # Path-based
-maestro generate --method tag        # Tag-based
+maestro generate --method fqn        # FQN-based (default) - groups by dependencies
+maestro generate --method path       # Path-based - one selector per directory
+maestro generate --method tag        # Tag-based - one selector per tag
 
 # Exclude models/tags/paths
 maestro generate --exclude-tag deprecated --exclude-tag archived
@@ -158,7 +160,7 @@ maestro generate --config maestro-config.yml --method fqn
 - `--config, -c`: Path to configuration YAML file
 - `--manifest, -m`: Path to manifest.json (default: `target/manifest.json`)
 - `--output, -o`: Output file (default: `selectors.yml`)
-- `--method`: Generation method (`fqn`, `path`, `tag`, `mixed`)
+- `--method`: Generation method (`fqn`, `path`, `tag`)
 - `--exclude-tag`: Tags to exclude (can specify multiple)
 - `--exclude-path`: Paths to exclude (can specify multiple, e.g., `models/staging/legacy`)
 - `--exclude-model`: Models to exclude (can specify multiple)
@@ -270,14 +272,15 @@ jobs_output_file: jobs.yml
 # SELECTOR GENERATION
 # ============================================================================
 selector:
-  # Generation method: 'fqn', 'path', 'tag', or 'mixed'
-  # - fqn: Group ALL models by dependencies (fully qualified names)
-  # - path: Group ALL models by folder structure
-  # - tag: Group ALL models by dbt tags
-  # - mixed: (RECOMMENDED) Preserve manual selectors + auto-generate FQN for remaining
-  method: mixed
+  # Generation method: 'fqn', 'path', or 'tag'
+  # - fqn: Group models by dependencies (allows group_by_dependencies)
+  # - path: One selector per directory (no dependency grouping)
+  # - tag: One selector per tag (no dependency grouping)
+  method: fqn
 
-  # Group models by shared dependencies (applies to 'fqn' and 'mixed' methods)
+  # Group models by shared dependencies (only valid for 'fqn' method)
+  # When true, finds connected components in the dependency graph
+  # When false, creates one selector per model
   group_by_dependencies: true
 
   # -------------------------------------------------------------------------
@@ -332,14 +335,11 @@ selector:
   min_models_per_selector: 1
 
   # Prefix for auto-generated selectors (don't change unless you have a reason)
+  # Manual selectors (those without this prefix) are always preserved
   selector_prefix: maestro
 
-  # Preserve manual selectors during regeneration (always true)
-  preserve_manual_selectors: true
-
-  # Overlap detection settings
-  warn_on_manual_overlaps: true    # Warn if manual selectors overlap (allowed)
-  fail_on_auto_overlaps: true      # Error if auto selectors overlap (bug)
+  # Warn when multiple manual selectors cover the same model
+  warn_on_manual_overlaps: true
 
 # ============================================================================
 # JOB GENERATION (for dbt-jobs-as-code)
@@ -476,8 +476,6 @@ Groups models by folder structure.
 
 **Best for:** Projects organized by folders (staging, marts, etc.)
 
-**Note:** Standalone method only - not used in mixed mode auto-generation.
-
 ```bash
 maestro generate --method path --path-level 1
 ```
@@ -499,7 +497,7 @@ Groups models by dbt tags.
 
 **Best for:** Projects with comprehensive tagging strategies
 
-**Note:** Standalone method only - not used in mixed mode auto-generation.
+**Warning:** Models without tags will NOT be included in any selector. Use `method=fqn` for complete coverage.
 
 ```bash
 maestro generate --method tag
@@ -516,32 +514,15 @@ selectors:
           value: daily
 ```
 
-### 4. Mixed (⭐ Recommended)
+### Manual Selector Preservation
 
-**The most powerful method:** Combines manual customization with automated FQN-based generation.
-
-**Priority order:**
-1. **Manual selectors** (HIGHEST) - No `maestro_` prefix
-   - Can use ANY method: fqn, tag, or path
-   - Preserved exactly during regeneration
-   - Models excluded from auto-generation
-
-2. **Auto-generated selectors** (LOWER) - Has `maestro_` prefix
-   - Uses ONLY fqn method (dependency analysis)
-   - Processes models NOT in manual selectors
-   - Replaced during regeneration
-
-```bash
-maestro generate --method mixed
-```
+All selector methods preserve manual selectors (those without the `maestro_` prefix).
 
 **How it works:**
-- Manual selectors preserved exactly as-is
-- Models referenced in manual selectors automatically resolved
-- Remaining models grouped by dependencies (FQN method)
+- Manual selectors are read from existing `selectors.yml`
+- Models covered by manual selectors are excluded from auto-generation
 - Zero duplicates across all selectors
 - Warns if manual selectors overlap (allowed)
-- Errors if auto selectors overlap (bug)
 
 **Example selectors.yml:**
 ```yaml
@@ -554,16 +535,6 @@ selectors:
         - method: fqn
           value: fct_revenue
           parents: true
-        - method: tag
-          value: revenue_critical
-
-  # MANUAL - using path method (no maestro_ prefix)
-  - name: experimental
-    description: "Experimental features"
-    definition:
-      union:
-        - method: path
-          value: models/marts/experimental
 
   # AUTO-GENERATED - replaced on regeneration (has maestro_ prefix)
   - name: maestro_stg_customers
@@ -572,23 +543,6 @@ selectors:
       union:
         - method: fqn
           value: stg_customers
-        - method: fqn
-          value: int_customer_orders
-```
-
-**Workflow:**
-```bash
-# 1. Initial generation
-maestro generate --method mixed
-
-# 2. Add your custom selectors (without maestro_ prefix)
-#    Edit selectors.yml manually
-
-# 3. Regenerate (manual selectors preserved, auto updated)
-maestro generate --method mixed
-
-# 4. Review changes
-git diff selectors.yml
 ```
 
 ---
@@ -961,7 +915,7 @@ selectors_output_file: selectors.yml
 jobs_output_file: jobs.yml
 
 selector:
-  method: mixed
+  method: fqn
   group_by_dependencies: true
   exclude_tags:
     - deprecated
@@ -1294,7 +1248,7 @@ MIT License - See LICENSE file for details.
 ### 0.1.0 (2026-01-22)
 
 - Initial release
-- Selector generation methods: fqn, path, tag, mixed
+- Selector generation methods: fqn, path, tag
 - Job generation with orchestration modes
 - Configuration file support
 - Simple naming convention (maestro_ prefix)

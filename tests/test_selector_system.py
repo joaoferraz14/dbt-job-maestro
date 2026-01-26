@@ -308,18 +308,6 @@ class TestFQNSelector:
 class TestSelectorOrchestrator:
     """Test the orchestrator's priority-based generation."""
 
-    def test_mixed_mode_priority_system(self, mock_parser, mock_graph):
-        """Test that mixed mode generates selectors with correct priority."""
-        config = SelectorConfig(
-            method="mixed", group_by_dependencies=True, preserve_manual_selectors=True
-        )
-
-        orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
-        selectors = orchestrator.generate_selectors()
-
-        # Should have generated at least the FQN selectors
-        assert len(selectors) > 0
-
     def test_fqn_only_mode(self, mock_parser, mock_graph):
         """Test FQN-only mode generates only FQN selectors."""
         config = SelectorConfig(method="fqn", group_by_dependencies=True)
@@ -355,7 +343,7 @@ class TestManualSelectorPreservation:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -390,9 +378,7 @@ class TestIntegration:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(
-                method="mixed", group_by_dependencies=True, preserve_manual_selectors=True
-            )
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -440,7 +426,7 @@ class TestManualSelectorOverlaps:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -479,7 +465,7 @@ class TestManualSelectorOverlaps:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
 
@@ -522,7 +508,7 @@ class TestManualSelectorPersistence:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             # First generation
             orchestrator1 = SelectorOrchestrator(mock_parser, mock_graph, config)
@@ -556,7 +542,7 @@ class TestManualSelectorPersistence:
         selectors_file = tmp_path / "selectors.yml"
 
         # Create file with both manual and auto selectors
-        mixed_selectors = [
+        existing_selectors = [
             {
                 "name": "manually_created_critical",
                 "description": "Critical models",
@@ -570,12 +556,12 @@ class TestManualSelectorPersistence:
         ]
 
         with open(selectors_file, "w") as f:
-            yaml.dump({"selectors": mixed_selectors}, f)
+            yaml.dump({"selectors": existing_selectors}, f)
 
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -616,7 +602,7 @@ class TestManualSelectorModelExclusion:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -659,7 +645,7 @@ class TestManualSelectorModelExclusion:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -702,7 +688,7 @@ class TestManualSelectorModelExclusion:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -725,7 +711,7 @@ class TestManualSelectorModelExclusion:
         finally:
             os.chdir(original_dir)
 
-    def test_mixed_methods_manual_selector_excludes_all_models(
+    def test_multi_method_manual_selector_excludes_all_models(
         self, mock_parser, mock_graph, tmp_path
     ):
         """Test that manual selector using multiple methods excludes all referenced models."""
@@ -735,7 +721,7 @@ class TestManualSelectorModelExclusion:
 
         selectors_file = tmp_path / "selectors.yml"
 
-        # Manual selector with mixed methods (fqn + tag + path)
+        # Manual selector with multiple methods (fqn + tag + path)
         manual_selector = {
             "name": "manually_created_critical_pipeline",
             "description": "Critical pipeline",
@@ -754,7 +740,7 @@ class TestManualSelectorModelExclusion:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -793,7 +779,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -809,7 +795,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -844,7 +830,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", preserve_manual_selectors=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -883,7 +869,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -917,7 +903,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="mixed", group_by_dependencies=True)
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()

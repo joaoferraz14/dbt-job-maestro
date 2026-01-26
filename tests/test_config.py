@@ -23,12 +23,11 @@ class TestSelectorConfig:
         assert config.min_models_per_selector == 1
         assert config.group_by_dependencies is True
         assert config.include_freshness_selectors is False
-        assert config.preserve_manual_selectors is True
 
     def test_custom_values(self):
         """Test configuration with custom values."""
         config = SelectorConfig(
-            method="mixed",
+            method="path",
             selector_prefix="custom",
             exclude_tags=["deprecated", "test"],
             exclude_paths=["staging/legacy"],
@@ -38,7 +37,7 @@ class TestSelectorConfig:
             include_freshness_selectors=True,
         )
 
-        assert config.method == "mixed"
+        assert config.method == "path"
         assert config.selector_prefix == "custom"
         assert config.exclude_tags == ["deprecated", "test"]
         assert config.exclude_paths == ["staging/legacy"]
@@ -49,9 +48,38 @@ class TestSelectorConfig:
 
     def test_all_methods(self):
         """Test all valid selector methods."""
-        for method in ["fqn", "path", "tag", "mixed"]:
+        for method in ["fqn", "path", "tag"]:
             config = SelectorConfig(method=method)
             assert config.method == method
+
+    def test_validate_invalid_method(self):
+        """Test validation rejects invalid methods."""
+        config = SelectorConfig(method="mixed")
+        with pytest.raises(ValueError, match="Invalid method"):
+            config.validate()
+
+    def test_validate_path_with_group_by_dependencies(self):
+        """Test validation rejects group_by_dependencies with path method."""
+        config = SelectorConfig(method="path", group_by_dependencies=True)
+        with pytest.raises(ValueError, match="group_by_dependencies is not allowed"):
+            config.validate()
+
+    def test_validate_tag_with_group_by_dependencies(self):
+        """Test validation rejects group_by_dependencies with tag method."""
+        config = SelectorConfig(method="tag", group_by_dependencies=True)
+        with pytest.raises(ValueError, match="group_by_dependencies is not allowed"):
+            config.validate()
+
+    def test_validate_fqn_min_models_with_group_by_deps(self):
+        """Test validation rejects min_models_per_selector > 1 with group_by_dependencies."""
+        config = SelectorConfig(method="fqn", group_by_dependencies=True, min_models_per_selector=2)
+        with pytest.raises(ValueError, match="min_models_per_selector"):
+            config.validate()
+
+    def test_validate_fqn_valid_config(self):
+        """Test validation passes for valid FQN config."""
+        config = SelectorConfig(method="fqn", group_by_dependencies=True)
+        config.validate()  # Should not raise
 
 
 class TestJobConfig:
@@ -132,7 +160,8 @@ jobs_output_file: custom_jobs.yml
 output_dir: output
 
 selector:
-  method: mixed
+  method: path
+  group_by_dependencies: false
   exclude_tags:
     - deprecated
     - test
@@ -163,7 +192,7 @@ deployment:
             assert config.jobs_output_file == "custom_jobs.yml"
             assert config.output_dir == "output"
 
-            assert config.selector.method == "mixed"
+            assert config.selector.method == "path"
             assert config.selector.exclude_tags == ["deprecated", "test"]
             assert config.selector.exclude_paths == ["staging/legacy"]
             assert config.selector.exclude_models == ["temp_model"]
@@ -208,7 +237,7 @@ selector:
         """Test saving configuration to YAML file."""
         config = Config()
         config.manifest_path = "test/manifest.json"
-        config.selector.method = "mixed"
+        config.selector.method = "fqn"
         config.selector.exclude_tags = ["deprecated"]
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -223,7 +252,7 @@ selector:
             # Load it back and verify
             loaded = Config.from_yaml(config_path)
             assert loaded.manifest_path == "test/manifest.json"
-            assert loaded.selector.method == "mixed"
+            assert loaded.selector.method == "fqn"
             assert "deprecated" in loaded.selector.exclude_tags
 
         finally:
@@ -273,11 +302,6 @@ class TestConfigExclusionLists:
         assert len(config.exclude_models) == 3
         assert "temp_model" in config.exclude_models
 
-    def test_include_path_groups(self):
-        """Test include_path_groups configuration."""
-        config = SelectorConfig(include_path_groups=["staging/critical", "marts/revenue"])
-        assert len(config.include_path_groups) == 2
-
     def test_freshness_selector_names(self):
         """Test freshness_selector_names configuration."""
         config = SelectorConfig(freshness_selector_names=["selector_staging", "selector_marts"])
@@ -291,7 +315,7 @@ class TestConfigIntegration:
         """Test config save and load roundtrip."""
         original = Config()
         original.manifest_path = "test/manifest.json"
-        original.selector.method = "mixed"
+        original.selector.method = "fqn"
         original.selector.exclude_tags = ["deprecated", "test"]
         original.selector.exclude_paths = ["staging/legacy"]
         original.selector.exclude_models = ["temp_model"]
