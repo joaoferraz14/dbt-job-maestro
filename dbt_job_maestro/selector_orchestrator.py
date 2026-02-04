@@ -77,7 +77,50 @@ class SelectorOrchestrator:
             warnings = self.overlap_detector.detect_overlaps(selectors)
             self.overlap_detector.report_overlaps(warnings)
 
+        # Warn about models not covered by any selector
+        self._warn_uncovered_models(selectors)
+
         return selectors
+
+    def _warn_uncovered_models(self, selectors: List[Dict[str, Any]]) -> None:
+        """Warn if any models won't be run by any selector.
+
+        Checks all models in the manifest against what's covered by all selectors
+        (both manual and auto-generated) and warns about any gaps.
+
+        Args:
+            selectors: List of all selector definitions
+        """
+        # Get all models in manifest
+        all_models = set(self.models.keys())
+
+        # Get models excluded by config (these are intentionally excluded)
+        config_excluded = self._get_config_excluded_models()
+
+        # Get models covered by all selectors
+        covered_models: Set[str] = set()
+        for selector in selectors:
+            resolution = self.resolver.resolve_selector(selector)
+            covered_models.update(resolution.models)
+
+        # Models that should be covered = all models minus intentionally excluded
+        expected_covered = all_models - config_excluded
+
+        # Find models that aren't covered by any selector
+        uncovered = expected_covered - covered_models
+
+        if uncovered:
+            logger.warning(
+                f"\n⚠️  WARNING: {len(uncovered)} model(s) will NOT be run by any selector:"
+            )
+            for model in sorted(uncovered)[:10]:
+                logger.warning(f"    - {model}")
+            if len(uncovered) > 10:
+                logger.warning(f"    ... and {len(uncovered) - 10} more")
+            logger.warning(
+                "\n💡 RECOMMENDATION: Check if these models should be added to a manual selector "
+                "or if they need proper tags/paths for auto-generation."
+            )
 
     def _get_config_excluded_models(self) -> Set[str]:
         """Get models to exclude based on config's exclude_tags, exclude_paths, and exclude_models.
