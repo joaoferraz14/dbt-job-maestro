@@ -53,7 +53,8 @@ def main():
     "--method",
     "-t",
     type=click.Choice(["fqn", "path", "tag"], case_sensitive=False),
-    help="Selector generation method: fqn (dependency grouping), path (per folder), tag (per tag)",
+    multiple=True,
+    help="Selector generation method: fqn (dependency grouping), path (per folder), tag (per tag). Only one method allowed.",
 )
 @click.option(
     "--group-by-dependencies/--no-group-by-dependencies",
@@ -121,6 +122,13 @@ def generate(
       # Mix config file with overrides
       maestro generate --config config.yml --exclude-tag deprecated
     """
+    # Validate method - only one allowed (checked before try block for clean error)
+    if len(method) > 1:
+        raise click.BadParameter(
+            f"Only one method can be specified. Got: {', '.join(method)}",
+            param_hint="'--method' / '-t'",
+        )
+
     try:
         # Load config from file or use defaults
         if config:
@@ -135,9 +143,10 @@ def generate(
         if output:
             cfg.selectors_output_file = output
         if method:
-            cfg.selector.method = method
+            method_value = method[0]
+            cfg.selector.method = method_value
             # Auto-set group_by_dependencies to False for path/tag if not explicitly provided
-            if method in ("path", "tag") and group_by_dependencies is None:
+            if method_value in ("path", "tag") and group_by_dependencies is None:
                 cfg.selector.group_by_dependencies = False
         if group_by_dependencies is not None:
             cfg.selector.group_by_dependencies = group_by_dependencies
