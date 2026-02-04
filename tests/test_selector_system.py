@@ -308,18 +308,26 @@ class TestFQNSelector:
 class TestSelectorOrchestrator:
     """Test the orchestrator's priority-based generation."""
 
-    def test_fqn_only_mode(self, mock_parser, mock_graph):
+    def test_fqn_only_mode(self, mock_parser, mock_graph, tmp_path):
         """Test FQN-only mode generates only FQN selectors."""
-        config = SelectorConfig(method="fqn", group_by_dependencies=True)
+        import os
 
-        orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
-        selectors = orchestrator.generate_selectors()
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)  # Isolate from existing selectors.yml
 
-        assert len(selectors) > 0
-        # All selectors should be auto-generated with maestro_ prefix
-        for selector in selectors:
-            if not selector["name"].startswith("freshness_"):
-                assert selector["name"].startswith("maestro_")
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            assert len(selectors) > 0
+            # All selectors should be auto-generated with maestro_ prefix
+            for selector in selectors:
+                if not selector["name"].startswith("freshness_"):
+                    assert selector["name"].startswith("maestro_")
+        finally:
+            os.chdir(original_dir)
 
 
 class TestManualSelectorPreservation:
@@ -950,31 +958,39 @@ class TestFreshnessSelectors:
         freshness_selectors = [s for s in selectors if s["name"].startswith("freshness_")]
         assert len(freshness_selectors) > 0
 
-    def test_freshness_for_specific_selectors_only(self, mock_parser, mock_graph):
+    def test_freshness_for_specific_selectors_only(self, mock_parser, mock_graph, tmp_path):
         """Test that freshness selectors are only generated for specified selectors."""
-        # First generate to get selector names
-        config = SelectorConfig(method="fqn", group_by_dependencies=True)
-        orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
-        base_selectors = orchestrator.generate_selectors()
-        non_freshness = [
-            s["name"] for s in base_selectors if not s["name"].startswith("freshness_")
-        ]
+        import os
 
-        if len(non_freshness) >= 1:
-            # Only enable freshness for first selector
-            target_selector = non_freshness[0]
-            config_with_freshness = SelectorConfig(
-                method="fqn",
-                group_by_dependencies=True,
-                freshness_selector_names=[target_selector],
-            )
-            orchestrator2 = SelectorOrchestrator(mock_parser, mock_graph, config_with_freshness)
-            selectors = orchestrator2.generate_selectors()
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)  # Isolate from existing selectors.yml
 
-            freshness_selectors = [s for s in selectors if s["name"].startswith("freshness_")]
-            # Should have exactly one freshness selector
-            assert len(freshness_selectors) == 1
-            assert freshness_selectors[0]["name"] == f"freshness_{target_selector}"
+            # First generate to get selector names
+            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            base_selectors = orchestrator.generate_selectors()
+            non_freshness = [
+                s["name"] for s in base_selectors if not s["name"].startswith("freshness_")
+            ]
+
+            if len(non_freshness) >= 1:
+                # Only enable freshness for first selector
+                target_selector = non_freshness[0]
+                config_with_freshness = SelectorConfig(
+                    method="fqn",
+                    group_by_dependencies=True,
+                    freshness_selector_names=[target_selector],
+                )
+                orchestrator2 = SelectorOrchestrator(mock_parser, mock_graph, config_with_freshness)
+                selectors = orchestrator2.generate_selectors()
+
+                freshness_selectors = [s for s in selectors if s["name"].startswith("freshness_")]
+                # Should have exactly one freshness selector
+                assert len(freshness_selectors) == 1
+                assert freshness_selectors[0]["name"] == f"freshness_{target_selector}"
+        finally:
+            os.chdir(original_dir)
 
     def test_freshness_exclude_specific_selectors(self, mock_parser, mock_graph):
         """Test that specific selectors can be excluded from freshness generation."""

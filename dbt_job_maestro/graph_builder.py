@@ -190,3 +190,18 @@ class GraphBuilder:
             Set of model names that exist in the manifest
         """
         return {name for name in names if name in self.models}
+
+    def get_models_with_tags(self, tags: List[str]) -> Set[str]:
+        """
+        Get all models that have any of the given tags.
+
+        Args:
+            tags: List of tags to match
+
+        Returns:
+            Set of model names that have any of the specified tags
+        """
+        matched_models = set()
+        for tag in tags:
+            matched_models.update(self.group_by_tag(tag))
+        return matched_models
