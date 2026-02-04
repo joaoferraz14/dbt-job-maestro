@@ -86,7 +86,8 @@ class SelectorOrchestrator:
         """Warn if any models won't be run by any selector.
 
         Checks all models in the manifest against what's covered by all selectors
-        (both manual and auto-generated) and warns about any gaps.
+        (both manual and auto-generated) and warns about any gaps, including
+        models that were excluded by config but not covered by manual selectors.
 
         Args:
             selectors: List of all selector definitions
@@ -94,33 +95,51 @@ class SelectorOrchestrator:
         # Get all models in manifest
         all_models = set(self.models.keys())
 
-        # Get models excluded by config (these are intentionally excluded)
+        # Get models excluded by config
         config_excluded = self._get_config_excluded_models()
 
-        # Get models covered by all selectors
+        # Get models covered by all selectors (manual + auto-generated)
         covered_models: Set[str] = set()
         for selector in selectors:
             resolution = self.resolver.resolve_selector(selector)
             covered_models.update(resolution.models)
 
-        # Models that should be covered = all models minus intentionally excluded
-        expected_covered = all_models - config_excluded
+        # Find ALL models that aren't covered by any selector
+        all_uncovered = all_models - covered_models
 
-        # Find models that aren't covered by any selector
-        uncovered = expected_covered - covered_models
+        if all_uncovered:
+            # Separate into config-excluded vs other uncovered
+            excluded_and_uncovered = all_uncovered & config_excluded
+            other_uncovered = all_uncovered - config_excluded
 
-        if uncovered:
-            logger.warning(
-                f"\n⚠️  WARNING: {len(uncovered)} model(s) will NOT be run by any selector:"
-            )
-            for model in sorted(uncovered)[:10]:
-                logger.warning(f"    - {model}")
-            if len(uncovered) > 10:
-                logger.warning(f"    ... and {len(uncovered) - 10} more")
-            logger.warning(
-                "\n💡 RECOMMENDATION: Check if these models should be added to a manual selector "
-                "or if they need proper tags/paths for auto-generation."
-            )
+            # Warn about config-excluded models not in any manual selector
+            if excluded_and_uncovered:
+                logger.warning(
+                    f"\n⚠️  WARNING: {len(excluded_and_uncovered)} model(s) are excluded from "
+                    f"auto-generation and NOT in any manual selector (they will NOT run):"
+                )
+                for model in sorted(excluded_and_uncovered)[:10]:
+                    logger.warning(f"    - {model}")
+                if len(excluded_and_uncovered) > 10:
+                    logger.warning(f"    ... and {len(excluded_and_uncovered) - 10} more")
+                logger.warning(
+                    "\n💡 TIP: If these models should run, add them to a manual selector "
+                    "or remove them from exclude_tags/exclude_paths/exclude_models."
+                )
+
+            # Warn about other uncovered models (not excluded by config)
+            if other_uncovered:
+                logger.warning(
+                    f"\n⚠️  WARNING: {len(other_uncovered)} model(s) will NOT be run by any selector:"
+                )
+                for model in sorted(other_uncovered)[:10]:
+                    logger.warning(f"    - {model}")
+                if len(other_uncovered) > 10:
+                    logger.warning(f"    ... and {len(other_uncovered) - 10} more")
+                logger.warning(
+                    "\n💡 RECOMMENDATION: Check if these models should be added to a manual selector "
+                    "or if they need proper tags/paths for auto-generation."
+                )
 
     def _get_config_excluded_models(self) -> Set[str]:
         """Get models to exclude based on config's exclude_tags, exclude_paths, and exclude_models.
