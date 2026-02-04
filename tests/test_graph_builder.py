@@ -243,6 +243,61 @@ class TestGetModelsInPaths:
         assert len(models) == 0
 
 
+class TestGetModelsWithTags:
+    """Test get_models_with_tags method (for tag exclusion)."""
+
+    def test_get_models_with_single_tag(self, graph):
+        """Test getting models with a single tag."""
+        models = graph.get_models_with_tags(["staging"])
+
+        assert "model_a" in models
+        assert "model_b" in models
+        assert "model_e" in models
+        assert "model_c" not in models
+        assert "model_d" not in models
+
+    def test_get_models_with_multiple_tags(self, graph):
+        """Test getting models with multiple tags."""
+        models = graph.get_models_with_tags(["staging", "marts"])
+
+        # Should include models from both tags
+        assert "model_a" in models
+        assert "model_b" in models
+        assert "model_c" in models
+        assert "model_d" in models
+        assert "model_e" in models
+
+    def test_get_models_with_overlapping_tags(self, graph):
+        """Test getting models where some have both tags (no duplicates)."""
+        models = graph.get_models_with_tags(["staging", "daily"])
+
+        # model_a has both staging and daily, should only appear once
+        assert "model_a" in models
+        assert "model_c" in models  # has daily
+        assert "model_b" in models  # has staging
+        # Set ensures no duplicates
+        assert len(models) == len(set(models))
+
+    def test_get_models_with_nonexistent_tag(self, graph):
+        """Test getting models with non-existent tag."""
+        models = graph.get_models_with_tags(["nonexistent"])
+        assert len(models) == 0
+
+    def test_get_models_with_empty_tags(self, graph):
+        """Test getting models with empty tag list."""
+        models = graph.get_models_with_tags([])
+        assert len(models) == 0
+
+    def test_get_models_with_mixed_tags(self, graph):
+        """Test getting models with mix of existing and non-existing tags."""
+        models = graph.get_models_with_tags(["staging", "nonexistent", "legacy"])
+
+        # Should include staging and legacy models, ignore nonexistent
+        assert "model_a" in models
+        assert "model_b" in models
+        assert "model_e" in models  # has both staging and legacy
+
+
 class TestGetModelsByNames:
     """Test get_models_by_names method (for model exclusion)."""
 

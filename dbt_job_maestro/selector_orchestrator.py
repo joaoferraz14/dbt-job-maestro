@@ -3,7 +3,7 @@
 import os
 import yaml
 import logging
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Tuple
 
 from dbt_job_maestro.selector_types import SelectorPriority
 from dbt_job_maestro.model_resolver import ModelResolver
@@ -77,15 +77,68 @@ class SelectorOrchestrator:
             warnings = self.overlap_detector.detect_overlaps(selectors)
             self.overlap_detector.report_overlaps(warnings)
 
+        # Warn about models not covered by any selector
+        self._warn_uncovered_models(selectors)
+
         return selectors
 
+    def _warn_uncovered_models(self, selectors: List[Dict[str, Any]]) -> None:
+        """Warn if any models won't be run by any selector.
+
+        Checks all models in the manifest against what's covered by all selectors
+        (both manual and auto-generated) and warns about any gaps.
+
+        Args:
+            selectors: List of all selector definitions
+        """
+        # Get all models in manifest
+        all_models = set(self.models.keys())
+
+        # Get models excluded by config (these are intentionally excluded)
+        config_excluded = self._get_config_excluded_models()
+
+        # Get models covered by all selectors
+        covered_models: Set[str] = set()
+        for selector in selectors:
+            resolution = self.resolver.resolve_selector(selector)
+            covered_models.update(resolution.models)
+
+        # Models that should be covered = all models minus intentionally excluded
+        expected_covered = all_models - config_excluded
+
+        # Find models that aren't covered by any selector
+        uncovered = expected_covered - covered_models
+
+        if uncovered:
+            logger.warning(
+                f"\n⚠️  WARNING: {len(uncovered)} model(s) will NOT be run by any selector:"
+            )
+            for model in sorted(uncovered)[:10]:
+                logger.warning(f"    - {model}")
+            if len(uncovered) > 10:
+                logger.warning(f"    ... and {len(uncovered) - 10} more")
+            logger.warning(
+                "\n💡 RECOMMENDATION: Check if these models should be added to a manual selector "
+                "or if they need proper tags/paths for auto-generation."
+            )
+
     def _get_config_excluded_models(self) -> Set[str]:
-        """Get models to exclude based on config's exclude_paths and exclude_models.
+        """Get models to exclude based on config's exclude_tags, exclude_paths, and exclude_models.
 
         Returns:
             Set of model names to exclude from selector generation
         """
         excluded = set()
+
+        # Exclude models matching exclude_tags
+        if self.config.exclude_tags:
+            tag_excluded = self.graph.get_models_with_tags(self.config.exclude_tags)
+            if tag_excluded:
+                logger.info(
+                    f"Excluding {len(tag_excluded)} models based on exclude_tags: "
+                    f"{', '.join(self.config.exclude_tags)}"
+                )
+            excluded.update(tag_excluded)
 
         # Exclude models matching exclude_paths
         if self.config.exclude_paths:
@@ -139,6 +192,9 @@ class SelectorOrchestrator:
                     if len(metadata.invalid_fqns) > 5:
                         logger.warning(f"      ... and {len(metadata.invalid_fqns) - 5} more")
 
+                # Warn about exclusions in manual selector not in config
+                self._warn_manual_selector_exclusions(selector)
+
                 # Exclude models from auto-generation
                 if metadata.models_covered:
                     logger.info(
@@ -148,6 +204,91 @@ class SelectorOrchestrator:
                     excluded_models.update(metadata.models_covered)
 
         return manual_selectors, excluded_models
+
+    def _warn_manual_selector_exclusions(self, selector: Dict[str, Any]) -> None:
+        """Warn if manual selector has exclusions not in config.
+
+        If a manual selector excludes tags/paths that aren't in the config's
+        exclude_tags/exclude_paths, models with those tags/paths will still
+        appear in auto-generated selectors.
+
+        Args:
+            selector: Manual selector definition
+        """
+        selector_name = selector.get("name", "unknown")
+        definition = selector.get("definition", {})
+
+        # Extract exclusions from the selector definition
+        manual_excluded_tags, manual_excluded_paths = self._extract_exclusions_from_definition(
+            definition
+        )
+
+        # Check for tags excluded in manual but not in config
+        config_excluded_tags = set(self.config.exclude_tags)
+        tags_not_in_config = manual_excluded_tags - config_excluded_tags
+        if tags_not_in_config:
+            logger.warning(
+                f"  Manual selector '{selector_name}' excludes tag(s) {sorted(tags_not_in_config)} "
+                f"but these are NOT in config exclude_tags. "
+                f"Models with these tags will still appear in auto-generated selectors."
+            )
+
+        # Check for paths excluded in manual but not in config
+        config_excluded_paths = set(self.config.exclude_paths)
+        paths_not_in_config = manual_excluded_paths - config_excluded_paths
+        if paths_not_in_config:
+            logger.warning(
+                f"  Manual selector '{selector_name}' excludes path(s) {sorted(paths_not_in_config)} "
+                f"but these are NOT in config exclude_paths. "
+                f"Models in these paths will still appear in auto-generated selectors."
+            )
+
+    def _extract_exclusions_from_definition(
+        self, definition: Dict[str, Any]
+    ) -> Tuple[Set[str], Set[str]]:
+        """Extract excluded tags and paths from a selector definition.
+
+        Recursively searches the definition for exclude clauses.
+
+        Args:
+            definition: Selector definition dictionary
+
+        Returns:
+            Tuple of (excluded_tags set, excluded_paths set)
+        """
+        excluded_tags: Set[str] = set()
+        excluded_paths: Set[str] = set()
+
+        def extract_from_item(item: Any) -> None:
+            if not isinstance(item, dict):
+                return
+
+            # Check for exclude clause
+            if "exclude" in item:
+                exclude_def = item["exclude"]
+                if isinstance(exclude_def, dict):
+                    # Handle union of exclusions
+                    for exc_item in exclude_def.get("union", []):
+                        if isinstance(exc_item, dict):
+                            method = exc_item.get("method")
+                            value = exc_item.get("value")
+                            if method == "tag" and value:
+                                excluded_tags.add(value)
+                            elif method == "path" and value:
+                                excluded_paths.add(value)
+
+            # Recursively check union items
+            if "union" in item:
+                for union_item in item["union"]:
+                    extract_from_item(union_item)
+
+            # Recursively check intersection items
+            if "intersection" in item:
+                for inter_item in item["intersection"]:
+                    extract_from_item(inter_item)
+
+        extract_from_item(definition)
+        return excluded_tags, excluded_paths
 
     def _generate_fqn_mode(self) -> List[Dict[str, Any]]:
         """Generate FQN-based selectors with manual selector preservation.
