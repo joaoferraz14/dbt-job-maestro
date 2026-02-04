@@ -284,8 +284,9 @@ class FQNSelector(BaseSelector):
         """Determine if a freshness selector should be created for this selector.
 
         Logic:
-        - If freshness_selector_names is provided, only create freshness for those selectors
-        - Otherwise, use the global include_freshness_selectors flag
+        1. If selector is in exclude_freshness_selector_names, return False
+        2. If freshness_selector_names is provided, only create for those selectors
+        3. Otherwise, use the global include_freshness_selectors flag
 
         Args:
             selector_name: Name of the selector to check
@@ -293,6 +294,13 @@ class FQNSelector(BaseSelector):
         Returns:
             True if freshness selector should be created, False otherwise
         """
+        # Check exclusion list first
+        if selector_name in self.config.exclude_freshness_selector_names:
+            return False
+
+        # If include list is provided, only create for those selectors
         if self.config.freshness_selector_names:
             return selector_name in self.config.freshness_selector_names
+
+        # Otherwise use global flag
         return self.config.include_freshness_selectors

@@ -331,6 +331,21 @@ class TestConfigExclusionLists:
         config = SelectorConfig(freshness_selector_names=["selector_staging", "selector_marts"])
         assert len(config.freshness_selector_names) == 2
 
+    def test_exclude_freshness_selector_names(self):
+        """Test exclude_freshness_selector_names configuration."""
+        config = SelectorConfig(
+            exclude_freshness_selector_names=["maestro_debug", "manual_testing"]
+        )
+        assert len(config.exclude_freshness_selector_names) == 2
+        assert "maestro_debug" in config.exclude_freshness_selector_names
+
+    def test_freshness_default_disabled(self):
+        """Test that freshness selectors are disabled by default."""
+        config = SelectorConfig()
+        assert config.include_freshness_selectors is False
+        assert config.freshness_selector_names == []
+        assert config.exclude_freshness_selector_names == []
+
 
 class TestConfigIntegration:
     """Integration tests for configuration handling."""
