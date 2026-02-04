@@ -284,6 +284,24 @@ selector:
         with pytest.raises(FileNotFoundError):
             Config.from_yaml("nonexistent_config.yml")
 
+    def test_from_yaml_method_as_list_raises_error(self):
+        """Test that loading config with method as list raises error."""
+        yaml_content = """
+selector:
+  method:
+    - fqn
+    - path
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write(yaml_content)
+            config_path = f.name
+
+        try:
+            with pytest.raises(ValueError, match="must be a single string value"):
+                Config.from_yaml(config_path)
+        finally:
+            os.unlink(config_path)
+
 
 class TestConfigExclusionLists:
     """Test exclusion list handling in configuration."""
