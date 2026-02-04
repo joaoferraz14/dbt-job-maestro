@@ -149,6 +149,10 @@ maestro generate --exclude-tag deprecated --exclude-tag archived
 maestro generate --exclude-path models/staging/legacy --exclude-path models/temp
 maestro generate --exclude-model temp_model --exclude-model debug_model
 
+# Enable or disable freshness selectors
+maestro generate --include-freshness    # Generate freshness selectors
+maestro generate --no-include-freshness # Skip freshness selectors (default)
+
 # Use configuration file
 maestro generate --config maestro-config.yml
 
@@ -166,7 +170,7 @@ maestro generate --config maestro-config.yml --method fqn
 - `--exclude-model`: Models to exclude (can specify multiple)
 - `--path-level`: Directory level for path grouping (default: 1)
 - `--min-models`: Minimum models per selector (default: 1)
-- `--no-freshness`: Disable freshness selector generation
+- `--include-freshness/--no-include-freshness`: Enable or disable freshness selector generation (default: disabled)
 
 ### `maestro generate-jobs`
 
@@ -305,16 +309,25 @@ selector:
   # FRESHNESS SELECTORS
   # -------------------------------------------------------------------------
 
-  # Generate source freshness selectors
+  # Generate source freshness selectors (default: false)
   # Creates paired selectors for checking source freshness
   include_freshness_selectors: false
 
-  # Specific selectors to generate freshness for (optional)
+  # Specific selectors to generate freshness for (optional whitelist)
   # If empty and include_freshness_selectors=true, ALL selectors get freshness
   # If provided, ONLY these selectors get freshness variants
   freshness_selector_names:
     - maestro_dim_customers
     - critical_revenue  # Works with both maestro and manual selectors
+
+  # Selectors to EXCLUDE from freshness generation (optional blacklist)
+  # These selectors will NOT get freshness variants even if:
+  # - include_freshness_selectors is true, OR
+  # - they're listed in freshness_selector_names
+  # Exclusion always takes priority over inclusion
+  exclude_freshness_selector_names:
+    - maestro_debug
+    - manual_testing
 
   # -------------------------------------------------------------------------
   # ADVANCED OPTIONS

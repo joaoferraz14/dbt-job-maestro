@@ -36,8 +36,14 @@ class SelectorConfig:
     # Specific selector names to generate freshness for (optional)
     # If empty and include_freshness_selectors is True, all selectors get freshness
     # If provided, only these selectors get freshness variants
-    # Example: ['selector_critical', 'automatically_generated_selector_staging']
+    # Example: ['maestro_staging', 'maestro_marts']
     freshness_selector_names: List[str] = field(default_factory=list)
+
+    # Selector names to EXCLUDE from freshness generation (optional)
+    # If provided, these selectors will NOT get freshness variants even if
+    # include_freshness_selectors is True or they're in freshness_selector_names
+    # Example: ['maestro_debug', 'manual_testing']
+    exclude_freshness_selector_names: List[str] = field(default_factory=list)
 
     # Whether to include parent sources when a model depends on them
     include_parent_sources: bool = True
@@ -248,6 +254,9 @@ class Config:
             exclude_paths=selector_data.get("exclude_paths", []),
             include_freshness_selectors=selector_data.get("include_freshness_selectors", False),
             freshness_selector_names=selector_data.get("freshness_selector_names", []),
+            exclude_freshness_selector_names=selector_data.get(
+                "exclude_freshness_selector_names", []
+            ),
             include_parent_sources=selector_data.get("include_parent_sources", True),
             prefix_order=selector_data.get("prefix_order", []),
             path_grouping_level=selector_data.get("path_grouping_level", 1),
@@ -330,6 +339,7 @@ class Config:
                 "exclude_paths": self.selector.exclude_paths,
                 "include_freshness_selectors": self.selector.include_freshness_selectors,
                 "freshness_selector_names": self.selector.freshness_selector_names,
+                "exclude_freshness_selector_names": self.selector.exclude_freshness_selector_names,
                 "include_parent_sources": self.selector.include_parent_sources,
                 "prefix_order": self.selector.prefix_order,
                 "path_grouping_level": self.selector.path_grouping_level,

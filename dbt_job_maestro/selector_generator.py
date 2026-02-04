@@ -113,7 +113,7 @@ class SelectorGenerator:
                     selector = self._create_fqn_selector_for_component(filtered_component)
                     selectors.append(selector)
 
-                    if self.config.include_freshness_selectors:
+                    if self._should_create_freshness(selector["name"]):
                         freshness_selector = self._create_freshness_selector(
                             selector["name"], filtered_component
                         )
@@ -128,7 +128,7 @@ class SelectorGenerator:
                 independent_selector = self._create_independent_selector(list(filtered_independent))
                 selectors.append(independent_selector)
 
-                if self.config.include_freshness_selectors:
+                if self._should_create_freshness("selector_independent"):
                     freshness_selector = self._create_freshness_selector(
                         "selector_independent", list(filtered_independent)
                     )
@@ -171,7 +171,7 @@ class SelectorGenerator:
 
                 selectors.append(selector)
 
-                if self.config.include_freshness_selectors:
+                if self._should_create_freshness(f"path_{selector_name}"):
                     freshness_selector = self._create_freshness_selector(
                         f"path_{selector_name}", models
                     )
@@ -213,7 +213,7 @@ class SelectorGenerator:
 
                 selectors.append(selector)
 
-                if self.config.include_freshness_selectors:
+                if self._should_create_freshness(f"tag_{tag}"):
                     freshness_selector = self._create_freshness_selector(f"tag_{tag}", models)
                     selectors.append(freshness_selector)
 
@@ -353,6 +353,31 @@ class SelectorGenerator:
                 "union": [{"method": "path", "value": path} for path in self.config.exclude_paths]
             }
         }
+
+    def _should_create_freshness(self, selector_name: str) -> bool:
+        """Determine if a freshness selector should be created for this selector.
+
+        Logic:
+        1. If selector is in exclude_freshness_selector_names, return False
+        2. If freshness_selector_names is provided, only create for those selectors
+        3. Otherwise, use the global include_freshness_selectors flag
+
+        Args:
+            selector_name: Name of the selector to check
+
+        Returns:
+            True if freshness selector should be created, False otherwise
+        """
+        # Check exclusion list first
+        if selector_name in self.config.exclude_freshness_selector_names:
+            return False
+
+        # If include list is provided, only create for those selectors
+        if self.config.freshness_selector_names:
+            return selector_name in self.config.freshness_selector_names
+
+        # Otherwise use global flag
+        return self.config.include_freshness_selectors
 
     def _custom_sort(self, models: List[str]) -> List[str]:
         """

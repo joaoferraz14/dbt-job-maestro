@@ -244,7 +244,7 @@ class TestGenerateCommand:
             assert result.exit_code == 0
 
     def test_generate_with_no_freshness(self, runner, temp_manifest):
-        """Test generate with no-freshness flag."""
+        """Test generate with --no-include-freshness flag."""
         with runner.isolated_filesystem():
             result = runner.invoke(
                 main,
@@ -252,7 +252,23 @@ class TestGenerateCommand:
                     "generate",
                     "--manifest",
                     temp_manifest,
-                    "--no-freshness",
+                    "--no-include-freshness",
+                    "--output",
+                    "selectors.yml",
+                ],
+            )
+            assert result.exit_code == 0
+
+    def test_generate_with_include_freshness(self, runner, temp_manifest):
+        """Test generate with --include-freshness flag."""
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                main,
+                [
+                    "generate",
+                    "--manifest",
+                    temp_manifest,
+                    "--include-freshness",
                     "--output",
                     "selectors.yml",
                 ],

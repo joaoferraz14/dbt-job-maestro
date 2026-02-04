@@ -86,7 +86,9 @@ selector:
   exclude_paths: []
   exclude_models: []
   group_by_dependencies: true  # Only for fqn method
-  # ... more options
+  include_freshness_selectors: false  # Enable freshness selector generation
+  freshness_selector_names: []  # Only create freshness for these selectors
+  exclude_freshness_selector_names: []  # Never create freshness for these
 
 # Job definitions
 job:

@@ -87,10 +87,9 @@ def main():
     help="Minimum models per selector (overrides config)",
 )
 @click.option(
-    "--no-freshness",
-    is_flag=True,
-    default=False,
-    help="Disable generation of freshness selectors",
+    "--include-freshness/--no-include-freshness",
+    default=None,
+    help="Enable or disable generation of freshness selectors (overrides config)",
 )
 def generate(
     config,
@@ -103,7 +102,7 @@ def generate(
     exclude_model,
     path_level,
     min_models,
-    no_freshness,
+    include_freshness,
 ):
     """
     Generate dbt selectors from manifest.json
@@ -165,8 +164,8 @@ def generate(
             cfg.selector.path_grouping_level = path_level
         if min_models is not None:
             cfg.selector.min_models_per_selector = min_models
-        if no_freshness:
-            cfg.selector.include_freshness_selectors = False
+        if include_freshness is not None:
+            cfg.selector.include_freshness_selectors = include_freshness
 
         # Validate config after all overrides applied
         cfg.selector.validate()
