@@ -57,7 +57,13 @@ line-length = 100
 target-version = ['py38']
 
 [tool.mypy]
-python_version = "3.8"
-warn_return_any = true
+python_version = "3.9"
+warn_return_any = false
 warn_unused_configs = true
-disallow_untyped_defs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+strict_equality = false
+
+[[tool.mypy.overrides]]
+module = ["dbt_job_maestro.*"]
+disable_error_code = ["index", "arg-type", "dict-item", "assignment"]

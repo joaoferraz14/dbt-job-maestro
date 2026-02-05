@@ -54,7 +54,8 @@ def main():
     "-t",
     type=click.Choice(["fqn", "path", "tag"], case_sensitive=False),
     multiple=True,
-    help="Selector generation method: fqn (dependency grouping), path (per folder), tag (per tag). Only one method allowed.",
+    help="Selector generation method: fqn (dependency grouping), path (per folder), "
+    "tag (per tag). Only one method allowed.",
 )
 @click.option(
     "--group-by-dependencies/--no-group-by-dependencies",
@@ -197,7 +198,8 @@ def generate(
                 [s for s in selectors if not s["name"].startswith("freshness_")]
             )
             click.echo(
-                f"Generated {non_freshness_selectors} selectors from {len(components)} connected components"
+                f"Generated {non_freshness_selectors} selectors "
+                f"from {len(components)} connected components"
             )
 
         click.echo("\n" + "=" * 60)

@@ -3,7 +3,7 @@
 import logging
 import os
 import yaml
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Optional
 
 from dbt_job_maestro.config import SelectorConfig
 from dbt_job_maestro.manifest_parser import ManifestParser
@@ -72,7 +72,9 @@ class SelectorGenerator:
 
         return excluded
 
-    def _should_include_model(self, model_name: str, excluded_models: Set[str] = None) -> bool:
+    def _should_include_model(
+        self, model_name: str, excluded_models: Optional[Set[str]] = None
+    ) -> bool:
         """
         Check if a model should be included in selector generation.
 
@@ -230,7 +232,8 @@ class SelectorGenerator:
                 logger.warning(f"    ... and {len(untagged_models) - 10} more")
             logger.warning(
                 "\n💡 RECOMMENDATION: Use method='fqn' to ensure all models are included "
-                "in selectors. The 'fqn' method groups models by dependencies for complete coverage."
+                "in selectors. The 'fqn' method groups models by dependencies "
+                "for complete coverage."
             )
 
         return selectors

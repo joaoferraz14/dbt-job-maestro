@@ -1,6 +1,6 @@
 """Build dependency graphs from model dependencies"""
 
-from typing import Dict, List, Set, Any
+from typing import Dict, List, Set, Any, Optional
 from collections import defaultdict
 
 
@@ -24,7 +24,7 @@ class GraphBuilder:
         Returns:
             Dictionary mapping model names to their connected models
         """
-        graph = defaultdict(set)
+        graph: Dict[str, Set[str]] = defaultdict(set)
 
         for model_name, model_data in self.models.items():
             # Ensure model exists in graph even if it has no connections
@@ -38,7 +38,9 @@ class GraphBuilder:
 
         return dict(graph)
 
-    def find_connected_components(self, exclude_models: Set[str] = None) -> List[List[str]]:
+    def find_connected_components(
+        self, exclude_models: Optional[Set[str]] = None
+    ) -> List[List[str]]:
         """
         Find connected components in the dependency graph
 
@@ -68,7 +70,7 @@ class GraphBuilder:
 
         for node in self.graph:
             if node not in visited and node not in exclude_models:
-                component = []
+                component: List[str] = []
                 dfs(node, component)
                 if component:
                     components.append(sorted(component))

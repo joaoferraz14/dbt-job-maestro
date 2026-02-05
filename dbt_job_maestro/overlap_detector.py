@@ -1,7 +1,7 @@
 """Detect and report overlaps between selectors."""
 
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Tuple
 from dbt_job_maestro.selector_types import SelectorPriority, SelectorMetadata, OverlapWarning
 from dbt_job_maestro.model_resolver import ModelResolver
 
@@ -26,7 +26,9 @@ class OverlapDetector:
         self.selector_prefix = selector_prefix
 
     def detect_overlaps(
-        self, selectors: List[Dict[str, Any]], selector_metadata: Dict[str, SelectorMetadata] = None
+        self,
+        selectors: List[Dict[str, Any]],
+        selector_metadata: Optional[Dict[str, SelectorMetadata]] = None,
     ) -> List[OverlapWarning]:
         """Detect overlapping models between selectors.
 
@@ -43,7 +45,7 @@ class OverlapDetector:
         warnings = []
 
         # Build a map of model -> list of selectors containing it
-        model_to_selectors = {}
+        model_to_selectors: Dict[str, List[Tuple[str, SelectorPriority]]] = {}
 
         for selector in selectors:
             selector_name = selector.get("name", "")
