@@ -87,6 +87,34 @@ def main():
     default=None,
     help="Enable or disable generation of freshness selectors (overrides config)",
 )
+@click.option(
+    "--include-seeds/--no-include-seeds",
+    default=None,
+    help="Enable or disable generation of seeds selectors (overrides config)",
+)
+@click.option(
+    "--seeds-method",
+    type=click.Choice(["path", "fqn"], case_sensitive=False),
+    help="Method to group seeds: 'path' (uses path method) or 'fqn' (uses fqn for each). Both create ONE selector.",
+)
+@click.option(
+    "--seeds-path",
+    help="Path to seeds folder (used when --seeds-method=path)",
+)
+@click.option(
+    "--include-snapshots/--no-include-snapshots",
+    default=None,
+    help="Enable or disable generation of snapshots selectors (overrides config)",
+)
+@click.option(
+    "--snapshots-method",
+    type=click.Choice(["path", "fqn"], case_sensitive=False),
+    help="Method to group snapshots: 'path' (uses path method) or 'fqn' (uses fqn for each). Both create ONE selector.",
+)
+@click.option(
+    "--snapshots-path",
+    help="Path to snapshots folder (used when --snapshots-method=path)",
+)
 def generate(
     config,
     manifest,
@@ -98,6 +126,12 @@ def generate(
     exclude_model,
     path_level,
     include_freshness,
+    include_seeds,
+    seeds_method,
+    seeds_path,
+    include_snapshots,
+    snapshots_method,
+    snapshots_path,
 ):
     """
     Generate dbt selectors from manifest.json
@@ -160,6 +194,22 @@ def generate(
         if include_freshness is not None:
             cfg.selector.include_freshness_selectors = include_freshness
 
+        # Seeds selector overrides
+        if include_seeds is not None:
+            cfg.selector.include_seeds_selectors = include_seeds
+        if seeds_method:
+            cfg.selector.seeds_selector_method = seeds_method
+        if seeds_path:
+            cfg.selector.seeds_path = seeds_path
+
+        # Snapshots selector overrides
+        if include_snapshots is not None:
+            cfg.selector.include_snapshots_selectors = include_snapshots
+        if snapshots_method:
+            cfg.selector.snapshots_selector_method = snapshots_method
+        if snapshots_path:
+            cfg.selector.snapshots_path = snapshots_path
+
         # Validate config after all overrides applied
         cfg.selector.validate()
 
@@ -179,6 +229,12 @@ def generate(
             click.echo(f"Excluding paths: {', '.join(cfg.selector.exclude_paths)}")
         if cfg.selector.exclude_models:
             click.echo(f"Excluding models: {', '.join(cfg.selector.exclude_models)}")
+        if cfg.selector.include_seeds_selectors:
+            click.echo(f"Including seeds selectors (method: {cfg.selector.seeds_selector_method})")
+        if cfg.selector.include_snapshots_selectors:
+            click.echo(
+                f"Including snapshots selectors (method: {cfg.selector.snapshots_selector_method})"
+            )
 
         # Use SelectorOrchestrator for all methods
         generator = SelectorOrchestrator(parser, graph, cfg.selector)

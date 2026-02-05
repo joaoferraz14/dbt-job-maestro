@@ -66,6 +66,9 @@ class BaseSelector(ABC):
         (default: "maestro_") is considered manual. This is the simple convention -
         all auto-generated selectors use the configured prefix.
 
+        Auto-generated freshness selectors follow the pattern "freshness_{prefix}_*"
+        and are NOT considered manual - they should be regenerated based on config.
+
         Args:
             selector_def: Selector definition dictionary
 
@@ -73,10 +76,39 @@ class BaseSelector(ABC):
             True if manually created (name doesn't start with selector_prefix), False otherwise
         """
         name = selector_def.get("name", "")
-        prefix = f"{self.config.selector_prefix}_"
 
-        # If name doesn't start with the configured prefix, it's manual
-        if not name.startswith(prefix):
+        # Auto-generated freshness selectors are NOT manual
+        if self.is_auto_generated_freshness(name):
+            return False
+
+        # If name starts with the configured prefix, it's auto-generated
+        prefix = f"{self.config.selector_prefix}_"
+        if name.startswith(prefix):
+            return False
+
+        return True
+
+    def is_auto_generated_freshness(self, selector_name: str) -> bool:
+        """Determine if a selector is an auto-generated freshness selector.
+
+        Auto-generated freshness selectors follow these patterns:
+        - "freshness_{prefix}_*" (e.g., "freshness_maestro_model_name")
+        - "freshness_selector_independent" (special case for independent models)
+
+        Args:
+            selector_name: Name of the selector
+
+        Returns:
+            True if auto-generated freshness selector, False otherwise
+        """
+        freshness_prefix = f"freshness_{self.config.selector_prefix}_"
+
+        # Check for standard freshness pattern
+        if selector_name.startswith(freshness_prefix):
+            return True
+
+        # Check for special independent selector freshness
+        if selector_name == "freshness_selector_independent":
             return True
 
         return False

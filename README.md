@@ -99,16 +99,43 @@ maestro uses a simple naming convention to distinguish selector types:
 | Selector Name | Type | Behavior |
 |--------------|------|----------|
 | `maestro_*` | Auto-generated | Managed by maestro - regenerated on each run |
+| `freshness_maestro_*` | Auto-generated freshness | Managed by maestro - regenerated based on `include_freshness_selectors` |
 | Anything else | Manual | Preserved during regeneration |
 
 **Examples:**
 - `maestro_stg_customers` → Auto-generated (replaced on regeneration)
+- `freshness_maestro_stg_customers` → Auto-generated freshness (removed if `include_freshness_selectors: false`)
 - `critical_revenue` → Manual (preserved on regeneration)
+- `freshness_my_custom` → Manual freshness (preserved on regeneration)
 - `my_custom_selector` → Manual (preserved on regeneration)
 
 **That's it!** No special metadata or description prefixes needed - just avoid `maestro_` prefix for your custom selectors.
 
 **Customizable Prefix:** The default prefix is `maestro`, but you can configure it via `selector_prefix` in your config. If you change the prefix, all logic automatically uses the new prefix (e.g., `myprefix_` → auto-generated, anything else → manual).
+
+### Freshness Selector Types
+
+Freshness selectors follow similar conventions:
+
+| Freshness Selector Name | Type | Behavior |
+|------------------------|------|----------|
+| `freshness_{prefix}_*` | Auto-generated | Created when `include_freshness_selectors: true`, removed when `false` |
+| `freshness_selector_independent` | Auto-generated (special) | For independent models, same behavior as above |
+| `freshness_*` (other patterns) | Manual | Always preserved during regeneration |
+
+**How auto-generated freshness detection works:**
+
+```
+freshness_maestro_dim_customers  → Auto-generated (pattern: freshness_{prefix}_*)
+freshness_selector_independent   → Auto-generated (special case for independent models)
+freshness_my_critical_models     → Manual (no prefix match, preserved)
+freshness_custom_selector        → Manual (no prefix match, preserved)
+```
+
+**Key behavior:**
+- When `include_freshness_selectors: false` (default), auto-generated freshness selectors are **removed**
+- When `include_freshness_selectors: true`, auto-generated freshness selectors are **created**
+- Manual freshness selectors (those not matching `freshness_{prefix}_*`) are **always preserved**
 
 ### Job Management
 
@@ -170,6 +197,12 @@ maestro generate --config maestro-config.yml --method fqn
 - `--exclude-model`: Models to exclude (can specify multiple)
 - `--path-level`: Directory level for path grouping (default: 1)
 - `--include-freshness/--no-include-freshness`: Enable or disable freshness selector generation (default: disabled)
+- `--include-seeds/--no-include-seeds`: Enable or disable seeds selector generation (default: disabled)
+- `--seeds-method`: Method to group seeds: `path` (uses path method) or `fqn` (uses fqn for each). Both create ONE selector.
+- `--seeds-path`: Path to seeds folder (auto-detected if not specified)
+- `--include-snapshots/--no-include-snapshots`: Enable or disable snapshots selector generation (default: disabled)
+- `--snapshots-method`: Method to group snapshots: `path` (uses path method) or `fqn` (uses fqn for each). Both create ONE selector.
+- `--snapshots-path`: Path to snapshots folder (auto-detected if not specified)
 
 ### `maestro generate-jobs`
 
@@ -327,6 +360,34 @@ selector:
   exclude_freshness_selector_names:
     - maestro_debug
     - manual_testing
+
+  # -------------------------------------------------------------------------
+  # SEEDS SELECTORS
+  # -------------------------------------------------------------------------
+
+  # Generate selectors for seed files (default: false)
+  include_seeds_selectors: false
+
+  # Method to group seeds: 'path' (uses path method) or 'fqn' (uses fqn for each seed)
+  # Both methods create ONE selector ({prefix}_seeds) containing all seeds
+  seeds_selector_method: path
+
+  # Path to seeds folder (auto-detected if empty)
+  seeds_path: ""
+
+  # -------------------------------------------------------------------------
+  # SNAPSHOTS SELECTORS
+  # -------------------------------------------------------------------------
+
+  # Generate selectors for snapshot files (default: false)
+  include_snapshots_selectors: false
+
+  # Method to group snapshots: 'path' (uses path method) or 'fqn' (uses fqn for each snapshot)
+  # Both methods create ONE selector ({prefix}_snapshots) containing all snapshots
+  snapshots_selector_method: path
+
+  # Path to snapshots folder (auto-detected if empty)
+  snapshots_path: ""
 
   # -------------------------------------------------------------------------
   # ADVANCED OPTIONS
@@ -1238,6 +1299,24 @@ job:
 ```
 
 **Note:** Both settings default to `true`. If jobs aren't generating, check your config file for explicit `false` values.
+
+### "Freshness selectors not being removed"
+
+**Cause:** Freshness selectors are being treated as manual selectors
+
+**Fix:** Auto-generated freshness selectors must follow the pattern `freshness_{prefix}_*` to be managed by maestro:
+
+```yaml
+# ✅ Auto-generated (will be removed when include_freshness_selectors: false)
+- name: freshness_maestro_dim_customers  # Pattern: freshness_{prefix}_*
+- name: freshness_selector_independent   # Special case
+
+# ❌ Manual (will be preserved regardless of include_freshness_selectors setting)
+- name: freshness_my_custom_selector     # No prefix match
+- name: freshness_critical_models        # No prefix match
+```
+
+If you have old freshness selectors that don't match the pattern, manually delete them or rename them to match `freshness_{prefix}_*`.
 
 ### "Path selector not matching models"
 

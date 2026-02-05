@@ -73,6 +73,34 @@ class SelectorConfig:
     # When True, detects and logs warnings when multiple manual selectors cover the same model
     warn_on_manual_overlaps: bool = True
 
+    # -------------------------------------------------------------------------
+    # SEEDS SELECTOR OPTIONS
+    # -------------------------------------------------------------------------
+
+    # Whether to generate selectors for seed files
+    include_seeds_selectors: bool = False
+
+    # Method to group seeds: 'path' (by folder) or 'fqn' (individual seeds)
+    seeds_selector_method: str = "path"
+
+    # Path to seeds folder (used when seeds_selector_method='path')
+    # If empty, auto-detects from manifest
+    seeds_path: str = ""
+
+    # -------------------------------------------------------------------------
+    # SNAPSHOTS SELECTOR OPTIONS
+    # -------------------------------------------------------------------------
+
+    # Whether to generate selectors for snapshot files
+    include_snapshots_selectors: bool = False
+
+    # Method to group snapshots: 'path' (by folder) or 'fqn' (individual snapshots)
+    snapshots_selector_method: str = "path"
+
+    # Path to snapshots folder (used when snapshots_selector_method='path')
+    # If empty, auto-detects from manifest
+    snapshots_path: str = ""
+
     def validate(self) -> None:
         """Validate configuration options for compatibility.
 
@@ -107,6 +135,21 @@ class SelectorConfig:
             raise ValueError(
                 f"Invalid exclusion_mode '{self.exclusion_mode}'. "
                 f"Must be one of: {', '.join(valid_exclusion_modes)}"
+            )
+
+        # Validate seeds_selector_method
+        valid_selector_methods = ["path", "fqn"]
+        if self.seeds_selector_method not in valid_selector_methods:
+            raise ValueError(
+                f"Invalid seeds_selector_method '{self.seeds_selector_method}'. "
+                f"Must be one of: {', '.join(valid_selector_methods)}"
+            )
+
+        # Validate snapshots_selector_method
+        if self.snapshots_selector_method not in valid_selector_methods:
+            raise ValueError(
+                f"Invalid snapshots_selector_method '{self.snapshots_selector_method}'. "
+                f"Must be one of: {', '.join(valid_selector_methods)}"
             )
 
 
@@ -271,6 +314,12 @@ class Config:
             path_grouping_level=selector_data.get("path_grouping_level", 1),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
             warn_on_manual_overlaps=selector_data.get("warn_on_manual_overlaps", True),
+            include_seeds_selectors=selector_data.get("include_seeds_selectors", False),
+            seeds_selector_method=selector_data.get("seeds_selector_method", "path"),
+            seeds_path=selector_data.get("seeds_path", ""),
+            include_snapshots_selectors=selector_data.get("include_snapshots_selectors", False),
+            snapshots_selector_method=selector_data.get("snapshots_selector_method", "path"),
+            snapshots_path=selector_data.get("snapshots_path", ""),
         )
 
         # Validate selector config
@@ -355,6 +404,12 @@ class Config:
                 "path_grouping_level": self.selector.path_grouping_level,
                 "selector_prefix": self.selector.selector_prefix,
                 "warn_on_manual_overlaps": self.selector.warn_on_manual_overlaps,
+                "include_seeds_selectors": self.selector.include_seeds_selectors,
+                "seeds_selector_method": self.selector.seeds_selector_method,
+                "seeds_path": self.selector.seeds_path,
+                "include_snapshots_selectors": self.selector.include_snapshots_selectors,
+                "snapshots_selector_method": self.selector.snapshots_selector_method,
+                "snapshots_path": self.selector.snapshots_path,
             },
             "job": {
                 "account_id": self.job.account_id,

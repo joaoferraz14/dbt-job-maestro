@@ -69,6 +69,55 @@ automatically excluded from auto-generation to prevent duplicates.
 - `critical_revenue`, `my_custom_selector` → Manual (preserved)
 - `maestro_stg_customers` → Auto-generated (replaced on regeneration)
 
+## Freshness Selector Identification
+
+Freshness selectors follow specific naming patterns to determine if they are auto-generated or manual:
+
+### Auto-Generated Freshness Selectors
+
+These are managed by maestro and will be:
+- **Created** when `include_freshness_selectors: true`
+- **Removed** when `include_freshness_selectors: false`
+
+**Patterns:**
+```
+freshness_{prefix}_*           → e.g., freshness_maestro_dim_customers
+freshness_selector_independent → Special case for independent models
+```
+
+### Manual Freshness Selectors
+
+These are always preserved regardless of `include_freshness_selectors` setting:
+
+**Patterns (anything NOT matching auto-generated):**
+```
+freshness_my_custom_selector   → Manual (no prefix match)
+freshness_critical_models      → Manual (no prefix match)
+```
+
+### Detection Logic
+
+The `is_auto_generated_freshness()` method in `BaseSelector` determines if a selector is auto-generated:
+
+```python
+def is_auto_generated_freshness(self, selector_name: str) -> bool:
+    freshness_prefix = f"freshness_{self.config.selector_prefix}_"
+
+    # Pattern 1: freshness_{prefix}_* (e.g., "freshness_maestro_model_name")
+    if selector_name.startswith(freshness_prefix):
+        return True
+
+    # Pattern 2: Special case for independent models
+    if selector_name == "freshness_selector_independent":
+        return True
+
+    return False
+```
+
+This ensures:
+1. Auto-generated freshness selectors can be cleanly removed when disabled
+2. Custom freshness selectors created by users are never accidentally deleted
+
 ## Configuration
 
 ### maestro-maestro-config.yml Structure
@@ -86,9 +135,25 @@ selector:
   exclude_paths: []
   exclude_models: []
   group_by_dependencies: true  # Only for fqn method
+  selector_prefix: maestro  # Prefix for auto-generated selectors
+
+  # Freshness selector options
   include_freshness_selectors: false  # Enable freshness selector generation
-  freshness_selector_names: []  # Only create freshness for these selectors
-  exclude_freshness_selector_names: []  # Never create freshness for these
+  freshness_selector_names: []  # Only create freshness for these selectors (whitelist)
+  exclude_freshness_selector_names: []  # Never create freshness for these (blacklist)
+
+  # Auto-generated freshness selectors follow pattern: freshness_{selector_prefix}_*
+  # Manual freshness selectors (other patterns) are always preserved
+
+  # Seeds selector options
+  include_seeds_selectors: false  # Enable seeds selector generation
+  seeds_selector_method: path  # 'path' or 'fqn' (both create one {prefix}_seeds selector)
+  seeds_path: ""  # Auto-detected if empty
+
+  # Snapshots selector options
+  include_snapshots_selectors: false  # Enable snapshots selector generation
+  snapshots_selector_method: path  # 'path' or 'fqn' (both create one {prefix}_snapshots selector)
+  snapshots_path: ""  # Auto-detected if empty
 
 # Job definitions
 job:
