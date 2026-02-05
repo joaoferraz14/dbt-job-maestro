@@ -169,7 +169,6 @@ maestro generate --config maestro-config.yml --method fqn
 - `--exclude-path`: Paths to exclude (can specify multiple, e.g., `models/staging/legacy`)
 - `--exclude-model`: Models to exclude (can specify multiple)
 - `--path-level`: Directory level for path grouping (default: 1)
-- `--min-models`: Minimum models per selector (default: 1)
 - `--include-freshness/--no-include-freshness`: Enable or disable freshness selector generation (default: disabled)
 
 ### `maestro generate-jobs`
@@ -344,9 +343,6 @@ selector:
   # 0=root, 1=first subdirectory, etc.
   path_grouping_level: 1
 
-  # Minimum models per selector
-  min_models_per_selector: 1
-
   # Prefix for auto-generated selectors (don't change unless you have a reason)
   # Manual selectors (those without this prefix) are always preserved
   selector_prefix: maestro
@@ -415,6 +411,16 @@ job:
   start_minute: 0                # First job minute (0-59)
   cron_increment_minutes: 5      # Minutes between jobs (for cron_incremental)
   cron_days_of_week: []          # Empty=every day, or ["MON","TUE","WED","THU","FRI"]
+
+  # -------------------------------------------------------------------------
+  # MINIMUM MODELS PER JOB (FQN method only)
+  # -------------------------------------------------------------------------
+
+  # Minimum models per job for FQN selectors (default: 1)
+  # When set > 1, selectors with fewer models are combined into a single job
+  # that runs multiple selectors: dbt build --selector A --selector B ...
+  # Only works with method='fqn' - other methods ignore this setting
+  min_models_per_job: 1
 
   # -------------------------------------------------------------------------
   # CASCADE MODE (Two-Phase Deployment)
@@ -1070,6 +1076,25 @@ job:
 ```
 
 Then manually create jobs in dbt Cloud UI using the generated selectors.
+
+### Example: Combining Small Selectors (FQN only)
+
+If you have many small FQN selectors with only 1-3 models each, you can combine them into a single job to reduce job clutter:
+
+```yaml
+selector:
+  method: fqn
+  group_by_dependencies: true
+
+job:
+  min_models_per_job: 4  # Selectors with < 4 models will be combined
+```
+
+**Result:**
+- Selectors with >= 4 models get their own job: `dbt build --selector maestro_large_component`
+- Selectors with < 4 models are combined into one job: `dbt build --selector maestro_small1 --selector maestro_small2 --selector maestro_small3`
+
+**Note:** This feature only works with `method: fqn`. Path and tag methods are not affected.
 
 ---
 

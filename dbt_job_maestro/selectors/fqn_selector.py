@@ -38,6 +38,8 @@ class FQNSelector(BaseSelector):
             for model_name in self.models:
                 if model_name not in excluded_models:
                     selector = self._create_single_model_selector(model_name)
+                    # Add model count for job generation (used by min_models_per_job)
+                    selector["_model_count"] = 1
                     selectors.append(selector)
         else:
             # Find connected components (excluding already assigned models)
@@ -50,8 +52,10 @@ class FQNSelector(BaseSelector):
             for component in components:
                 filtered_component = [m for m in component if m not in excluded_models]
 
-                if len(filtered_component) >= self.config.min_models_per_selector:
+                if filtered_component:
                     selector = self._create_component_selector(filtered_component)
+                    # Add model count for job generation (used by min_models_per_job)
+                    selector["_model_count"] = len(filtered_component)
                     selectors.append(selector)
 
                     # Track these models to exclude from independent selector
@@ -72,6 +76,8 @@ class FQNSelector(BaseSelector):
 
             if filtered_independent:
                 selector = self._create_independent_selector(filtered_independent)
+                # Add model count for job generation (used by min_models_per_job)
+                selector["_model_count"] = len(filtered_independent)
                 selectors.append(selector)
 
                 if self._should_create_freshness("selector_independent"):

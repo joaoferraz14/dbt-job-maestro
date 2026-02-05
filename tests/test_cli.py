@@ -225,24 +225,6 @@ class TestGenerateCommand:
             assert result.exit_code == 0
             assert "Excluding models: model_a" in result.output
 
-    def test_generate_with_min_models(self, runner, temp_manifest):
-        """Test generate with min-models option."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                main,
-                [
-                    "generate",
-                    "--manifest",
-                    temp_manifest,
-                    "--min-models",
-                    "2",
-                    "--no-group-by-dependencies",
-                    "--output",
-                    "selectors.yml",
-                ],
-            )
-            assert result.exit_code == 0
-
     def test_generate_with_no_freshness(self, runner, temp_manifest):
         """Test generate with --no-include-freshness flag."""
         with runner.isolated_filesystem():
@@ -292,10 +274,10 @@ selector:
   exclude_tags:
     - deprecated
 """
-            with open("config.yml", "w") as f:
+            with open("maestro-config.yml", "w") as f:
                 f.write(config_content)
 
-            result = runner.invoke(main, ["generate", "--config", "config.yml"])
+            result = runner.invoke(main, ["generate", "--config", "maestro-config.yml"])
             assert result.exit_code == 0
 
 
@@ -375,13 +357,13 @@ class TestInitCommand:
         with runner.isolated_filesystem():
             result = runner.invoke(main, ["init"])
             assert result.exit_code == 0
-            assert Path("config.yml").exists()
+            assert Path("maestro-config.yml").exists()
 
     def test_init_overwrites_with_confirmation(self, runner):
         """Test init asks for confirmation when file exists."""
         with runner.isolated_filesystem():
             # Create existing file
-            Path("config.yml").write_text("existing content")
+            Path("maestro-config.yml").write_text("existing content")
 
             # Run init with yes input
             result = runner.invoke(main, ["init"], input="y\n")
@@ -391,7 +373,7 @@ class TestInitCommand:
         """Test init cancels when user says no."""
         with runner.isolated_filesystem():
             # Create existing file
-            Path("config.yml").write_text("existing content")
+            Path("maestro-config.yml").write_text("existing content")
 
             # Run init with no input
             result = runner.invoke(main, ["init"], input="n\n")

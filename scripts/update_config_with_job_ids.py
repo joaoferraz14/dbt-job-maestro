@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Update config.yml with job IDs for cascade mode.
+Update maestro-config.yml with job IDs for cascade mode.
 
 This script takes job IDs (from fetch_job_ids.py or manual input)
-and updates the config.yml file with the job_id_mapping.
+and updates the maestro-config.yml file with the job_id_mapping.
 
 Usage:
     python scripts/update_config_with_job_ids.py \
-        --config config.yml \
+        --config maestro-config.yml \
         --job-ids job_ids.yml \
         --disable-initial-deployment
 """
@@ -19,10 +19,10 @@ import yaml
 
 def update_config_with_job_ids(config_path: str, job_ids_path: str, disable_initial: bool = True):
     """
-    Update config.yml with job IDs.
+    Update maestro-config.yml with job IDs.
 
     Args:
-        config_path: Path to config.yml
+        config_path: Path to maestro-config.yml
         job_ids_path: Path to YAML file with job_id_mapping
         disable_initial: Set cascade_initial_deployment to False
     """
@@ -60,8 +60,10 @@ def update_config_with_job_ids(config_path: str, job_ids_path: str, disable_init
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Update config.yml with job IDs for cascade mode")
-    parser.add_argument("--config", required=True, help="Path to config.yml file")
+    parser = argparse.ArgumentParser(
+        description="Update maestro-config.yml with job IDs for cascade mode"
+    )
+    parser.add_argument("--config", required=True, help="Path to maestro-config.yml file")
     parser.add_argument("--job-ids", required=True, help="Path to YAML file with job_id_mapping")
     parser.add_argument(
         "--disable-initial-deployment",

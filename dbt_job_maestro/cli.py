@@ -82,11 +82,6 @@ def main():
     help="Directory level for path grouping (overrides config)",
 )
 @click.option(
-    "--min-models",
-    type=int,
-    help="Minimum models per selector (overrides config)",
-)
-@click.option(
     "--include-freshness/--no-include-freshness",
     default=None,
     help="Enable or disable generation of freshness selectors (overrides config)",
@@ -101,7 +96,6 @@ def generate(
     exclude_path,
     exclude_model,
     path_level,
-    min_models,
     include_freshness,
 ):
     """
@@ -113,13 +107,13 @@ def generate(
     Examples:
 
       # Use config file
-      maestro generate --config config.yml
+      maestro generate --config maestro-config.yml
 
       # Use command line options
       maestro generate --manifest target/manifest.json --method fqn
 
       # Mix config file with overrides
-      maestro generate --config config.yml --exclude-tag deprecated
+      maestro generate --config maestro-config.yml --exclude-tag deprecated
     """
     # Validate method - only one allowed (checked before try block for clean error)
     if len(method) > 1:
@@ -162,8 +156,6 @@ def generate(
             )
         if path_level is not None:
             cfg.selector.path_grouping_level = path_level
-        if min_models is not None:
-            cfg.selector.min_models_per_selector = min_models
         if include_freshness is not None:
             cfg.selector.include_freshness_selectors = include_freshness
 
@@ -272,13 +264,13 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
     Examples:
 
       # Using config file
-      maestro generate-jobs --config config.yml
+      maestro generate-jobs --config maestro-config.yml
 
       # Using command line options
       maestro generate-jobs --selectors selectors.yml --output jobs.yml
 
       # Override config settings
-      maestro generate-jobs --config config.yml --account-id 12345
+      maestro generate-jobs --config maestro-config.yml --account-id 12345
     """
     try:
         # Load config from file or use defaults
@@ -332,7 +324,9 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
                     fg="yellow",
                 )
             )
-            click.echo("Update config.yml with your dbt Cloud account/project/environment IDs.")
+            click.echo(
+                "Update maestro-config.yml with your dbt Cloud account/project/environment IDs."
+            )
 
         click.echo("\n" + "=" * 60)
         click.echo("Next Steps:")
@@ -439,7 +433,7 @@ def info(manifest):
 @click.option(
     "--output",
     "-o",
-    default="config.yml",
+    default="maestro-config.yml",
     help="Output file for configuration template",
     type=click.Path(),
 )
@@ -447,7 +441,7 @@ def init(output):
     """
     Create a configuration file template
 
-    Generates a config.yml file with all available options and documentation.
+    Generates a maestro-config.yml file with all available options and documentation.
     You can then customize this file for your project.
     """
     try:
@@ -500,7 +494,7 @@ def check(config, dbt_project):
       maestro check
 
       # Check with config file
-      maestro check --config maestro-config.yml
+      maestro check --config maestro-maestro-config.yml
 
       # Check specific dbt project
       maestro check --dbt-project ./my-dbt-project

@@ -155,7 +155,7 @@ class SelectorGenerator:
             # Filter out excluded models
             models = [m for m in models if m not in excluded_models]
 
-            if len(models) >= self.config.min_models_per_selector:
+            if models:
                 selector_name = self._path_to_selector_name(path_prefix)
                 selector = {
                     "name": f"path_{selector_name}",
@@ -200,7 +200,7 @@ class SelectorGenerator:
             models = [m for m in models if m not in excluded_models]
             tagged_models.update(models)
 
-            if len(models) >= self.config.min_models_per_selector:
+            if models:
                 selector = {
                     "name": f"tag_{tag}",
                     "description": f"Selector for models tagged with {tag}",
