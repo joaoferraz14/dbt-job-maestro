@@ -1049,6 +1049,65 @@ class TestFreshnessSelectors:
             # No freshness selectors because the only included one is also excluded
             assert len(freshness_selectors) == 0
 
+    def test_auto_freshness_not_preserved_as_manual(self, mock_parser, mock_graph, tmp_path):
+        """Test that auto-generated freshness selectors are NOT preserved as manual selectors.
+
+        When regenerating with include_freshness_selectors=False, previously generated
+        freshness selectors should be removed (not treated as manual selectors).
+        """
+        import os
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            # Step 1: Generate WITH freshness selectors
+            config_with_freshness = SelectorConfig(
+                method="fqn",
+                group_by_dependencies=True,
+                include_freshness_selectors=True,
+                selector_prefix="maestro",
+            )
+            orchestrator1 = SelectorOrchestrator(mock_parser, mock_graph, config_with_freshness)
+            selectors_with_freshness = orchestrator1.generate_selectors()
+
+            # Write to file (simulating first run)
+            orchestrator1.write_selectors(selectors_with_freshness, "selectors.yml")
+
+            # Verify freshness selectors were created
+            freshness_count_initial = len(
+                [s for s in selectors_with_freshness if s["name"].startswith("freshness_")]
+            )
+            assert freshness_count_initial > 0, "Should have freshness selectors initially"
+
+            # Step 2: Regenerate WITHOUT freshness selectors
+            config_without_freshness = SelectorConfig(
+                method="fqn",
+                group_by_dependencies=True,
+                include_freshness_selectors=False,
+                selector_prefix="maestro",
+            )
+            orchestrator2 = SelectorOrchestrator(mock_parser, mock_graph, config_without_freshness)
+            selectors_without_freshness = orchestrator2.generate_selectors()
+
+            # Verify NO freshness selectors in the new generation
+            freshness_count_final = len(
+                [s for s in selectors_without_freshness if s["name"].startswith("freshness_")]
+            )
+            assert freshness_count_final == 0, (
+                f"Auto-generated freshness selectors should NOT be preserved. "
+                f"Found {freshness_count_final} freshness selectors."
+            )
+
+            # Verify regular selectors still exist
+            regular_selectors = [
+                s for s in selectors_without_freshness if not s["name"].startswith("freshness_")
+            ]
+            assert len(regular_selectors) > 0, "Regular selectors should still be generated"
+
+        finally:
+            os.chdir(original_dir)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

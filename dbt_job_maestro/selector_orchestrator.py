@@ -72,6 +72,16 @@ class SelectorOrchestrator:
         else:
             raise ValueError(f"Unknown selector method: {method}")
 
+        # Generate seeds selectors if configured
+        if self.config.include_seeds_selectors:
+            seeds_selectors = self._generate_seeds_selectors()
+            selectors.extend(seeds_selectors)
+
+        # Generate snapshots selectors if configured
+        if self.config.include_snapshots_selectors:
+            snapshots_selectors = self._generate_snapshots_selectors()
+            selectors.extend(snapshots_selectors)
+
         # Check for overlaps if configured
         if self.config.warn_on_manual_overlaps:
             warnings = self.overlap_detector.detect_overlaps(selectors)
@@ -558,6 +568,227 @@ class SelectorOrchestrator:
 
         # Otherwise use global flag
         return self.config.include_freshness_selectors
+
+    def _generate_seeds_selectors(self) -> List[Dict[str, Any]]:
+        """Generate selectors for seed files.
+
+        Creates selectors for seeds based on the configured method (path or fqn).
+        Seeds already covered by manual selectors are excluded.
+
+        Returns:
+            List of seed selector definitions
+        """
+        selectors = []
+        seeds = self.parser.get_seeds()
+
+        if not seeds:
+            logger.info("No seeds found in manifest")
+            return selectors
+
+        # Get seeds covered by manual selectors
+        excluded_seeds = self._get_seeds_in_manual_selectors()
+
+        if self.config.seeds_selector_method == "path":
+            # Create a single selector for all seeds by path
+            seeds_path = self.config.seeds_path
+            if not seeds_path:
+                # Auto-detect from manifest
+                path_prefixes = self.parser.get_seeds_path_prefixes(level=0)
+                if path_prefixes:
+                    seeds_path = sorted(path_prefixes)[0]
+
+            if seeds_path:
+                # Filter out excluded seeds
+                included_seeds = [s for s in seeds.keys() if s not in excluded_seeds]
+                if included_seeds:
+                    selector = {
+                        "name": f"{self.config.selector_prefix}_seeds",
+                        "description": f"Selector for all seeds in {seeds_path}",
+                        "definition": {"union": [{"method": "path", "value": seeds_path}]},
+                    }
+                    selectors.append(selector)
+                    logger.info(
+                        f"Generated seeds selector covering {len(included_seeds)} seeds "
+                        f"({len(excluded_seeds)} excluded by manual selectors)"
+                    )
+        else:
+            # Create ONE combined selector for all seeds (fqn method)
+            included_seeds = [s for s in sorted(seeds.keys()) if s not in excluded_seeds]
+            if included_seeds:
+                union_items = [
+                    {"method": "fqn", "value": seed_name} for seed_name in included_seeds
+                ]
+                selector = {
+                    "name": f"{self.config.selector_prefix}_seeds",
+                    "description": f"Selector for all seeds ({len(included_seeds)} seeds)",
+                    "definition": {"union": union_items},
+                }
+                selectors.append(selector)
+                logger.info(
+                    f"Generated seeds selector covering {len(included_seeds)} seeds "
+                    f"({len(excluded_seeds)} excluded by manual selectors)"
+                )
+
+        return selectors
+
+    def _generate_snapshots_selectors(self) -> List[Dict[str, Any]]:
+        """Generate selectors for snapshot files.
+
+        Creates selectors for snapshots based on the configured method (path or fqn).
+        Snapshots already covered by manual selectors are excluded.
+
+        Returns:
+            List of snapshot selector definitions
+        """
+        selectors = []
+        snapshots = self.parser.get_snapshots()
+
+        if not snapshots:
+            logger.info("No snapshots found in manifest")
+            return selectors
+
+        # Get snapshots covered by manual selectors
+        excluded_snapshots = self._get_snapshots_in_manual_selectors()
+
+        if self.config.snapshots_selector_method == "path":
+            # Create a single selector for all snapshots by path
+            snapshots_path = self.config.snapshots_path
+            if not snapshots_path:
+                # Auto-detect from manifest
+                path_prefixes = self.parser.get_snapshots_path_prefixes(level=0)
+                if path_prefixes:
+                    snapshots_path = sorted(path_prefixes)[0]
+
+            if snapshots_path:
+                # Filter out excluded snapshots
+                included_snapshots = [s for s in snapshots.keys() if s not in excluded_snapshots]
+                if included_snapshots:
+                    selector = {
+                        "name": f"{self.config.selector_prefix}_snapshots",
+                        "description": f"Selector for all snapshots in {snapshots_path}",
+                        "definition": {"union": [{"method": "path", "value": snapshots_path}]},
+                    }
+                    selectors.append(selector)
+                    logger.info(
+                        f"Generated snapshots selector covering {len(included_snapshots)} snapshots "
+                        f"({len(excluded_snapshots)} excluded by manual selectors)"
+                    )
+        else:
+            # Create ONE combined selector for all snapshots (fqn method)
+            included_snapshots = [
+                s for s in sorted(snapshots.keys()) if s not in excluded_snapshots
+            ]
+            if included_snapshots:
+                union_items = [
+                    {"method": "fqn", "value": snapshot_name}
+                    for snapshot_name in included_snapshots
+                ]
+                selector = {
+                    "name": f"{self.config.selector_prefix}_snapshots",
+                    "description": f"Selector for all snapshots ({len(included_snapshots)} snapshots)",
+                    "definition": {"union": union_items},
+                }
+                selectors.append(selector)
+                logger.info(
+                    f"Generated snapshots selector covering {len(included_snapshots)} snapshots "
+                    f"({len(excluded_snapshots)} excluded by manual selectors)"
+                )
+
+        return selectors
+
+    def _get_seeds_in_manual_selectors(self) -> Set[str]:
+        """Get seeds that are covered by manual selectors.
+
+        Analyzes manual selectors to find any that reference seeds,
+        either by FQN or path.
+
+        Returns:
+            Set of seed names covered by manual selectors
+        """
+        covered_seeds = set()
+        seeds = self.parser.get_seeds()
+        seed_names = set(seeds.keys())
+
+        # Get all manual selectors
+        manual_gen = self.generators[SelectorPriority.MANUAL]
+        manual_selectors = manual_gen.generate(excluded_models=set())
+
+        for selector in manual_selectors:
+            definition = selector.get("definition", {})
+            covered = self._extract_covered_resources_from_definition(definition, seed_names)
+            covered_seeds.update(covered)
+
+        return covered_seeds
+
+    def _get_snapshots_in_manual_selectors(self) -> Set[str]:
+        """Get snapshots that are covered by manual selectors.
+
+        Analyzes manual selectors to find any that reference snapshots,
+        either by FQN or path.
+
+        Returns:
+            Set of snapshot names covered by manual selectors
+        """
+        covered_snapshots = set()
+        snapshots = self.parser.get_snapshots()
+        snapshot_names = set(snapshots.keys())
+
+        # Get all manual selectors
+        manual_gen = self.generators[SelectorPriority.MANUAL]
+        manual_selectors = manual_gen.generate(excluded_models=set())
+
+        for selector in manual_selectors:
+            definition = selector.get("definition", {})
+            covered = self._extract_covered_resources_from_definition(definition, snapshot_names)
+            covered_snapshots.update(covered)
+
+        return covered_snapshots
+
+    def _extract_covered_resources_from_definition(
+        self, definition: Dict[str, Any], resource_names: Set[str]
+    ) -> Set[str]:
+        """Extract resources covered by a selector definition.
+
+        Recursively searches the definition for FQN or path references
+        that match the provided resource names.
+
+        Args:
+            definition: Selector definition dictionary
+            resource_names: Set of resource names to check against
+
+        Returns:
+            Set of covered resource names
+        """
+        covered = set()
+
+        def extract_from_item(item: Any) -> None:
+            if not isinstance(item, dict):
+                return
+
+            method = item.get("method")
+            value = item.get("value")
+
+            if method == "fqn" and value in resource_names:
+                covered.add(value)
+            elif method == "path" and value:
+                # Check if any resources are in this path
+                for resource_name in resource_names:
+                    # Simple path matching - could be enhanced
+                    if value in resource_name or resource_name.startswith(value.rstrip("/")):
+                        covered.add(resource_name)
+
+            # Recursively check union items
+            if "union" in item:
+                for union_item in item["union"]:
+                    extract_from_item(union_item)
+
+            # Recursively check intersection items
+            if "intersection" in item:
+                for inter_item in item["intersection"]:
+                    extract_from_item(inter_item)
+
+        extract_from_item(definition)
+        return covered
 
     def write_selectors(self, selectors: List[Dict[str, Any]], output_path: str) -> None:
         """Write selectors to YAML file with blank lines between selectors.

@@ -154,3 +154,105 @@ class ManifestParser:
             tags.update(data["tags"])
 
         return tags
+
+    def get_seeds(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract seed information from manifest
+
+        Returns:
+            Dictionary mapping seed names to their metadata including:
+            - name: seed name
+            - fqn: fully qualified name
+            - path: file path
+            - tags: list of tags
+        """
+        seeds = {}
+
+        for node_id, node_data in self.manifest_data.get("nodes", {}).items():
+            if not node_id.startswith("seed."):
+                continue
+
+            seed_name = node_id.split(".")[-1]
+
+            seeds[seed_name] = {
+                "name": seed_name,
+                "fqn": node_data.get("fqn", []),
+                "path": node_data.get("path", ""),
+                "original_file_path": node_data.get("original_file_path", ""),
+                "tags": node_data.get("tags", []),
+                "resource_type": "seed",
+            }
+
+        return seeds
+
+    def get_snapshots(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract snapshot information from manifest
+
+        Returns:
+            Dictionary mapping snapshot names to their metadata including:
+            - name: snapshot name
+            - fqn: fully qualified name
+            - path: file path
+            - tags: list of tags
+        """
+        snapshots = {}
+
+        for node_id, node_data in self.manifest_data.get("nodes", {}).items():
+            if not node_id.startswith("snapshot."):
+                continue
+
+            snapshot_name = node_id.split(".")[-1]
+
+            snapshots[snapshot_name] = {
+                "name": snapshot_name,
+                "fqn": node_data.get("fqn", []),
+                "path": node_data.get("path", ""),
+                "original_file_path": node_data.get("original_file_path", ""),
+                "tags": node_data.get("tags", []),
+                "resource_type": "snapshot",
+            }
+
+        return snapshots
+
+    def get_seeds_path_prefixes(self, level: int = 0) -> Set[str]:
+        """
+        Get unique path prefixes for seeds at a specific directory level
+
+        Args:
+            level: Directory level (0 = root level, 1 = first subdirectory, etc.)
+
+        Returns:
+            Set of unique path prefixes for seeds
+        """
+        seeds = self.get_seeds()
+        prefixes = set()
+
+        for data in seeds.values():
+            path_parts = Path(data["path"]).parts
+            if len(path_parts) > level:
+                prefix = str(Path(*path_parts[: level + 1]))
+                prefixes.add(prefix)
+
+        return prefixes
+
+    def get_snapshots_path_prefixes(self, level: int = 0) -> Set[str]:
+        """
+        Get unique path prefixes for snapshots at a specific directory level
+
+        Args:
+            level: Directory level (0 = root level, 1 = first subdirectory, etc.)
+
+        Returns:
+            Set of unique path prefixes for snapshots
+        """
+        snapshots = self.get_snapshots()
+        prefixes = set()
+
+        for data in snapshots.values():
+            path_parts = Path(data["path"]).parts
+            if len(path_parts) > level:
+                prefix = str(Path(*path_parts[: level + 1]))
+                prefixes.add(prefix)
+
+        return prefixes
