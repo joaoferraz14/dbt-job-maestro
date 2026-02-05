@@ -250,7 +250,11 @@ Create a configuration template.
 maestro init --output maestro-config.yml
 ```
 
-Generates a fully-commented configuration file you can customize.
+Generates a fully-commented configuration file with documentation for every option. The generated file includes:
+- Explanations of each setting
+- Example values
+- Recommended defaults
+- Section headers for easy navigation
 
 ### `maestro check`
 
@@ -1361,6 +1365,16 @@ MIT License - See LICENSE file for details.
 ---
 
 ## Changelog
+
+### 0.2.0 (2026-02-05)
+
+- **New:** Fully-commented configuration template from `maestro init`
+- **New:** Seeds selector generation (`include_seeds_selectors`)
+- **New:** Snapshots selector generation (`include_snapshots_selectors`)
+- **New:** Freshness selector whitelist/blacklist (`freshness_selector_names`, `exclude_freshness_selector_names`)
+- **New:** `maestro check` command for deployment validation
+- **Fixed:** Path method no longer creates overlapping selectors for nested directories
+- **Improved:** Better path matching - `stage/sap` no longer matches `stage/sap_snpglue`
 
 ### 0.1.0 (2026-01-22)
 

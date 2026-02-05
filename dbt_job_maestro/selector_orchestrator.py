@@ -358,6 +358,10 @@ class SelectorOrchestrator:
         Creates selectors based on directory structure. Manual selectors are
         preserved and their models excluded from path selectors.
 
+        Models are only added to their shortest matching path to avoid duplicates.
+        For example, a model in 'models/staging/sap/snpglue' will only appear in
+        the 'staging_sap' selector (at level 1), not in 'staging_sap_snpglue'.
+
         Returns:
             List of path-based selector definitions
         """
@@ -374,10 +378,18 @@ class SelectorOrchestrator:
         # Get path prefixes at configured level
         path_prefixes = self.parser.get_path_prefixes(self.config.path_grouping_level)
 
-        for path_prefix in sorted(path_prefixes):
+        # Sort paths by length (shortest first) so higher-level paths take priority
+        sorted_paths = sorted(path_prefixes, key=lambda p: len(p.split("/")))
+
+        # Track models already assigned to a path selector
+        models_already_covered: Set[str] = set()
+
+        for path_prefix in sorted_paths:
             models = self.graph.group_by_path(path_prefix)
-            # Filter out excluded models
-            models = [m for m in models if m not in excluded_models]
+            # Filter out excluded models AND models already covered by another path selector
+            models = [
+                m for m in models if m not in excluded_models and m not in models_already_covered
+            ]
 
             if models:
                 selector_name = self._path_to_selector_name(path_prefix)
@@ -393,6 +405,9 @@ class SelectorOrchestrator:
                     selector["definition"]["union"].append(exclusion)
 
                 all_selectors.append(selector)
+
+                # Mark these models as covered so they won't appear in other path selectors
+                models_already_covered.update(models)
 
                 # Create freshness selector if configured
                 if self._should_create_freshness(selector["name"]):

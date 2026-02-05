@@ -137,18 +137,30 @@ class GraphBuilder:
                 normalized_prefix = normalized_prefix[len(common_prefix) :]
                 break
 
+        def is_path_match(model_path: str, prefix: str) -> bool:
+            """Check if model_path is exactly within the prefix directory.
+
+            Ensures 'stage/sap' matches 'stage/sap/model.sql' but NOT 'stage/sap_snp_glue/model.sql'
+            """
+            if not model_path or not prefix:
+                return False
+            # Ensure prefix ends with / for proper directory matching
+            prefix_with_slash = prefix if prefix.endswith("/") else prefix + "/"
+            # Also check for exact match (model is directly in the directory)
+            return model_path.startswith(prefix_with_slash) or model_path == prefix
+
         # Match against both the manifest path and original_file_path
         matched_models = []
         for name, data in self.models.items():
             model_path = data.get("path", "")
             original_path = data.get("original_file_path", "")
 
-            # Check if either path starts with the normalized prefix
+            # Check if either path is within the prefix directory
             if (
-                model_path.startswith(normalized_prefix)
-                or model_path.startswith(path_prefix)
-                or original_path.startswith(normalized_prefix)
-                or original_path.startswith(path_prefix)
+                is_path_match(model_path, normalized_prefix)
+                or is_path_match(model_path, path_prefix)
+                or is_path_match(original_path, normalized_prefix)
+                or is_path_match(original_path, path_prefix)
             ):
                 matched_models.append(name)
 

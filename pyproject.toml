@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Automatically generate dbt selectors from manifest.json by analyzing dependencies, paths, and tags"
 readme = "README.md"
 authors = [
-    { name = "Your Name", email = "your.email@example.com" }
+    { name = "João Ferraz", email = "joaotiagoplgferraz@gmail.com" }
 ]
 license = { text = "MIT" }
 requires-python = ">=3.8"
@@ -40,9 +40,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/dbt-job-maestro"
-Repository = "https://github.com/yourusername/dbt-job-maestro"
-Issues = "https://github.com/yourusername/dbt-job-maestro/issues"
+Homepage = "https://github.com/joaoferraz14/dbt-job-maestro"
+Repository = "https://github.com/joaoferraz14/dbt-job-maestro"
+Issues = "https://github.com/joaoferraz14/dbt-job-maestro/issues"
 
 [project.scripts]
 maestro = "dbt_job_maestro.cli:main"
