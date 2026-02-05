@@ -209,7 +209,26 @@ Configure branch protection to prevent concurrent deployments:
 
 ## Validation
 
-Before deploying, validate your setup:
+Before deploying, validate your setup using the `maestro check` command:
+
+```bash
+# Basic check
+maestro check
+
+# Check with config file
+maestro check --config maestro-config.yml
+
+# Check specific dbt project directory
+maestro check --dbt-project ./my-dbt-project
+```
+
+This validates:
+- dbt-jobs-as-code package is installed
+- Current git branch matches deployment branch
+- packages.yml configuration
+- Required files exist (selectors.yml, jobs.yml)
+
+Or use the Python API:
 
 ```python
 # validate_deployment.py
@@ -227,12 +246,6 @@ if not is_valid:
     exit(1)
 
 print("✅ Deployment requirements validated")
-```
-
-Run before committing:
-
-```bash
-python validate_deployment.py
 ```
 
 ## Troubleshooting

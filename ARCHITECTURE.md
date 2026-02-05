@@ -51,9 +51,15 @@ Groups models by shared dependencies using graph analysis.
 **Use when:** Your models have clear dependency chains
 
 ### Method: path
-Groups models by their folder structure.
+Groups models by their folder structure at the configured `path_grouping_level`.
 
 **Use when:** Your models are well-organized by directory
+
+**Path Matching:** Uses strict directory boundary matching to prevent overlaps:
+- `stage/sap` matches `stage/sap/model.sql`
+- `stage/sap` does NOT match `stage/sap_snpglue/model.sql`
+
+Models are assigned to their first matching path only (sorted by path length, shortest first).
 
 ### Method: tag
 Groups models by dbt tags.
@@ -117,6 +123,28 @@ def is_auto_generated_freshness(self, selector_name: str) -> bool:
 This ensures:
 1. Auto-generated freshness selectors can be cleanly removed when disabled
 2. Custom freshness selectors created by users are never accidentally deleted
+
+### Freshness Selector Whitelist/Blacklist
+
+Fine-grained control over which selectors get freshness variants:
+
+**Whitelist** (`freshness_selector_names`):
+- If empty: All selectors get freshness (when `include_freshness_selectors: true`)
+- If populated: Only listed selectors get freshness
+
+**Blacklist** (`exclude_freshness_selector_names`):
+- Listed selectors NEVER get freshness, even if in whitelist
+- Blacklist takes priority over whitelist
+
+```yaml
+selector:
+  include_freshness_selectors: true
+  freshness_selector_names:           # Whitelist (empty = all)
+    - maestro_staging
+    - maestro_marts
+  exclude_freshness_selector_names:   # Blacklist (always excluded)
+    - maestro_debug
+```
 
 ## Configuration
 
@@ -229,6 +257,9 @@ jobs:
 ## CLI Commands
 
 ```bash
+# Create config template (with comments explaining every option)
+maestro init --output maestro-config.yml
+
 # Generate selectors from manifest
 maestro generate --config maestro-config.yml
 
@@ -236,10 +267,10 @@ maestro generate --config maestro-config.yml
 maestro generate-jobs --config maestro-config.yml
 
 # Analyze project
-maestro info
+maestro info --manifest target/manifest.json
 
-# Create config template
-maestro init
+# Check deployment requirements
+maestro check --config maestro-config.yml
 ```
 
 ## Dependencies
