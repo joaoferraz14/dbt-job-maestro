@@ -7,7 +7,7 @@ See: https://github.com/dbt-labs/dbt-jobs-as-code
 
 import os
 import yaml
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dbt_job_maestro.config import JobConfig
 
@@ -25,7 +25,7 @@ class JobGenerator:
         self.config = config
 
     def generate_jobs(
-        self, selectors: List[Dict[str, Any]], existing_jobs: Dict[str, Any] = None
+        self, selectors: List[Dict[str, Any]], existing_jobs: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Generate jobs from selectors
@@ -156,7 +156,7 @@ class JobGenerator:
         selector_name: str,
         job_index: int = 0,
         total_jobs: int = 1,
-        previous_job_name: str = None,
+        previous_job_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create job definition for a selector
@@ -262,7 +262,7 @@ class JobGenerator:
         selector_names: List[str],
         job_index: int = 0,
         total_jobs: int = 1,
-        previous_job_name: str = None,
+        previous_job_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create job definition for multiple selectors combined into one job.

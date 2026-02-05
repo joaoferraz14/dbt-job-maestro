@@ -1,6 +1,6 @@
 """FQN-based selector generator."""
 
-from typing import Dict, List, Any, Set
+from typing import Dict, List, Any, Set, Optional
 
 from dbt_job_maestro.base_selector import BaseSelector
 from dbt_job_maestro.selector_types import SelectorPriority, SelectorMetadata
@@ -229,7 +229,7 @@ class FQNSelector(BaseSelector):
             },
         }
 
-    def _create_exclusion(self) -> Dict[str, Any]:
+    def _create_exclusion(self) -> Optional[Dict[str, Any]]:
         """Create combined exclusion definition for tags and paths.
 
         Combines all exclusions (tags and paths) into a single exclude block.

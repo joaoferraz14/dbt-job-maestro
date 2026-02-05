@@ -3,7 +3,7 @@
 import os
 import yaml
 import logging
-from typing import List, Dict, Any, Set, Tuple
+from typing import List, Dict, Any, Set, Tuple, Optional
 
 from dbt_job_maestro.selector_types import SelectorPriority
 from dbt_job_maestro.model_resolver import ModelResolver
@@ -130,15 +130,16 @@ class SelectorOrchestrator:
             # Warn about other uncovered models (not excluded by config)
             if other_uncovered:
                 logger.warning(
-                    f"\n⚠️  WARNING: {len(other_uncovered)} model(s) will NOT be run by any selector:"
+                    f"\n⚠️  WARNING: {len(other_uncovered)} model(s) "
+                    "will NOT be run by any selector:"
                 )
                 for model in sorted(other_uncovered)[:10]:
                     logger.warning(f"    - {model}")
                 if len(other_uncovered) > 10:
                     logger.warning(f"    ... and {len(other_uncovered) - 10} more")
                 logger.warning(
-                    "\n💡 RECOMMENDATION: Check if these models should be added to a manual selector "
-                    "or if they need proper tags/paths for auto-generation."
+                    "\n💡 RECOMMENDATION: Check if these models should be added to a "
+                    "manual selector or if they need proper tags/paths for auto-generation."
                 )
 
     def _get_config_excluded_models(self) -> Set[str]:
@@ -257,9 +258,10 @@ class SelectorOrchestrator:
         paths_not_in_config = manual_excluded_paths - config_excluded_paths
         if paths_not_in_config:
             logger.warning(
-                f"  Manual selector '{selector_name}' excludes path(s) {sorted(paths_not_in_config)} "
-                f"but these are NOT in config exclude_paths. "
-                f"Models in these paths will still appear in auto-generated selectors."
+                f"  Manual selector '{selector_name}' excludes path(s) "
+                f"{sorted(paths_not_in_config)} but these are NOT in config "
+                "exclude_paths. Models in these paths will still appear "
+                "in auto-generated selectors."
             )
 
     def _extract_exclusions_from_definition(
@@ -449,16 +451,17 @@ class SelectorOrchestrator:
         untagged_models = all_model_names - tagged_models
         if untagged_models:
             logger.warning(
-                f"\n⚠️  WARNING: {len(untagged_models)} model(s) have no tags and will NOT be "
-                f"included in any selector when using method='tag':"
+                f"\n⚠️  WARNING: {len(untagged_models)} model(s) have no tags and "
+                "will NOT be included in any selector when using method='tag':"
             )
             for model in sorted(untagged_models)[:10]:
                 logger.warning(f"    - {model}")
             if len(untagged_models) > 10:
                 logger.warning(f"    ... and {len(untagged_models) - 10} more")
             logger.warning(
-                "\n💡 RECOMMENDATION: Use method='fqn' to ensure all models are included "
-                "in selectors. The 'fqn' method groups models by dependencies for complete coverage."
+                "\n💡 RECOMMENDATION: Use method='fqn' to ensure all models are "
+                "included in selectors. The 'fqn' method groups models by "
+                "dependencies for complete coverage."
             )
 
         logger.info(f"Generated {len(all_selectors) - len(manual_selectors)} tag-based selectors")
@@ -478,7 +481,7 @@ class SelectorOrchestrator:
         parts = path.replace("models/", "").replace("/", "_").strip("_")
         return parts or "root"
 
-    def _create_exclusion(self) -> Dict[str, Any]:
+    def _create_exclusion(self) -> Optional[Dict[str, Any]]:
         """Create combined exclusion definition for tags and paths.
 
         Combines all exclusions (tags and paths) into a single exclude block.
