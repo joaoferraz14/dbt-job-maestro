@@ -68,14 +68,13 @@ class JobGenerator:
             filtered_selectors.append(selector)
 
         # Separate selectors into large and small based on min_models_per_job
-        # Only applies to FQN selectors (those with _model_count metadata)
         large_selectors = []
         small_selectors = []
 
         if self.config.min_models_per_job > 1:
             for selector in filtered_selectors:
-                model_count = selector.get("_model_count")
-                if model_count is not None and model_count < self.config.min_models_per_job:
+                model_count = self._count_selector_models(selector)
+                if model_count > 0 and model_count < self.config.min_models_per_job:
                     small_selectors.append(selector)
                 else:
                     large_selectors.append(selector)
@@ -382,6 +381,28 @@ class JobGenerator:
         """
         description = job.get("description", "")
         return description.startswith("manually_created")
+
+    def _count_selector_models(self, selector: Dict[str, Any]) -> int:
+        """
+        Count the number of models in a selector by examining its definition.
+
+        Counts FQN method entries in the union, which represent individual models.
+
+        Args:
+            selector: Selector definition dictionary
+
+        Returns:
+            Number of models in the selector, or 0 if unable to determine
+        """
+        definition = selector.get("definition", {})
+        union = definition.get("union", [])
+
+        count = 0
+        for entry in union:
+            if entry.get("method") == "fqn":
+                count += 1
+
+        return count
 
     def _generate_incremental_cron(self, job_index: int) -> str:
         """
