@@ -108,7 +108,7 @@ def main():
 
     # Output in requested format
     if args.format == "yaml":
-        print("# Add this to your config.yml under job:")
+        print("# Add this to your maestro-config.yml under job:")
         print("job_id_mapping:")
         for job_name, job_id in sorted(job_mapping.items()):
             print(f"  {job_name}: {job_id}")

@@ -64,10 +64,6 @@ class SelectorConfig:
     # 0 = root level, 1 = first subdirectory, etc.
     path_grouping_level: int = 1
 
-    # Minimum models per selector (selectors with fewer models will be merged)
-    # Note: Not allowed when method='fqn' and group_by_dependencies=True
-    min_models_per_selector: int = 1
-
     # Selector name prefix for auto-generated selectors
     # Selectors starting with "{selector_prefix}_" are auto-generated
     # Selectors NOT starting with this prefix are considered manual (always preserved)
@@ -103,14 +99,6 @@ class SelectorConfig:
             raise ValueError(
                 f"group_by_dependencies is not allowed with method='{self.method}'. "
                 f"Only the 'fqn' method supports dependency grouping."
-            )
-
-        # min_models_per_selector conflicts with group_by_dependencies in fqn mode
-        if self.method == "fqn" and self.group_by_dependencies and self.min_models_per_selector > 1:
-            raise ValueError(
-                "min_models_per_selector > 1 conflicts with group_by_dependencies=True. "
-                "When grouping by dependencies, all connected models are grouped together "
-                "regardless of count. Set group_by_dependencies=False to use min_models_per_selector."
             )
 
         # Validate exclusion_mode
@@ -204,6 +192,11 @@ class JobConfig:
     # Empty list means every day, or specify: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
     cron_days_of_week: List[str] = field(default_factory=list)
 
+    # Minimum models per job for FQN selectors (selectors with fewer models will be combined)
+    # Only works with method='fqn'. When set > 1, selectors with fewer models are combined
+    # into a single job that runs multiple selectors (e.g., dbt build --selector A --selector B)
+    min_models_per_job: int = 1
+
 
 @dataclass
 class DeploymentConfig:
@@ -276,7 +269,6 @@ class Config:
             include_parent_sources=selector_data.get("include_parent_sources", True),
             prefix_order=selector_data.get("prefix_order", []),
             path_grouping_level=selector_data.get("path_grouping_level", 1),
-            min_models_per_selector=selector_data.get("min_models_per_selector", 1),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
             warn_on_manual_overlaps=selector_data.get("warn_on_manual_overlaps", True),
         )
@@ -307,6 +299,7 @@ class Config:
             start_minute=job_data.get("start_minute", 0),
             cron_increment_minutes=job_data.get("cron_increment_minutes", 5),
             cron_days_of_week=job_data.get("cron_days_of_week", []),
+            min_models_per_job=job_data.get("min_models_per_job", 1),
             cascade_initial_deployment=job_data.get("cascade_initial_deployment", True),
             job_id_mapping=job_data.get("job_id_mapping", {}),
             include_maestro_selectors_in_jobs=job_data.get(
@@ -360,7 +353,6 @@ class Config:
                 "include_parent_sources": self.selector.include_parent_sources,
                 "prefix_order": self.selector.prefix_order,
                 "path_grouping_level": self.selector.path_grouping_level,
-                "min_models_per_selector": self.selector.min_models_per_selector,
                 "selector_prefix": self.selector.selector_prefix,
                 "warn_on_manual_overlaps": self.selector.warn_on_manual_overlaps,
             },
@@ -381,6 +373,7 @@ class Config:
                 "start_minute": self.job.start_minute,
                 "cron_increment_minutes": self.job.cron_increment_minutes,
                 "cron_days_of_week": self.job.cron_days_of_week,
+                "min_models_per_job": self.job.min_models_per_job,
                 "cascade_initial_deployment": self.job.cascade_initial_deployment,
                 "job_id_mapping": self.job.job_id_mapping,
                 "include_maestro_selectors_in_jobs": self.job.include_maestro_selectors_in_jobs,

@@ -20,7 +20,6 @@ class TestSelectorConfig:
         assert config.exclude_tags == []
         assert config.exclude_paths == []
         assert config.exclude_models == []
-        assert config.min_models_per_selector == 1
         assert config.group_by_dependencies is True
         assert config.include_freshness_selectors is False
 
@@ -32,7 +31,6 @@ class TestSelectorConfig:
             exclude_tags=["deprecated", "test"],
             exclude_paths=["staging/legacy"],
             exclude_models=["temp_model"],
-            min_models_per_selector=3,
             group_by_dependencies=False,
             include_freshness_selectors=True,
         )
@@ -42,7 +40,6 @@ class TestSelectorConfig:
         assert config.exclude_tags == ["deprecated", "test"]
         assert config.exclude_paths == ["staging/legacy"]
         assert config.exclude_models == ["temp_model"]
-        assert config.min_models_per_selector == 3
         assert config.group_by_dependencies is False
         assert config.include_freshness_selectors is True
 
@@ -70,12 +67,6 @@ class TestSelectorConfig:
         with pytest.raises(ValueError, match="group_by_dependencies is not allowed"):
             config.validate()
 
-    def test_validate_fqn_min_models_with_group_by_deps(self):
-        """Test validation rejects min_models_per_selector > 1 with group_by_dependencies."""
-        config = SelectorConfig(method="fqn", group_by_dependencies=True, min_models_per_selector=2)
-        with pytest.raises(ValueError, match="min_models_per_selector"):
-            config.validate()
-
     def test_validate_method_as_list(self):
         """Test validation rejects method as a list (only one method allowed)."""
         config = SelectorConfig(method=["fqn", "path"])
@@ -100,6 +91,7 @@ class TestJobConfig:
         assert config.environment_id is None
         assert config.include_maestro_selectors_in_jobs is True
         assert config.include_manual_selectors_in_jobs is True
+        assert config.min_models_per_job == 1
 
     def test_custom_values(self):
         """Test job configuration with custom values."""
@@ -109,6 +101,7 @@ class TestJobConfig:
             environment_id=11111,
             include_maestro_selectors_in_jobs=True,
             include_manual_selectors_in_jobs=True,
+            min_models_per_job=4,
         )
 
         assert config.account_id == 12345
@@ -116,6 +109,7 @@ class TestJobConfig:
         assert config.environment_id == 11111
         assert config.include_maestro_selectors_in_jobs is True
         assert config.include_manual_selectors_in_jobs is True
+        assert config.min_models_per_job == 4
 
 
 class TestDeploymentConfig:
@@ -175,12 +169,12 @@ selector:
     - staging/legacy
   exclude_models:
     - temp_model
-  min_models_per_selector: 2
 
 job:
   account_id: 12345
   project_id: 67890
   environment_id: 11111
+  min_models_per_job: 4
 
 deployment:
   deploy_branch: production
@@ -202,11 +196,11 @@ deployment:
             assert config.selector.exclude_tags == ["deprecated", "test"]
             assert config.selector.exclude_paths == ["staging/legacy"]
             assert config.selector.exclude_models == ["temp_model"]
-            assert config.selector.min_models_per_selector == 2
 
             assert config.job.account_id == 12345
             assert config.job.project_id == 67890
             assert config.job.environment_id == 11111
+            assert config.job.min_models_per_job == 4
 
             assert config.deployment.deploy_branch == "production"
             assert config.deployment.require_dbt_jobs_as_code is False

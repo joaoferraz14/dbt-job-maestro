@@ -50,7 +50,7 @@ dbt deps
 
 ### 3. Configure dbt-job-maestro
 
-Create `config.yml`:
+Create `maestro-config.yml`:
 
 ```yaml
 manifest_path: target/manifest.json
@@ -84,7 +84,7 @@ deployment:
 dbt compile
 
 # Generate selectors
-maestro generate --config config.yml
+maestro generate --config maestro-config.yml
 
 # Review selectors.yml
 cat selectors.yml
@@ -94,7 +94,7 @@ cat selectors.yml
 
 ```bash
 # Generate jobs from selectors
-maestro generate-jobs --config config.yml
+maestro generate-jobs --config maestro-config.yml
 
 # Review jobs.yml
 cat jobs.yml
@@ -103,7 +103,7 @@ cat jobs.yml
 ### Commit Changes
 
 ```bash
-git add selectors.yml jobs.yml config.yml
+git add selectors.yml jobs.yml maestro-config.yml
 git commit -m "Update selectors and jobs"
 git push origin feature/update-selectors
 ```
@@ -291,7 +291,7 @@ dbt-jobs-as-code sync-jobs jobs.yml --verbose
 ### 1. Version Control Everything
 
 ```bash
-git add selectors.yml jobs.yml config.yml
+git add selectors.yml jobs.yml maestro-config.yml
 git commit -m "Update job definitions"
 ```
 
@@ -307,7 +307,7 @@ dbt list --selector <selector_name>
 
 ### 3. Deploy Only from Main
 
-Configure in `config.yml`:
+Configure in `maestro-config.yml`:
 
 ```yaml
 deployment:
@@ -329,8 +329,8 @@ Results in jobs named: `mycompany_dbt_stg_customers`
 ```bash
 # Update selectors when models change
 dbt compile
-maestro generate --config config.yml
-maestro generate-jobs --config config.yml
+maestro generate --config maestro-config.yml
+maestro generate-jobs --config maestro-config.yml
 
 # Commit if changed
 git diff selectors.yml jobs.yml
@@ -347,13 +347,13 @@ repos:
     hooks:
       - id: generate-selectors
         name: Generate DBT Selectors
-        entry: bash -c 'dbt compile && maestro generate --config config.yml'
+        entry: bash -c 'dbt compile && maestro generate --config maestro-config.yml'
         language: system
         pass_filenames: false
 
       - id: generate-jobs
         name: Generate DBT Jobs
-        entry: maestro generate-jobs --config config.yml
+        entry: maestro generate-jobs --config maestro-config.yml
         language: system
         pass_filenames: false
 ```

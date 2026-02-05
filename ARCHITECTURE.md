@@ -18,7 +18,7 @@
 └─────────────────────────────────────────────────────────────┘
 
 6. Pull request review
-7. Merge to main branch (configured in config.yml)
+7. Merge to main branch (configured in maestro-config.yml)
 
 ┌─────────────────────────────────────────────────────────────┐
 │                    CI/CD PIPELINE                            │
@@ -71,7 +71,7 @@ automatically excluded from auto-generation to prevent duplicates.
 
 ## Configuration
 
-### config.yml Structure
+### maestro-maestro-config.yml Structure
 
 ```yaml
 # Paths
@@ -165,10 +165,10 @@ jobs:
 
 ```bash
 # Generate selectors from manifest
-maestro generate --config config.yml
+maestro generate --config maestro-config.yml
 
 # Generate jobs from selectors
-maestro generate-jobs --config config.yml
+maestro generate-jobs --config maestro-config.yml
 
 # Analyze project
 maestro info

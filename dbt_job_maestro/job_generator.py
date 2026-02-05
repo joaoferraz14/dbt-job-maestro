@@ -67,7 +67,23 @@ class JobGenerator:
 
             filtered_selectors.append(selector)
 
-        for idx, selector in enumerate(filtered_selectors):
+        # Separate selectors into large and small based on min_models_per_job
+        # Only applies to FQN selectors (those with _model_count metadata)
+        large_selectors = []
+        small_selectors = []
+
+        if self.config.min_models_per_job > 1:
+            for selector in filtered_selectors:
+                model_count = selector.get("_model_count")
+                if model_count is not None and model_count < self.config.min_models_per_job:
+                    small_selectors.append(selector)
+                else:
+                    large_selectors.append(selector)
+        else:
+            large_selectors = filtered_selectors
+
+        # Create individual jobs for large selectors
+        for idx, selector in enumerate(large_selectors):
             selector_name = selector["name"]
 
             # Generate job name
@@ -81,14 +97,33 @@ class JobGenerator:
             job = self._create_job_definition(
                 selector_name,
                 job_index=idx,
-                total_jobs=len(filtered_selectors),
+                total_jobs=len(large_selectors) + (1 if small_selectors else 0),
                 previous_job_name=(
-                    self._generate_job_name(filtered_selectors[idx - 1]["name"])
-                    if idx > 0
-                    else None
+                    self._generate_job_name(large_selectors[idx - 1]["name"]) if idx > 0 else None
                 ),
             )
             jobs[job_name] = job
+
+        # Create combined job for small selectors
+        if small_selectors:
+            combined_job_name = f"{self.config.job_name_prefix}_combined_small_selectors"
+
+            # Check if job is manually created (should not be overwritten)
+            if combined_job_name not in jobs or not self._is_manually_created(
+                jobs[combined_job_name]
+            ):
+                selector_names = [s["name"] for s in small_selectors]
+                job = self._create_combined_job_definition(
+                    selector_names,
+                    job_index=len(large_selectors),
+                    total_jobs=len(large_selectors) + 1,
+                    previous_job_name=(
+                        self._generate_job_name(large_selectors[-1]["name"])
+                        if large_selectors
+                        else None
+                    ),
+                )
+                jobs[combined_job_name] = job
 
         return {"jobs": jobs}
 
@@ -202,6 +237,118 @@ class JobGenerator:
             "deferring_job_definition_id": None,
             "environment_id": self.config.environment_id,
             "execute_steps": [f"dbt build --selector {selector_name}"],
+            "execution": {
+                "timeout_seconds": self.config.timeout_seconds,
+            },
+            "generate_docs": self.config.generate_docs,
+            "name": job_dbt_name,
+            "project_id": self.config.project_id,
+            "run_generate_sources": self.config.run_generate_sources,
+            "settings": {
+                "target_name": self.config.target_name,
+                "threads": self.config.threads,
+            },
+            "state": 1,
+            "triggers": triggers,
+        }
+
+        # Add schedule if applicable
+        if schedule:
+            job["schedule"] = schedule
+
+        return job
+
+    def _create_combined_job_definition(
+        self,
+        selector_names: List[str],
+        job_index: int = 0,
+        total_jobs: int = 1,
+        previous_job_name: str = None,
+    ) -> Dict[str, Any]:
+        """
+        Create job definition for multiple selectors combined into one job.
+
+        This is used when min_models_per_job is set and selectors have fewer
+        models than the threshold.
+
+        Args:
+            selector_names: List of selector names to include in the job
+            job_index: Index of this job in the list (for cron_incremental)
+            total_jobs: Total number of jobs being created
+            previous_job_name: Name of the previous job (for cascade mode)
+
+        Returns:
+            Job definition dictionary compatible with dbt-jobs-as-code
+        """
+        job_dbt_name = f"{self.config.job_name_prefix}-combined_small_selectors"
+
+        # Determine orchestration based on mode
+        if self.config.orchestration_mode == "cron_incremental":
+            cron_schedule = self._generate_incremental_cron(job_index)
+            triggers = {
+                "git_provider_webhook": False,
+                "github_webhook": False,
+                "schedule": True,
+            }
+            schedule = {"cron": cron_schedule}
+        elif self.config.orchestration_mode == "cascade":
+            if job_index == 0:
+                # First job is always scheduled
+                cron_schedule = self._generate_start_time_cron()
+                triggers = {
+                    "git_provider_webhook": False,
+                    "github_webhook": False,
+                    "schedule": True,
+                }
+                schedule = {"cron": cron_schedule}
+            else:
+                # Subsequent jobs trigger on completion of previous
+                if self.config.cascade_initial_deployment:
+                    # PHASE 1: Initial deployment - all jobs are scheduled
+                    cron_schedule = self._generate_start_time_cron()
+                    triggers = {
+                        "git_provider_webhook": False,
+                        "github_webhook": False,
+                        "schedule": True,
+                    }
+                    schedule = {"cron": cron_schedule}
+                else:
+                    # PHASE 2: Update with cascade triggers using job IDs
+                    previous_job_id = self.config.job_id_mapping.get(previous_job_name)
+                    if previous_job_id is None:
+                        raise ValueError(
+                            f"Job ID not found for '{previous_job_name}' in job_id_mapping. "
+                            f"Make sure to populate job_id_mapping after initial deployment."
+                        )
+                    triggers = {
+                        "git_provider_webhook": False,
+                        "github_webhook": False,
+                        "schedule": False,
+                        "on_job_completion": {
+                            "job_id": previous_job_id,
+                            "statuses": ["success", "error", "cancelled"],
+                        },
+                    }
+                    schedule = None
+        else:  # simple mode (default)
+            triggers = {
+                "git_provider_webhook": False,
+                "github_webhook": False,
+                "schedule": True,
+            }
+            schedule = {"cron": self.config.cron_schedule}
+
+        # Build execute_steps with multiple --selector flags
+        selector_args = " ".join([f"--selector {name}" for name in selector_names])
+        execute_steps = [f"dbt build {selector_args}"]
+
+        # Build job definition matching dbt-jobs-as-code schema
+        job = {
+            "account_id": self.config.account_id,
+            "dbt_version": self.config.dbt_version if self.config.dbt_version else None,
+            "deferring_job_definition_id": None,
+            "environment_id": self.config.environment_id,
+            "execute_steps": execute_steps,
             "execution": {
                 "timeout_seconds": self.config.timeout_seconds,
             },
