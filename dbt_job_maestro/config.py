@@ -28,6 +28,13 @@ class SelectorConfig:
     # Paths to exclude from selectors
     exclude_paths: List[str] = field(default_factory=list)
 
+    # How to combine exclusion criteria in the selector definition
+    # - 'union': Exclude models matching ANY of the criteria (OR logic) - default
+    # - 'intersection': Exclude models matching ALL of the criteria (AND logic)
+    # Example with union: exclude models with tag 'alloy' OR in path 'staging'
+    # Example with intersection: exclude models with tag 'alloy' AND in path 'staging'
+    exclusion_mode: str = "union"
+
     # Whether to include source freshness selectors (disabled by default)
     # Set to True to generate freshness selectors for all selectors
     # Or use freshness_selector_names to only generate for specific selectors
@@ -104,6 +111,14 @@ class SelectorConfig:
                 "min_models_per_selector > 1 conflicts with group_by_dependencies=True. "
                 "When grouping by dependencies, all connected models are grouped together "
                 "regardless of count. Set group_by_dependencies=False to use min_models_per_selector."
+            )
+
+        # Validate exclusion_mode
+        valid_exclusion_modes = ["union", "intersection"]
+        if self.exclusion_mode not in valid_exclusion_modes:
+            raise ValueError(
+                f"Invalid exclusion_mode '{self.exclusion_mode}'. "
+                f"Must be one of: {', '.join(valid_exclusion_modes)}"
             )
 
 
@@ -252,6 +267,7 @@ class Config:
             exclude_tags=selector_data.get("exclude_tags", []),
             exclude_models=selector_data.get("exclude_models", []),
             exclude_paths=selector_data.get("exclude_paths", []),
+            exclusion_mode=selector_data.get("exclusion_mode", "union"),
             include_freshness_selectors=selector_data.get("include_freshness_selectors", False),
             freshness_selector_names=selector_data.get("freshness_selector_names", []),
             exclude_freshness_selector_names=selector_data.get(
@@ -337,6 +353,7 @@ class Config:
                 "exclude_tags": self.selector.exclude_tags,
                 "exclude_models": self.selector.exclude_models,
                 "exclude_paths": self.selector.exclude_paths,
+                "exclusion_mode": self.selector.exclusion_mode,
                 "include_freshness_selectors": self.selector.include_freshness_selectors,
                 "freshness_selector_names": self.selector.freshness_selector_names,
                 "exclude_freshness_selector_names": self.selector.exclude_freshness_selector_names,

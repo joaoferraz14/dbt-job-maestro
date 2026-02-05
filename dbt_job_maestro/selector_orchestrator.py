@@ -375,13 +375,10 @@ class SelectorOrchestrator:
                     "definition": {"union": [{"method": "path", "value": path_prefix}]},
                 }
 
-                # Add tag exclusions if configured
-                if self.config.exclude_tags:
-                    selector["definition"]["union"].append(self._create_tag_exclusion())
-
-                # Add path exclusions for runtime enforcement
-                if self.config.exclude_paths:
-                    selector["definition"]["union"].append(self._create_path_exclusion())
+                # Add combined exclusion clause if any exclusions are configured
+                exclusion = self._create_exclusion()
+                if exclusion:
+                    selector["definition"]["union"].append(exclusion)
 
                 all_selectors.append(selector)
 
@@ -436,9 +433,10 @@ class SelectorOrchestrator:
                     "definition": {"union": [{"method": "tag", "value": tag}]},
                 }
 
-                # Add path exclusions for runtime enforcement
-                if self.config.exclude_paths:
-                    selector["definition"]["union"].append(self._create_path_exclusion())
+                # Add combined exclusion clause if any exclusions are configured
+                exclusion = self._create_exclusion()
+                if exclusion:
+                    selector["definition"]["union"].append(exclusion)
 
                 all_selectors.append(selector)
 
@@ -480,29 +478,34 @@ class SelectorOrchestrator:
         parts = path.replace("models/", "").replace("/", "_").strip("_")
         return parts or "root"
 
-    def _create_tag_exclusion(self) -> Dict[str, Any]:
-        """Create tag exclusion definition.
+    def _create_exclusion(self) -> Dict[str, Any]:
+        """Create combined exclusion definition for tags and paths.
+
+        Combines all exclusions (tags and paths) into a single exclude block.
+        Uses 'union' mode (exclude if ANY criteria matches) or 'intersection'
+        mode (exclude only if ALL criteria match) based on config.exclusion_mode.
 
         Returns:
-            Exclusion definition dictionary
+            Exclusion definition dictionary, or None if no exclusions configured
         """
-        return {
-            "exclude": {
-                "union": [{"method": "tag", "value": tag} for tag in self.config.exclude_tags]
-            }
-        }
+        exclusion_items = []
 
-    def _create_path_exclusion(self) -> Dict[str, Any]:
-        """Create path exclusion definition for runtime enforcement by dbt.
+        # Add tag exclusions
+        if self.config.exclude_tags:
+            for tag in self.config.exclude_tags:
+                exclusion_items.append({"method": "tag", "value": tag})
 
-        Returns:
-            Exclusion definition dictionary
-        """
-        return {
-            "exclude": {
-                "union": [{"method": "path", "value": path} for path in self.config.exclude_paths]
-            }
-        }
+        # Add path exclusions
+        if self.config.exclude_paths:
+            for path in self.config.exclude_paths:
+                exclusion_items.append({"method": "path", "value": path})
+
+        if not exclusion_items:
+            return None
+
+        # Use configured exclusion mode (union or intersection)
+        mode = self.config.exclusion_mode
+        return {"exclude": {mode: exclusion_items}}
 
     def _create_freshness_selector(self, base_name: str) -> Dict[str, Any]:
         """Create freshness selector.
