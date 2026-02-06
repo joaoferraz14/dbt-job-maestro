@@ -117,7 +117,7 @@ class SelectorConfig:
     # Specific models to exclude from the full refresh selector
     full_refresh_exclude_models: List[str] = field(default_factory=list)
 
-    # Indirect selection mode for tests: eager, cautious, buildable, or empty
+    # Indirect selection mode for tests (applies to ALL selectors): eager, cautious, buildable, or empty
     # - eager: include all tests that touch selected models (default)
     # - cautious: only include tests whose parents are all selected
     # - buildable: include tests that can be built with selected models

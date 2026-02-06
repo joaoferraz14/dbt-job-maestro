@@ -850,14 +850,12 @@ class SelectorOrchestrator:
         }
 
         # Add indirect_selection if not the default
-        if self.config.full_refresh_indirect_selection != "eager":
-            selector["default"] = {
-                "indirect_selection": self.config.full_refresh_indirect_selection
-            }
+        if self.config.indirect_selection != "eager":
+            selector["default"] = {"indirect_selection": self.config.indirect_selection}
 
         logger.info(
             f"Generated full refresh selector for incremental models "
-            f"(indirect_selection: {self.config.full_refresh_indirect_selection})"
+            f"(indirect_selection: {self.config.indirect_selection})"
         )
 
         return selector
