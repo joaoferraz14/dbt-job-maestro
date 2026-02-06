@@ -82,6 +82,11 @@ class SelectorOrchestrator:
             snapshots_selectors = self._generate_snapshots_selectors()
             selectors.extend(snapshots_selectors)
 
+        # Generate full refresh selector if configured
+        if self.config.include_full_refresh_selector:
+            full_refresh_selector = self._generate_full_refresh_selector()
+            selectors.append(full_refresh_selector)
+
         # Check for overlaps if configured
         if self.config.warn_on_manual_overlaps:
             warnings = self.overlap_detector.detect_overlaps(selectors)
@@ -804,6 +809,58 @@ class SelectorOrchestrator:
 
         extract_from_item(definition)
         return covered
+
+    def _generate_full_refresh_selector(self) -> Dict[str, Any]:
+        """Generate a selector for full refresh of incremental models.
+
+        Creates a selector using intersection of fqn:* and config.materialized:incremental
+        with optional exclusions and indirect_selection setting.
+
+        Returns:
+            Full refresh selector definition
+        """
+        # Build the intersection clause
+        intersection_clause = [
+            {"method": "fqn", "value": "*"},
+            {"method": "config.materialized", "value": "incremental"},
+        ]
+
+        # Build the selector definition
+        definition: Dict[str, Any] = {"union": [{"intersection": intersection_clause}]}
+
+        # Add exclusions if configured
+        exclusion_items = []
+
+        for tag in self.config.full_refresh_exclude_tags:
+            exclusion_items.append({"method": "tag", "value": tag})
+
+        for path in self.config.full_refresh_exclude_paths:
+            exclusion_items.append({"method": "path", "value": path})
+
+        for model in self.config.full_refresh_exclude_models:
+            exclusion_items.append({"method": "fqn", "value": model})
+
+        if exclusion_items:
+            definition["union"].append({"exclude": {"union": exclusion_items}})
+
+        selector = {
+            "name": f"{self.config.selector_prefix}_full_refresh_incremental",
+            "description": "Selector for full refresh of all incremental models",
+            "definition": definition,
+        }
+
+        # Add indirect_selection if not the default
+        if self.config.full_refresh_indirect_selection != "eager":
+            selector["default"] = {
+                "indirect_selection": self.config.full_refresh_indirect_selection
+            }
+
+        logger.info(
+            f"Generated full refresh selector for incremental models "
+            f"(indirect_selection: {self.config.full_refresh_indirect_selection})"
+        )
+
+        return selector
 
     def write_selectors(self, selectors: List[Dict[str, Any]], output_path: str) -> None:
         """Write selectors to YAML file with blank lines between selectors.
