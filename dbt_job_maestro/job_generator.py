@@ -730,8 +730,9 @@ class JobGenerator:
         Returns:
             Job definition dictionary
         """
-        # Use dbt seed --full-refresh to reload all seed data
-        execute_step = "dbt seed --full-refresh"
+        # Use dbt seed --full-refresh with selector to reload all seed data
+        seeds_selector = f"{self.config.selector_prefix}_seeds"
+        execute_step = f"dbt seed --full-refresh --selector {seeds_selector}"
 
         triggers = {
             "git_provider_webhook": False,

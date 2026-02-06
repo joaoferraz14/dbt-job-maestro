@@ -406,12 +406,17 @@ selector:
   full_refresh_exclude_paths: []
   full_refresh_exclude_models: []
 
+  # -------------------------------------------------------------------------
+  # INDIRECT SELECTION
+  # -------------------------------------------------------------------------
+
   # Indirect selection mode for tests: eager, cautious, buildable, or empty
   # - eager: include all tests that touch selected models (default)
   # - cautious: only include tests whose parents are all selected
   # - buildable: include tests that can be built with selected models
   # - empty: exclude all tests
-  full_refresh_indirect_selection: eager
+  # This applies to ALL generated selectors
+  indirect_selection: eager
 
   # -------------------------------------------------------------------------
   # ADVANCED OPTIONS
@@ -498,13 +503,14 @@ job:
   cron_days_of_week: []          # Empty=every day, or ["MON","TUE","WED","THU","FRI"]
 
   # -------------------------------------------------------------------------
-  # MINIMUM MODELS PER JOB (FQN method only)
+  # MINIMUM MODELS PER JOB (FQN model jobs only)
   # -------------------------------------------------------------------------
 
   # Minimum models per job for FQN selectors (default: 1)
   # When set > 1, selectors with fewer models are combined into a single job
   # that runs multiple selectors: dbt build --selector A --selector B ...
-  # Only works with method='fqn' - other methods ignore this setting
+  # Only applies to model jobs with method=fqn. Does NOT apply to seeds,
+  # snapshots, or full refresh jobs.
   min_models_per_job: 1
 
   # -------------------------------------------------------------------------
@@ -548,11 +554,6 @@ job:
     # Cron schedule (minute hour day_of_month month day_of_week)
     # Example: "0 0 * * 0" = every Sunday at midnight
     cron_schedule: "0 0 * * 0"
-
-    # Exclusions from the auto-generated full refresh job
-    exclude_tags: []
-    exclude_paths: []
-    exclude_models: []
 
     # Custom full refresh schedules for specific resources
     # Each entry creates a separate full refresh job
@@ -895,14 +896,14 @@ selector:
   full_refresh_exclude_paths: ['models/staging/legacy']
   full_refresh_exclude_models: ['dim_temp']
 
-  # Indirect selection mode for tests:
+  # Indirect selection mode for tests (applies to ALL selectors):
   # - eager: include all tests that touch selected models (default)
   # - cautious: only include tests whose parents are all selected
   # - buildable: include tests that can be built with selected models
   # - empty: exclude all tests
-  full_refresh_indirect_selection: eager
+  indirect_selection: eager
 
-# 2. JOB CONFIGURATION - Controls job creation
+# 2. JOB CONFIGURATION - Controls job creation (scheduling only)
 job:
   full_refresh:
     # Enable auto-generated full refresh job
@@ -949,7 +950,7 @@ job:
     cron_schedule: "0 0 * * 0"  # Every Sunday at midnight
 ```
 
-**Generated job:** `dbt_seeds_full_refresh` - Runs `dbt seed --full-refresh`
+**Generated job:** `dbt_seeds_full_refresh` - Runs `dbt seed --full-refresh --selector maestro_seeds`
 
 ### Complete Workflow Example
 
@@ -1319,7 +1320,7 @@ job:
 
 Then manually create jobs in dbt Cloud UI using the generated selectors.
 
-### Example: Combining Small Selectors (FQN only)
+### Example: Combining Small Selectors (FQN model jobs only)
 
 If you have many small FQN selectors with only 1-3 models each, you can combine them into a single job to reduce job clutter:
 
@@ -1336,7 +1337,7 @@ job:
 - Selectors with >= 4 models get their own job: `dbt build --selector maestro_large_component`
 - Selectors with < 4 models are combined into one job: `dbt build --selector maestro_small1 --selector maestro_small2 --selector maestro_small3`
 
-**Note:** This feature only works with `method: fqn`. Path and tag methods are not affected.
+**Note:** This feature only applies to model jobs with `method: fqn`. It does NOT apply to seeds, snapshots, or full refresh jobs.
 
 ---
 
@@ -1549,9 +1550,11 @@ MIT License - See LICENSE file for details.
 - **New:** Full refresh selector (`include_full_refresh_selector`) - Generates a selector using intersection of `fqn:*` and `config.materialized:incremental`
 - **New:** Full refresh jobs (`full_refresh`) - Auto-generate full refresh jobs that use the full refresh selector
 - **New:** Custom full refresh schedules - Define specific selectors, tags, paths, or models to full refresh on different cron schedules
-- **New:** Full refresh exclusions - Exclude specific tags, paths, or models from the full refresh selector
-- **New:** Indirect selection mode (`full_refresh_indirect_selection`) - Control test inclusion with eager, cautious, buildable, or empty modes
-- **New:** Seeds full refresh job (`seeds_full_refresh`) - Create a job that runs `dbt seed --full-refresh` on a schedule
+- **New:** Full refresh exclusions - Exclude specific tags, paths, or models from the full refresh selector (in selector config only)
+- **New:** Global indirect selection mode (`indirect_selection`) - Control test inclusion for ALL selectors with eager, cautious, buildable, or empty modes
+- **New:** Seeds full refresh job (`seeds_full_refresh`) - Create a job that runs `dbt seed --full-refresh --selector maestro_seeds` on a schedule
+- **Changed:** `indirect_selection` moved to global selector config (applies to all selectors, not just full refresh)
+- **Changed:** `min_models_per_job` clarified to only apply to model jobs with method=fqn (not seeds, snapshots, or full refresh)
 
 ### 0.2.0 (2026-02-05)
 
