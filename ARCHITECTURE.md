@@ -183,6 +183,16 @@ selector:
   snapshots_selector_method: path  # 'path' or 'fqn' (both create one {prefix}_snapshots selector)
   snapshots_path: ""  # Auto-detected if empty
 
+  # Full refresh selector options
+  include_full_refresh_selector: false
+  full_refresh_exclude_tags: []
+  full_refresh_exclude_paths: []
+  full_refresh_exclude_models: []
+
+  # Indirect selection mode for tests (applies to ALL selectors)
+  # Options: eager, cautious, buildable, empty
+  indirect_selection: eager
+
 # Job definitions
 job:
   account_id: 12345

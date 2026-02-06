@@ -122,7 +122,7 @@ class SelectorConfig:
     # - cautious: only include tests whose parents are all selected
     # - buildable: include tests that can be built with selected models
     # - empty: exclude all tests
-    full_refresh_indirect_selection: str = "eager"
+    indirect_selection: str = "eager"
 
     def validate(self) -> None:
         """Validate configuration options for compatibility.
@@ -224,6 +224,9 @@ class FullRefreshConfig:
     Supports two modes:
     1. Auto-generated full refresh for all incremental models
     2. Custom full refresh schedules for specific resources
+
+    Note: Exclusions and indirect_selection are configured in SelectorConfig,
+    not here. This class only handles job scheduling.
     """
 
     # Enable auto-generated full refresh job for all incremental models
@@ -231,22 +234,6 @@ class FullRefreshConfig:
 
     # Cron schedule for the auto-generated full refresh job (minute hour day_of_month month day_of_week)
     cron_schedule: str = "0 0 * * 0"
-
-    # Tags to exclude from the auto-generated full refresh job
-    exclude_tags: List[str] = field(default_factory=list)
-
-    # Paths to exclude from the auto-generated full refresh job
-    exclude_paths: List[str] = field(default_factory=list)
-
-    # Specific models to exclude from the auto-generated full refresh job
-    exclude_models: List[str] = field(default_factory=list)
-
-    # Indirect selection mode for tests: eager, cautious, buildable, or empty
-    # - eager: include all tests that touch selected models (default)
-    # - cautious: only include tests whose parents are all selected
-    # - buildable: include tests that can be built with selected models
-    # - empty: exclude all tests
-    indirect_selection: str = "eager"
 
     # Custom full refresh schedules for specific resources
     # Each entry creates a separate full refresh job with its own schedule
@@ -437,9 +424,7 @@ class Config:
             full_refresh_exclude_tags=selector_data.get("full_refresh_exclude_tags", []),
             full_refresh_exclude_paths=selector_data.get("full_refresh_exclude_paths", []),
             full_refresh_exclude_models=selector_data.get("full_refresh_exclude_models", []),
-            full_refresh_indirect_selection=selector_data.get(
-                "full_refresh_indirect_selection", "eager"
-            ),
+            indirect_selection=selector_data.get("indirect_selection", "eager"),
         )
 
         # Validate selector config
@@ -569,10 +554,6 @@ class Config:
         return FullRefreshConfig(
             enabled=data.get("enabled", False),
             cron_schedule=data.get("cron_schedule", "0 0 * * 0"),
-            exclude_tags=data.get("exclude_tags", []),
-            exclude_paths=data.get("exclude_paths", []),
-            exclude_models=data.get("exclude_models", []),
-            indirect_selection=data.get("indirect_selection", "eager"),
             custom_schedules=custom_schedules,
         )
 
@@ -714,12 +695,16 @@ selector:
   # Specific models to exclude
   full_refresh_exclude_models: {self.selector.full_refresh_exclude_models}
 
+  # ---------------------------------------------------------------------------
+  # INDIRECT SELECTION
+  # ---------------------------------------------------------------------------
   # Indirect selection mode for tests: eager, cautious, buildable, or empty
   # - eager: include all tests that touch selected models (default)
   # - cautious: only include tests whose parents are all selected
   # - buildable: include tests that can be built with selected models
   # - empty: exclude all tests
-  full_refresh_indirect_selection: {self.selector.full_refresh_indirect_selection}
+  # This applies to ALL generated selectors
+  indirect_selection: {self.selector.indirect_selection}
 
   # ---------------------------------------------------------------------------
   # ADVANCED OPTIONS
@@ -817,7 +802,8 @@ job:
   # ADVANCED JOB OPTIONS
   # ---------------------------------------------------------------------------
   # Minimum models per job (smaller selectors are combined into one job)
-  # Only works with method=fqn. Set to 1 to disable combining.
+  # Only applies to model jobs with method=fqn. Does NOT apply to seeds,
+  # snapshots, or full refresh jobs. Set to 1 to disable combining.
   min_models_per_job: {self.job.min_models_per_job}
 
   # Cascade mode: initial deployment (true = use cron, false = use triggers)
@@ -851,23 +837,6 @@ job:
     # Format: minute hour day_of_month month day_of_week
     # Example: "0 0 * * 0" = every Sunday at midnight
     cron_schedule: "{self.job.full_refresh.cron_schedule}"
-
-    # Exclusions from the auto-generated full refresh job
-    # Tags to exclude (incremental models with these tags won't be full refreshed)
-    exclude_tags: {self.job.full_refresh.exclude_tags}
-
-    # Paths to exclude
-    exclude_paths: {self.job.full_refresh.exclude_paths}
-
-    # Specific models to exclude
-    exclude_models: {self.job.full_refresh.exclude_models}
-
-    # Indirect selection mode for tests: eager, cautious, buildable, or empty
-    # - eager: include all tests that touch selected models (default)
-    # - cautious: only include tests whose parents are all selected
-    # - buildable: include tests that can be built with selected models
-    # - empty: exclude all tests
-    indirect_selection: {self.job.full_refresh.indirect_selection}
 
     # Custom full refresh schedules for specific resources
     # Each entry creates a separate full refresh job with its own schedule
