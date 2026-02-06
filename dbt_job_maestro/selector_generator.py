@@ -3,7 +3,7 @@
 import logging
 import os
 import yaml
-from typing import Any, Dict, List, Set, Optional
+from typing import Any, Dict, List, Set
 
 from dbt_job_maestro.config import SelectorConfig
 from dbt_job_maestro.manifest_parser import ManifestParser
@@ -71,23 +71,6 @@ class SelectorGenerator:
                     excluded.add(model_name)
 
         return excluded
-
-    def _should_include_model(
-        self, model_name: str, excluded_models: Optional[Set[str]] = None
-    ) -> bool:
-        """
-        Check if a model should be included in selector generation.
-
-        Args:
-            model_name: Name of the model to check
-            excluded_models: Optional set of already excluded models
-
-        Returns:
-            True if model should be included, False otherwise
-        """
-        if excluded_models is None:
-            excluded_models = self._get_excluded_models()
-        return model_name not in excluded_models
 
     def _generate_fqn_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors using FQN (fully qualified names)"""
