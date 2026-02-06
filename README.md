@@ -394,6 +394,26 @@ selector:
   snapshots_path: ""
 
   # -------------------------------------------------------------------------
+  # FULL REFRESH SELECTOR
+  # -------------------------------------------------------------------------
+
+  # Generate a selector for full refresh of incremental models
+  # Uses intersection of fqn:* and config.materialized:incremental
+  include_full_refresh_selector: false
+
+  # Exclusions from the full refresh selector
+  full_refresh_exclude_tags: []
+  full_refresh_exclude_paths: []
+  full_refresh_exclude_models: []
+
+  # Indirect selection mode for tests: eager, cautious, buildable, or empty
+  # - eager: include all tests that touch selected models (default)
+  # - cautious: only include tests whose parents are all selected
+  # - buildable: include tests that can be built with selected models
+  # - empty: exclude all tests
+  full_refresh_indirect_selection: eager
+
+  # -------------------------------------------------------------------------
   # ADVANCED OPTIONS
   # -------------------------------------------------------------------------
 
@@ -502,6 +522,54 @@ job:
   #   dbt_revenue_critical: 12345
   #   dbt_customer_analytics: 12346
   job_id_mapping: {}
+
+  # -------------------------------------------------------------------------
+  # EXECUTION ORDER
+  # -------------------------------------------------------------------------
+
+  # Execution order for different resource types during job creation
+  # Jobs will be created/ordered in this sequence (first in list runs first)
+  # Valid values: 'seeds', 'snapshots', 'models'
+  # Empty list = no specific ordering (alphabetical by selector name)
+  execution_order:
+    - seeds
+    - snapshots
+    - models
+
+  # -------------------------------------------------------------------------
+  # FULL REFRESH JOBS
+  # -------------------------------------------------------------------------
+
+  # Configuration for full refresh jobs (for incremental models)
+  full_refresh:
+    # Enable auto-generated full refresh job for all incremental models
+    enabled: false
+
+    # Cron schedule (minute hour day_of_month month day_of_week)
+    # Example: "0 0 * * 0" = every Sunday at midnight
+    cron_schedule: "0 0 * * 0"
+
+    # Exclusions from the auto-generated full refresh job
+    exclude_tags: []
+    exclude_paths: []
+    exclude_models: []
+
+    # Custom full refresh schedules for specific resources
+    # Each entry creates a separate full refresh job
+    # custom_schedules:
+    #   - name: weekly_customer_refresh
+    #     cron_schedule: "0 0 * * 0"        # Every Sunday at midnight
+    #     selector: maestro_customers       # Full refresh a selector
+    #   - name: monthly_orders_refresh
+    #     cron_schedule: "0 0 1 * *"        # First of month at midnight
+    #     tags: ['orders', 'billing']       # Full refresh by tags
+    #   - name: daily_inventory_refresh
+    #     cron_schedule: "0 3 * * *"        # Every day at 3 AM
+    #     paths: ['models/staging/inventory']  # Full refresh by path
+    #   - name: specific_models_refresh
+    #     cron_schedule: "0 6 * * 6"        # Every Saturday at 6 AM
+    #     models: ['dim_product', 'fct_inventory']  # Specific models
+    custom_schedules: []
 
 # ============================================================================
 # DEPLOYMENT
@@ -773,6 +841,115 @@ jobs:
 ```
 
 **Best for:** Guaranteed ordering, resource efficiency
+
+#### Execution Order
+
+Control the order in which different resource types are scheduled in jobs:
+
+```yaml
+job:
+  execution_order:
+    - seeds       # Run seeds first
+    - snapshots   # Run snapshots second
+    - models      # Run models last
+```
+
+**Use case:** Ensures seeds are loaded before snapshots run, and snapshots complete before models that depend on them.
+
+**Note:** This affects job ordering in `cron_incremental` and `cascade` modes. In `simple` mode, all jobs run at the same time regardless of order.
+
+#### Full Refresh Jobs
+
+Automatically generate full refresh jobs for incremental models. Maestro uses a **selector-based approach** that creates a dbt selector using intersection logic:
+
+```yaml
+# Generated selector definition
+selectors:
+  - name: maestro_full_refresh_incremental
+    description: Selector for full refresh of all incremental models
+    definition:
+      union:
+        - intersection:
+            - method: fqn
+              value: "*"
+            - method: config.materialized
+              value: incremental
+        - exclude:
+            union:
+              - method: tag
+                value: no_refresh
+    default:
+      indirect_selection: cautious  # Only if not "eager" (default)
+```
+
+**Configuration (in two parts):**
+
+```yaml
+# 1. SELECTOR CONFIGURATION - Controls selector generation
+selector:
+  # Enable full refresh selector generation
+  include_full_refresh_selector: true
+
+  # Exclusions from the full refresh selector
+  full_refresh_exclude_tags: ['no_refresh', 'deprecated']
+  full_refresh_exclude_paths: ['models/staging/legacy']
+  full_refresh_exclude_models: ['dim_temp']
+
+  # Indirect selection mode for tests:
+  # - eager: include all tests that touch selected models (default)
+  # - cautious: only include tests whose parents are all selected
+  # - buildable: include tests that can be built with selected models
+  # - empty: exclude all tests
+  full_refresh_indirect_selection: eager
+
+# 2. JOB CONFIGURATION - Controls job creation
+job:
+  full_refresh:
+    # Enable auto-generated full refresh job
+    enabled: true
+    cron_schedule: "0 0 * * 0"  # Every Sunday at midnight
+
+    # Custom full refresh schedules for specific resources
+    custom_schedules:
+      - name: weekly_customer_refresh
+        cron_schedule: "0 0 * * 0"       # Every Sunday
+        selector: maestro_customers       # Full refresh a selector
+
+      - name: monthly_orders_refresh
+        cron_schedule: "0 0 1 * *"       # First of month
+        tags: ['orders', 'billing']       # Full refresh by tags
+
+      - name: daily_inventory_refresh
+        cron_schedule: "0 3 * * *"       # Daily at 3 AM
+        paths: ['models/staging/inventory']
+
+      - name: specific_models_refresh
+        cron_schedule: "0 6 * * 6"       # Every Saturday
+        models: ['dim_product', 'fct_inventory']
+```
+
+**Cron format:** `minute hour day_of_month month day_of_week` (0=Sunday, 6=Saturday)
+
+**Generated outputs:**
+- **Selector:** `maestro_full_refresh_incremental` - Selects all incremental models with exclusions
+- **Job:** `dbt_full_refresh_incremental` - Uses `dbt run --full-refresh --selector maestro_full_refresh_incremental`
+- **Custom jobs:** `dbt_full_refresh_weekly_customer_refresh`, etc.
+
+#### Seeds Full Refresh Job
+
+Create a job that reloads all seed data using `dbt seed --full-refresh`:
+
+```yaml
+job:
+  seeds_full_refresh:
+    # Enable seeds full refresh job
+    enabled: true
+
+    # Cron schedule (minute hour day_of_month month day_of_week)
+    cron_schedule: "0 0 * * 0"  # Every Sunday at midnight
+```
+
+**Generated job:** `dbt_seeds_full_refresh` - Runs `dbt seed --full-refresh`
 
 ### Complete Workflow Example
 
@@ -1365,6 +1542,16 @@ MIT License - See LICENSE file for details.
 ---
 
 ## Changelog
+
+### 0.3.0 (2026-02-06)
+
+- **New:** Execution order for resource types (`execution_order`) - Control the order in which seeds, snapshots, and models run in cascade/incremental modes
+- **New:** Full refresh selector (`include_full_refresh_selector`) - Generates a selector using intersection of `fqn:*` and `config.materialized:incremental`
+- **New:** Full refresh jobs (`full_refresh`) - Auto-generate full refresh jobs that use the full refresh selector
+- **New:** Custom full refresh schedules - Define specific selectors, tags, paths, or models to full refresh on different cron schedules
+- **New:** Full refresh exclusions - Exclude specific tags, paths, or models from the full refresh selector
+- **New:** Indirect selection mode (`full_refresh_indirect_selection`) - Control test inclusion with eager, cautious, buildable, or empty modes
+- **New:** Seeds full refresh job (`seeds_full_refresh`) - Create a job that runs `dbt seed --full-refresh` on a schedule
 
 ### 0.2.0 (2026-02-05)
 
