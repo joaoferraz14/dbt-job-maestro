@@ -1098,5 +1098,164 @@ class TestFreshnessSelectors:
             os.chdir(original_dir)
 
 
+class TestReformatManualSelectors:
+    """Test the reformat_manual_selectors config option."""
+
+    def test_reformat_true_uses_yaml_dump(self, mock_parser, mock_graph, tmp_path):
+        """When reformat_manual_selectors=True (default), manual selectors go through yaml.dump."""
+        selectors_file = tmp_path / "selectors.yml"
+        # Write manual selector with specific formatting (4-space indent, single quotes)
+        selectors_file.write_text(
+            "selectors:\n"
+            "  - name: my_custom_selector\n"
+            "    description: 'Custom stuff'\n"
+            "    definition:\n"
+            "        union:\n"
+            "            - method: fqn\n"
+            "              value: model_a\n"
+        )
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            config = SelectorConfig(group_by_dependencies=True, reformat_manual_selectors=True)
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            output_file = tmp_path / "output_selectors.yml"
+            orchestrator.write_selectors(selectors, str(output_file))
+
+            content = output_file.read_text()
+            # Manual selector should be reformatted — the 4-space indent won't survive yaml.dump
+            assert "  - name: my_custom_selector" in content
+            # yaml.dump uses 2-space indent, not 4-space
+            assert "        union:" not in content
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_reformat_false_preserves_raw_text(self, mock_parser, mock_graph, tmp_path):
+        """When reformat_manual_selectors=False, manual selectors keep original formatting."""
+        selectors_file = tmp_path / "selectors.yml"
+        # Write manual selector with specific formatting
+        raw_manual = (
+            "  - name: my_custom_selector\n"
+            "    description: 'Custom stuff'\n"
+            "    definition:\n"
+            "        union:\n"
+            "            - method: fqn\n"
+            "              value: model_a\n"
+        )
+        selectors_file.write_text("selectors:\n" + raw_manual)
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            config = SelectorConfig(group_by_dependencies=True, reformat_manual_selectors=False)
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            output_file = tmp_path / "output_selectors.yml"
+            orchestrator.write_selectors(selectors, str(output_file))
+
+            content = output_file.read_text()
+            # The raw manual text should be preserved exactly
+            assert "        union:" in content
+            assert "            - method: fqn" in content
+            assert "    description: 'Custom stuff'" in content
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_reformat_false_with_multiple_manual_selectors(self, mock_parser, mock_graph, tmp_path):
+        """Multiple manual selectors are all preserved raw when reformat=False."""
+        selectors_file = tmp_path / "selectors.yml"
+        selectors_file.write_text(
+            "selectors:\n"
+            "  - name: manual_one\n"
+            "    description: 'First'\n"
+            "    definition:\n"
+            "        union:\n"
+            "            - method: fqn\n"
+            "              value: model_a\n"
+            "\n"
+            "  - name: manual_two\n"
+            "    description: 'Second'\n"
+            "    definition:\n"
+            "        union:\n"
+            "            - method: fqn\n"
+            "              value: model_b\n"
+        )
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            config = SelectorConfig(group_by_dependencies=True, reformat_manual_selectors=False)
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            output_file = tmp_path / "output_selectors.yml"
+            orchestrator.write_selectors(selectors, str(output_file))
+
+            content = output_file.read_text()
+            # Both manual selectors should be in the output with original formatting
+            assert "  - name: manual_one" in content
+            assert "  - name: manual_two" in content
+            assert "    description: 'First'" in content
+            assert "    description: 'Second'" in content
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_reformat_false_auto_selectors_still_formatted(self, mock_parser, mock_graph, tmp_path):
+        """Auto-generated selectors always go through yaml.dump, even when reformat=False."""
+        selectors_file = tmp_path / "selectors.yml"
+        # Only cover model_a, so model_b gets auto-generated
+        selectors_file.write_text(
+            "selectors:\n"
+            "  - name: my_manual\n"
+            "    description: 'manual'\n"
+            "    definition:\n"
+            "        union:\n"
+            "            - method: fqn\n"
+            "              value: model_a\n"
+        )
+
+        original_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            config = SelectorConfig(group_by_dependencies=True, reformat_manual_selectors=False)
+            orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
+            selectors = orchestrator.generate_selectors()
+
+            # Should have manual + auto-generated selectors
+            auto_selectors = [
+                s for s in selectors if s["name"].startswith(config.selector_prefix + "_")
+            ]
+            assert len(auto_selectors) >= 1, "Should have auto-generated selectors"
+
+            output_file = tmp_path / "output_selectors.yml"
+            orchestrator.write_selectors(selectors, str(output_file))
+
+            content = output_file.read_text()
+            # Manual should be raw
+            assert "        union:" in content
+            # Auto should also be present
+            for s in auto_selectors:
+                assert s["name"] in content
+
+        finally:
+            os.chdir(original_dir)
+
+    def test_default_config_reformats(self, mock_parser, mock_graph, tmp_path):
+        """Default SelectorConfig has reformat_manual_selectors=True."""
+        config = SelectorConfig()
+        assert config.reformat_manual_selectors is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
