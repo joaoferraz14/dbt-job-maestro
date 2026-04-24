@@ -10,13 +10,7 @@ from dataclasses import dataclass, field
 class SelectorConfig:
     """Configuration for selector generation"""
 
-    # Selector generation method: 'fqn', 'path', or 'tag'
-    # - fqn: Group models by dependencies (allows group_by_dependencies)
-    # - path: One selector per path (no dependency grouping)
-    # - tag: One selector per tag (no dependency grouping)
-    method: str = "fqn"
-
-    # Whether to group models by shared dependencies (only valid for 'fqn' method)
+    # Whether to group models by shared dependencies
     group_by_dependencies: bool = True
 
     # Tags to exclude from selectors
@@ -59,10 +53,6 @@ class SelectorConfig:
     # Leave empty to use alphabetical sorting
     # Example: ['raw', 'staging', 'marts'] or ['bronze', 'silver', 'gold']
     prefix_order: List[str] = field(default_factory=list)
-
-    # Path grouping level (for path-based selectors)
-    # 0 = root level, 1 = first subdirectory, etc.
-    path_grouping_level: int = 1
 
     # Selector name prefix for auto-generated selectors
     # Selectors starting with "{selector_prefix}_" are auto-generated
@@ -130,28 +120,6 @@ class SelectorConfig:
         Raises:
             ValueError: If incompatible options are set
         """
-        # Validate method is a single string, not a list
-        if not isinstance(self.method, str):
-            raise ValueError(
-                f"method must be a single string value (e.g., 'fqn'), "
-                f"got {type(self.method).__name__}: {self.method}. "
-                f"Only one method can be used at a time."
-            )
-
-        # Validate method
-        valid_methods = ["fqn", "path", "tag"]
-        if self.method not in valid_methods:
-            raise ValueError(
-                f"Invalid method '{self.method}'. Must be one of: {', '.join(valid_methods)}"
-            )
-
-        # group_by_dependencies is only allowed for 'fqn' method
-        if self.method in ["path", "tag"] and self.group_by_dependencies:
-            raise ValueError(
-                f"group_by_dependencies is not allowed with method='{self.method}'. "
-                f"Only the 'fqn' method supports dependency grouping."
-            )
-
         # Validate exclusion_mode
         valid_exclusion_modes = ["union", "intersection"]
         if self.exclusion_mode not in valid_exclusion_modes:
@@ -322,8 +290,8 @@ class JobConfig:
     # Empty list means every day, or specify: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
     cron_days_of_week: List[str] = field(default_factory=list)
 
-    # Minimum models per job for FQN selectors (selectors with fewer models will be combined)
-    # Only works with method='fqn'. When set > 1, selectors with fewer models are combined
+    # Minimum models per job (selectors with fewer models will be combined)
+    # When set > 1, selectors with fewer models are combined
     # into a single job that runs multiple selectors (e.g., dbt build --selector A --selector B)
     min_models_per_job: int = 1
 
@@ -394,12 +362,8 @@ class Config:
 
         # Create selector config
         selector_data = data.get("selector", {})
-        method = selector_data.get("method", "fqn")
-        # Default group_by_dependencies to False for path/tag methods
-        default_group_by = method == "fqn"
         selector_config = SelectorConfig(
-            method=method,
-            group_by_dependencies=selector_data.get("group_by_dependencies", default_group_by),
+            group_by_dependencies=selector_data.get("group_by_dependencies", True),
             exclude_tags=selector_data.get("exclude_tags", []),
             exclude_models=selector_data.get("exclude_models", []),
             exclude_paths=selector_data.get("exclude_paths", []),
@@ -411,7 +375,6 @@ class Config:
             ),
             include_parent_sources=selector_data.get("include_parent_sources", True),
             prefix_order=selector_data.get("prefix_order", []),
-            path_grouping_level=selector_data.get("path_grouping_level", 1),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
             warn_on_manual_overlaps=selector_data.get("warn_on_manual_overlaps", True),
             include_seeds_selectors=selector_data.get("include_seeds_selectors", False),
@@ -609,13 +572,7 @@ jobs_output_file: {self.jobs_output_file}
 # SELECTOR GENERATION
 # -----------------------------------------------------------------------------
 selector:
-  # Generation method: 'fqn', 'path', or 'tag'
-  # - fqn: Groups models by dependencies (recommended for most projects)
-  # - path: One selector per directory
-  # - tag: One selector per dbt tag
-  method: {self.selector.method}
-
-  # Group models by shared dependencies (only for method=fqn)
+  # Group models by shared dependencies
   # When true: models sharing dependencies are grouped together
   # When false: one selector per model
   group_by_dependencies: {str(self.selector.group_by_dependencies).lower()}
@@ -715,9 +672,6 @@ selector:
   # Custom prefix order for sorting selectors (empty = alphabetical)
   # Example: ['stg', 'int', 'fct', 'dim'] or ['bronze', 'silver', 'gold']
   prefix_order: {self.selector.prefix_order}
-
-  # Directory level for path grouping (0=root, 1=first subdirectory, etc.)
-  path_grouping_level: {self.selector.path_grouping_level}
 
   # Prefix for auto-generated selectors (selectors without this prefix are manual)
   selector_prefix: {self.selector.selector_prefix}

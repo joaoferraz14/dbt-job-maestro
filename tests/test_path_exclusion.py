@@ -7,7 +7,6 @@ import os
 
 from dbt_job_maestro.manifest_parser import ManifestParser
 from dbt_job_maestro.graph_builder import GraphBuilder
-from dbt_job_maestro.selector_generator import SelectorGenerator
 from dbt_job_maestro.selector_orchestrator import SelectorOrchestrator
 from dbt_job_maestro.config import SelectorConfig
 
@@ -122,175 +121,13 @@ class TestPathExclusionConfig:
         assert len(config.exclude_tags) == 1
 
 
-class TestSelectorGeneratorPathExclusion:
-    """Test path exclusion in SelectorGenerator."""
-
-    def test_fqn_excludes_paths(self, parser, graph):
-        """Test FQN method excludes models from specified paths."""
-        config = SelectorConfig(method="fqn", exclude_paths=["staging/legacy", "temp"])
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        # Get all models in generated selectors
-        all_selector_models = set()
-        for selector in selectors:
-            definition = selector.get("definition", {})
-            for item in definition.get("union", []):
-                if item.get("method") == "fqn":
-                    all_selector_models.add(item.get("value"))
-
-        # stg_legacy_data and temp_debug should not be in selectors
-        assert "stg_legacy_data" not in all_selector_models
-        assert "temp_debug" not in all_selector_models
-
-        # Other models should be present
-        assert "stg_users" in all_selector_models or "fct_users" in all_selector_models
-
-    def test_path_method_excludes_paths(self, parser, graph):
-        """Test path method excludes models from specified paths."""
-        config = SelectorConfig(method="path", exclude_paths=["staging/legacy"])
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        # Path selectors should not include legacy models
-        # Check that staging/legacy path is not generated as a selector
-        selector_names = [s["name"] for s in selectors]
-        for name in selector_names:
-            assert "legacy" not in name.lower()
-
-    def test_tag_method_excludes_paths(self, parser, graph):
-        """Test tag method excludes models from specified paths."""
-        config = SelectorConfig(method="tag", exclude_paths=["temp"])
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        # Models from temp/ should not be counted in tag selectors
-        # This is verified by checking the model counts in the resulting selectors
-        assert len(selectors) >= 0  # Should complete without error
-
-    def test_fqn_method_excludes_paths_with_deps(self, parser, graph):
-        """Test FQN method with group_by_dependencies excludes models from specified paths."""
-        config = SelectorConfig(method="fqn", exclude_paths=["temp"], group_by_dependencies=True)
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        # Check that temp_debug is excluded
-        all_fqn_values = set()
-        for selector in selectors:
-            definition = selector.get("definition", {})
-            for item in definition.get("union", []):
-                if item.get("method") == "fqn":
-                    all_fqn_values.add(item.get("value"))
-
-        assert "temp_debug" not in all_fqn_values
-
-    def test_exclude_models_by_name(self, parser, graph):
-        """Test excluding specific models by name."""
-        config = SelectorConfig(method="fqn", exclude_models=["temp_debug", "stg_legacy_data"])
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        # Get all models in generated selectors
-        all_selector_models = set()
-        for selector in selectors:
-            definition = selector.get("definition", {})
-            for item in definition.get("union", []):
-                if item.get("method") == "fqn":
-                    all_selector_models.add(item.get("value"))
-
-        assert "temp_debug" not in all_selector_models
-        assert "stg_legacy_data" not in all_selector_models
-
-    def test_combined_path_and_model_exclusion(self, parser, graph):
-        """Test combining path and model exclusions."""
-        config = SelectorConfig(
-            method="fqn", exclude_paths=["temp"], exclude_models=["stg_legacy_data"]
-        )
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        all_selector_models = set()
-        for selector in selectors:
-            definition = selector.get("definition", {})
-            for item in definition.get("union", []):
-                if item.get("method") == "fqn":
-                    all_selector_models.add(item.get("value"))
-
-        # Both exclusions should apply
-        assert "temp_debug" not in all_selector_models
-        assert "stg_legacy_data" not in all_selector_models
-
-    def test_fqn_selector_definition_includes_path_exclusion(self, parser, graph):
-        """Test that FQN selectors include path exclusion in their definition."""
-        config = SelectorConfig(
-            method="fqn", exclude_paths=["temp", "staging/legacy"], group_by_dependencies=True
-        )
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        # Each non-freshness selector should have an exclude clause for paths
-        for selector in selectors:
-            if selector["name"].startswith("freshness_"):
-                continue
-            union_items = selector["definition"]["union"]
-            exclude_items = [item for item in union_items if "exclude" in item]
-            assert (
-                len(exclude_items) > 0
-            ), f"Selector '{selector['name']}' missing path exclusion in definition"
-            # Verify exclude contains path method entries
-            exclude_union = exclude_items[-1]["exclude"]["union"]
-            path_excludes = [e for e in exclude_union if e.get("method") == "path"]
-            assert len(path_excludes) == 2
-            excluded_paths = {e["value"] for e in path_excludes}
-            assert "temp" in excluded_paths
-            assert "staging/legacy" in excluded_paths
-
-    def test_tag_selector_definition_includes_path_exclusion(self, parser, graph):
-        """Test that tag selectors include path exclusion in their definition."""
-        config = SelectorConfig(method="tag", exclude_paths=["temp"])
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        for selector in selectors:
-            if selector["name"].startswith("freshness_"):
-                continue
-            union_items = selector["definition"]["union"]
-            exclude_items = [item for item in union_items if "exclude" in item]
-            assert (
-                len(exclude_items) > 0
-            ), f"Selector '{selector['name']}' missing path exclusion in definition"
-            exclude_union = exclude_items[0]["exclude"]["union"]
-            path_excludes = [e for e in exclude_union if e.get("method") == "path"]
-            assert len(path_excludes) == 1
-            assert path_excludes[0]["value"] == "temp"
-
-    def test_no_path_exclusion_in_definition_when_empty(self, parser, graph):
-        """Test that no path exclusion is added when exclude_paths is empty."""
-        config = SelectorConfig(method="fqn", exclude_paths=[], group_by_dependencies=True)
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
-
-        for selector in selectors:
-            if selector["name"].startswith("freshness_"):
-                continue
-            union_items = selector["definition"]["union"]
-            exclude_items = [item for item in union_items if "exclude" in item]
-            # No exclude items should be present (no tags or paths excluded)
-            path_exclude_items = [
-                e
-                for e in exclude_items
-                if any(u.get("method") == "path" for u in e.get("exclude", {}).get("union", []))
-            ]
-            assert len(path_exclude_items) == 0
-
-
 class TestSelectorOrchestratorPathExclusion:
     """Test path exclusion in SelectorOrchestrator."""
 
     def test_fqn_only_excludes_paths(self, parser, graph):
         """Test FQN-only mode excludes paths."""
         config = SelectorConfig(
-            method="fqn", exclude_paths=["staging/legacy", "temp"], group_by_dependencies=True
+            exclude_paths=["staging/legacy", "temp"], group_by_dependencies=True
         )
         orchestrator = SelectorOrchestrator(parser, graph, config)
         selectors = orchestrator.generate_selectors()
@@ -308,7 +145,6 @@ class TestSelectorOrchestratorPathExclusion:
     def test_fqn_mode_excludes_paths_and_models(self, parser, graph):
         """Test FQN mode excludes paths and models."""
         config = SelectorConfig(
-            method="fqn",
             exclude_paths=["temp"],
             exclude_models=["stg_legacy_data"],
             group_by_dependencies=True,
@@ -347,7 +183,6 @@ class TestExclusionWithManualSelectors:
                 yaml.dump({"selectors": [manual_selector]}, f)
 
             config = SelectorConfig(
-                method="fqn",
                 exclude_paths=["temp"],
                 group_by_dependencies=True,
             )
@@ -392,7 +227,6 @@ class TestExclusionWithManualSelectors:
                 yaml.dump({"selectors": [manual_selector]}, f)
 
             config = SelectorConfig(
-                method="fqn",
                 exclude_tags=[],  # 'deprecated' NOT in config
                 group_by_dependencies=True,
             )
@@ -435,7 +269,6 @@ class TestExclusionWithManualSelectors:
                 yaml.dump({"selectors": [manual_selector]}, f)
 
             config = SelectorConfig(
-                method="fqn",
                 exclude_tags=["deprecated"],  # 'deprecated' IS in config
                 group_by_dependencies=True,
             )
@@ -462,7 +295,7 @@ class TestExclusionLogging:
         """Test that excluded paths are logged."""
         import logging
 
-        config = SelectorConfig(method="fqn", exclude_paths=["temp"], group_by_dependencies=True)
+        config = SelectorConfig(exclude_paths=["temp"], group_by_dependencies=True)
 
         with caplog.at_level(logging.INFO):
             orchestrator = SelectorOrchestrator(parser, graph, config)
@@ -476,9 +309,7 @@ class TestExclusionLogging:
         """Test that excluded models are logged."""
         import logging
 
-        config = SelectorConfig(
-            method="fqn", exclude_models=["temp_debug"], group_by_dependencies=True
-        )
+        config = SelectorConfig(exclude_models=["temp_debug"], group_by_dependencies=True)
 
         with caplog.at_level(logging.INFO):
             orchestrator = SelectorOrchestrator(parser, graph, config)
@@ -493,7 +324,7 @@ class TestTagExclusion:
 
     def test_fqn_excludes_tags(self, parser, graph):
         """Test FQN method excludes models with specified tags."""
-        config = SelectorConfig(method="fqn", exclude_tags=["legacy"], group_by_dependencies=True)
+        config = SelectorConfig(exclude_tags=["legacy"], group_by_dependencies=True)
         orchestrator = SelectorOrchestrator(parser, graph, config)
         selectors = orchestrator.generate_selectors()
 
@@ -511,9 +342,7 @@ class TestTagExclusion:
 
     def test_fqn_excludes_multiple_tags(self, parser, graph):
         """Test FQN method excludes models with any of the specified tags."""
-        config = SelectorConfig(
-            method="fqn", exclude_tags=["legacy", "temp"], group_by_dependencies=True
-        )
+        config = SelectorConfig(exclude_tags=["legacy", "temp"], group_by_dependencies=True)
         orchestrator = SelectorOrchestrator(parser, graph, config)
         selectors = orchestrator.generate_selectors()
 
@@ -531,7 +360,6 @@ class TestTagExclusion:
     def test_combined_tag_and_path_exclusion(self, parser, graph):
         """Test combining tag and path exclusions."""
         config = SelectorConfig(
-            method="fqn",
             exclude_tags=["legacy"],
             exclude_paths=["temp"],
             group_by_dependencies=True,
@@ -553,9 +381,7 @@ class TestTagExclusion:
     def test_model_with_multiple_excluded_tags(self, parser, graph):
         """Test model with multiple tags where both are excluded (no error)."""
         # stg_legacy_data has both "staging" and "legacy" tags
-        config = SelectorConfig(
-            method="fqn", exclude_tags=["staging", "legacy"], group_by_dependencies=True
-        )
+        config = SelectorConfig(exclude_tags=["staging", "legacy"], group_by_dependencies=True)
         orchestrator = SelectorOrchestrator(parser, graph, config)
         selectors = orchestrator.generate_selectors()
 
@@ -572,20 +398,9 @@ class TestTagExclusion:
         assert "stg_users" not in all_fqn_values
         assert "stg_orders" not in all_fqn_values
 
-    def test_tag_exclusion_with_path_method(self, parser, graph):
-        """Test tag exclusion works with path method."""
-        config = SelectorConfig(method="path", exclude_tags=["legacy"])
-        orchestrator = SelectorOrchestrator(parser, graph, config)
-        selectors = orchestrator.generate_selectors()
-
-        # Should complete without error
-        assert len(selectors) >= 0
-
     def test_tag_exclusion_adds_exclude_clause_to_selector(self, parser, graph):
         """Test that tag exclusion adds exclude clause to auto-generated selector definition."""
-        config = SelectorConfig(
-            method="fqn", exclude_tags=["legacy", "temp"], group_by_dependencies=True
-        )
+        config = SelectorConfig(exclude_tags=["legacy", "temp"], group_by_dependencies=True)
         orchestrator = SelectorOrchestrator(parser, graph, config)
         selectors = orchestrator.generate_selectors()
 
@@ -621,45 +436,38 @@ class TestExclusionEdgeCases:
     def test_exclude_all_models_in_path(self, parser, graph):
         """Test excluding all models results in empty selectors for that path."""
         config = SelectorConfig(
-            method="fqn",
             exclude_paths=["staging", "marts", "temp"],  # Exclude all paths
             group_by_dependencies=True,
         )
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
+        orchestrator = SelectorOrchestrator(parser, graph, config)
+        selectors = orchestrator.generate_selectors()
 
         # All models excluded, should have no selectors
         assert len(selectors) == 0
 
     def test_exclude_nonexistent_path(self, parser, graph):
         """Test excluding non-existent path doesn't cause errors."""
-        config = SelectorConfig(
-            method="fqn", exclude_paths=["nonexistent/path"], group_by_dependencies=True
-        )
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
+        config = SelectorConfig(exclude_paths=["nonexistent/path"], group_by_dependencies=True)
+        orchestrator = SelectorOrchestrator(parser, graph, config)
+        selectors = orchestrator.generate_selectors()
 
         # Should complete without error
         assert len(selectors) > 0
 
     def test_exclude_nonexistent_model(self, parser, graph):
         """Test excluding non-existent model doesn't cause errors."""
-        config = SelectorConfig(
-            method="fqn", exclude_models=["nonexistent_model"], group_by_dependencies=True
-        )
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
+        config = SelectorConfig(exclude_models=["nonexistent_model"], group_by_dependencies=True)
+        orchestrator = SelectorOrchestrator(parser, graph, config)
+        selectors = orchestrator.generate_selectors()
 
         # Should complete without error
         assert len(selectors) > 0
 
     def test_empty_exclusion_lists(self, parser, graph):
         """Test with empty exclusion lists."""
-        config = SelectorConfig(
-            method="fqn", exclude_paths=[], exclude_models=[], group_by_dependencies=True
-        )
-        generator = SelectorGenerator(parser, graph, config)
-        selectors = generator.generate_selectors()
+        config = SelectorConfig(exclude_paths=[], exclude_models=[], group_by_dependencies=True)
+        orchestrator = SelectorOrchestrator(parser, graph, config)
+        selectors = orchestrator.generate_selectors()
 
         # Should include all models
         all_fqn_values = set()

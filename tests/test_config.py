@@ -15,7 +15,6 @@ class TestSelectorConfig:
         """Test default configuration values."""
         config = SelectorConfig()
 
-        assert config.method == "fqn"
         assert config.selector_prefix == "maestro"
         assert config.exclude_tags == []
         assert config.exclude_paths == []
@@ -26,7 +25,6 @@ class TestSelectorConfig:
     def test_custom_values(self):
         """Test configuration with custom values."""
         config = SelectorConfig(
-            method="path",
             selector_prefix="custom",
             exclude_tags=["deprecated", "test"],
             exclude_paths=["staging/legacy"],
@@ -35,7 +33,6 @@ class TestSelectorConfig:
             include_freshness_selectors=True,
         )
 
-        assert config.method == "path"
         assert config.selector_prefix == "custom"
         assert config.exclude_tags == ["deprecated", "test"]
         assert config.exclude_paths == ["staging/legacy"]
@@ -43,39 +40,9 @@ class TestSelectorConfig:
         assert config.group_by_dependencies is False
         assert config.include_freshness_selectors is True
 
-    def test_all_methods(self):
-        """Test all valid selector methods."""
-        for method in ["fqn", "path", "tag"]:
-            config = SelectorConfig(method=method)
-            assert config.method == method
-
-    def test_validate_invalid_method(self):
-        """Test validation rejects invalid methods."""
-        config = SelectorConfig(method="mixed")
-        with pytest.raises(ValueError, match="Invalid method"):
-            config.validate()
-
-    def test_validate_path_with_group_by_dependencies(self):
-        """Test validation rejects group_by_dependencies with path method."""
-        config = SelectorConfig(method="path", group_by_dependencies=True)
-        with pytest.raises(ValueError, match="group_by_dependencies is not allowed"):
-            config.validate()
-
-    def test_validate_tag_with_group_by_dependencies(self):
-        """Test validation rejects group_by_dependencies with tag method."""
-        config = SelectorConfig(method="tag", group_by_dependencies=True)
-        with pytest.raises(ValueError, match="group_by_dependencies is not allowed"):
-            config.validate()
-
-    def test_validate_method_as_list(self):
-        """Test validation rejects method as a list (only one method allowed)."""
-        config = SelectorConfig(method=["fqn", "path"])
-        with pytest.raises(ValueError, match="must be a single string value"):
-            config.validate()
-
-    def test_validate_fqn_valid_config(self):
-        """Test validation passes for valid FQN config."""
-        config = SelectorConfig(method="fqn", group_by_dependencies=True)
+    def test_validate_valid_config(self):
+        """Test validation passes for valid config."""
+        config = SelectorConfig(group_by_dependencies=True)
         config.validate()  # Should not raise
 
 
@@ -160,7 +127,6 @@ jobs_output_file: custom_jobs.yml
 output_dir: output
 
 selector:
-  method: path
   group_by_dependencies: false
   exclude_tags:
     - deprecated
@@ -192,7 +158,6 @@ deployment:
             assert config.jobs_output_file == "custom_jobs.yml"
             assert config.output_dir == "output"
 
-            assert config.selector.method == "path"
             assert config.selector.exclude_tags == ["deprecated", "test"]
             assert config.selector.exclude_paths == ["staging/legacy"]
             assert config.selector.exclude_models == ["temp_model"]
@@ -213,7 +178,8 @@ deployment:
         yaml_content = """
 manifest_path: custom/manifest.json
 selector:
-  method: tag
+  exclude_tags:
+    - deprecated
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(yaml_content)
@@ -224,11 +190,10 @@ selector:
 
             # Custom values
             assert config.manifest_path == "custom/manifest.json"
-            assert config.selector.method == "tag"
+            assert config.selector.exclude_tags == ["deprecated"]
 
             # Defaults for unspecified values
             assert config.selectors_output_file == "selectors.yml"
-            assert config.selector.exclude_tags == []
 
         finally:
             os.unlink(config_path)
@@ -237,7 +202,6 @@ selector:
         """Test saving configuration to YAML file."""
         config = Config()
         config.manifest_path = "test/manifest.json"
-        config.selector.method = "fqn"
         config.selector.exclude_tags = ["deprecated"]
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -252,7 +216,6 @@ selector:
             # Load it back and verify
             loaded = Config.from_yaml(config_path)
             assert loaded.manifest_path == "test/manifest.json"
-            assert loaded.selector.method == "fqn"
             assert "deprecated" in loaded.selector.exclude_tags
 
         finally:
@@ -268,7 +231,6 @@ selector:
             config = Config.from_yaml(config_path)
             # Should use all defaults
             assert config.manifest_path == "target/manifest.json"
-            assert config.selector.method == "fqn"
 
         finally:
             os.unlink(config_path)
@@ -277,24 +239,6 @@ selector:
         """Test loading from non-existent YAML file."""
         with pytest.raises(FileNotFoundError):
             Config.from_yaml("nonexistent_config.yml")
-
-    def test_from_yaml_method_as_list_raises_error(self):
-        """Test that loading config with method as list raises error."""
-        yaml_content = """
-selector:
-  method:
-    - fqn
-    - path
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
-            f.write(yaml_content)
-            config_path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="must be a single string value"):
-                Config.from_yaml(config_path)
-        finally:
-            os.unlink(config_path)
 
 
 class TestConfigExclusionLists:
@@ -348,7 +292,6 @@ class TestConfigIntegration:
         """Test config save and load roundtrip."""
         original = Config()
         original.manifest_path = "test/manifest.json"
-        original.selector.method = "fqn"
         original.selector.exclude_tags = ["deprecated", "test"]
         original.selector.exclude_paths = ["staging/legacy"]
         original.selector.exclude_models = ["temp_model"]
@@ -363,7 +306,6 @@ class TestConfigIntegration:
             loaded = Config.from_yaml(config_path)
 
             assert loaded.manifest_path == original.manifest_path
-            assert loaded.selector.method == original.selector.method
             assert loaded.selector.exclude_tags == original.selector.exclude_tags
             assert loaded.selector.exclude_paths == original.selector.exclude_paths
             assert loaded.selector.exclude_models == original.selector.exclude_models
