@@ -14,15 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 class SelectorOrchestrator:
-    """Orchestrates selector generation using different strategies.
+    """Orchestrates selector generation using FQN-based strategy.
 
-    Supports three methods:
-    - fqn: Groups models by dependencies (allows group_by_dependencies)
-    - path: One selector per path (no dependency grouping)
-    - tag: One selector per tag (no dependency grouping)
-
-    Manual selectors (those not starting with the configured prefix) are always
-    preserved and their models excluded from auto-generation to prevent duplicates.
+    Groups models by their dependency graph. Manual selectors (those not starting
+    with the configured prefix) are always preserved and their models excluded
+    from auto-generation to prevent duplicates.
     """
 
     def __init__(self, manifest_parser, graph_builder, config):
@@ -53,7 +49,7 @@ class SelectorOrchestrator:
         }
 
     def generate_selectors(self) -> List[Dict[str, Any]]:
-        """Generate selectors based on configuration.
+        """Generate FQN-based selectors.
 
         Manual selectors are always preserved and their models excluded from
         auto-generation to prevent duplicates.
@@ -61,16 +57,7 @@ class SelectorOrchestrator:
         Returns:
             List of selector definitions
         """
-        method = self.config.method
-
-        if method == "fqn":
-            selectors = self._generate_fqn_mode()
-        elif method == "path":
-            selectors = self._generate_path_mode()
-        elif method == "tag":
-            selectors = self._generate_tag_mode()
-        else:
-            raise ValueError(f"Unknown selector method: {method}")
+        selectors = self._generate_fqn_mode()
 
         # Generate seeds selectors if configured
         if self.config.include_seeds_selectors:
@@ -356,160 +343,6 @@ class SelectorOrchestrator:
         all_selectors.extend(fqn_selectors)
 
         return all_selectors
-
-    def _generate_path_mode(self) -> List[Dict[str, Any]]:
-        """Generate path-based selectors (one per path).
-
-        Creates selectors based on directory structure. Manual selectors are
-        preserved and their models excluded from path selectors.
-
-        Models are only added to their shortest matching path to avoid duplicates.
-        For example, a model in 'models/staging/sap/snpglue' will only appear in
-        the 'staging_sap' selector (at level 1), not in 'staging_sap_snpglue'.
-
-        Returns:
-            List of path-based selector definitions
-        """
-        all_selectors = []
-
-        # Start with models excluded by config
-        excluded_models = self._get_config_excluded_models()
-
-        # Get manual selectors and their covered models
-        manual_selectors, manual_excluded = self._get_manual_selectors_and_excluded_models()
-        excluded_models.update(manual_excluded)
-        all_selectors.extend(manual_selectors)
-
-        # Get path prefixes at configured level
-        path_prefixes = self.parser.get_path_prefixes(self.config.path_grouping_level)
-
-        # Sort paths by length (shortest first) so higher-level paths take priority
-        sorted_paths = sorted(path_prefixes, key=lambda p: len(p.split("/")))
-
-        # Track models already assigned to a path selector
-        models_already_covered: Set[str] = set()
-
-        for path_prefix in sorted_paths:
-            models = self.graph.group_by_path(path_prefix)
-            # Filter out excluded models AND models already covered by another path selector
-            models = [
-                m for m in models if m not in excluded_models and m not in models_already_covered
-            ]
-
-            if models:
-                selector_name = self._path_to_selector_name(path_prefix)
-                selector = {
-                    "name": f"{self.config.selector_prefix}_path_{selector_name}",
-                    "description": f"Selector for models in {path_prefix}",
-                    "definition": {"union": [{"method": "path", "value": path_prefix}]},
-                }
-
-                # Add combined exclusion clause if any exclusions are configured
-                exclusion = self._create_exclusion()
-                if exclusion:
-                    selector["definition"]["union"].append(exclusion)
-
-                all_selectors.append(selector)
-
-                # Mark these models as covered so they won't appear in other path selectors
-                models_already_covered.update(models)
-
-                # Create freshness selector if configured
-                if self._should_create_freshness(selector["name"]):
-                    freshness = self._create_freshness_selector(selector["name"])
-                    all_selectors.append(freshness)
-
-        logger.info(f"Generated {len(all_selectors) - len(manual_selectors)} path-based selectors")
-
-        return all_selectors
-
-    def _generate_tag_mode(self) -> List[Dict[str, Any]]:
-        """Generate tag-based selectors (one per tag).
-
-        Creates selectors based on dbt tags. Warns about models without tags.
-        Manual selectors are preserved and their models excluded.
-
-        Returns:
-            List of tag-based selector definitions
-        """
-        all_selectors = []
-
-        # Start with models excluded by config
-        excluded_models = self._get_config_excluded_models()
-
-        # Get manual selectors and their covered models
-        manual_selectors, manual_excluded = self._get_manual_selectors_and_excluded_models()
-        excluded_models.update(manual_excluded)
-        all_selectors.extend(manual_selectors)
-
-        # Get all unique tags
-        all_tags = self.parser.get_all_tags()
-
-        # Filter out excluded tags
-        included_tags = all_tags - set(self.config.exclude_tags)
-
-        # Track tagged models for warning
-        all_model_names = set(self.models.keys()) - excluded_models
-        tagged_models = set()
-
-        for tag in sorted(included_tags):
-            models = self.graph.group_by_tag(tag)
-            # Filter out excluded models
-            models = [m for m in models if m not in excluded_models]
-            tagged_models.update(models)
-
-            if models:
-                selector = {
-                    "name": f"{self.config.selector_prefix}_tag_{tag}",
-                    "description": f"Selector for models tagged with {tag}",
-                    "definition": {"union": [{"method": "tag", "value": tag}]},
-                }
-
-                # Add combined exclusion clause if any exclusions are configured
-                exclusion = self._create_exclusion()
-                if exclusion:
-                    selector["definition"]["union"].append(exclusion)
-
-                all_selectors.append(selector)
-
-                # Create freshness selector if configured
-                if self._should_create_freshness(selector["name"]):
-                    freshness = self._create_freshness_selector(selector["name"])
-                    all_selectors.append(freshness)
-
-        # Warn about untagged models
-        untagged_models = all_model_names - tagged_models
-        if untagged_models:
-            logger.warning(
-                f"\n⚠️  WARNING: {len(untagged_models)} model(s) have no tags and "
-                "will NOT be included in any selector when using method='tag':"
-            )
-            for model in sorted(untagged_models)[:10]:
-                logger.warning(f"    - {model}")
-            if len(untagged_models) > 10:
-                logger.warning(f"    ... and {len(untagged_models) - 10} more")
-            logger.warning(
-                "\n💡 RECOMMENDATION: Use method='fqn' to ensure all models are "
-                "included in selectors. The 'fqn' method groups models by "
-                "dependencies for complete coverage."
-            )
-
-        logger.info(f"Generated {len(all_selectors) - len(manual_selectors)} tag-based selectors")
-
-        return all_selectors
-
-    def _path_to_selector_name(self, path: str) -> str:
-        """Convert a path to a valid selector name.
-
-        Args:
-            path: Directory path (e.g., 'models/staging/core')
-
-        Returns:
-            Sanitized selector name (e.g., 'staging_core')
-        """
-        # Remove common prefixes and convert to underscore-separated
-        parts = path.replace("models/", "").replace("/", "_").strip("_")
-        return parts or "root"
 
     def _create_exclusion(self) -> Optional[Dict[str, Any]]:
         """Create combined exclusion definition for tags and paths.

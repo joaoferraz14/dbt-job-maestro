@@ -50,17 +50,9 @@ def main():
     type=click.Path(),
 )
 @click.option(
-    "--method",
-    "-t",
-    type=click.Choice(["fqn", "path", "tag"], case_sensitive=False),
-    multiple=True,
-    help="Selector generation method: fqn (dependency grouping), path (per folder), "
-    "tag (per tag). Only one method allowed.",
-)
-@click.option(
     "--group-by-dependencies/--no-group-by-dependencies",
     default=None,
-    help="Group models by shared dependencies (only valid for --method fqn)",
+    help="Group models by shared dependencies",
 )
 @click.option(
     "--exclude-tag",
@@ -76,11 +68,6 @@ def main():
     "--exclude-model",
     multiple=True,
     help="Models to exclude from selectors (can be used multiple times, adds to config)",
-)
-@click.option(
-    "--path-level",
-    type=int,
-    help="Directory level for path grouping (overrides config)",
 )
 @click.option(
     "--include-freshness/--no-include-freshness",
@@ -119,12 +106,10 @@ def generate(
     config,
     manifest,
     output,
-    method,
     group_by_dependencies,
     exclude_tag,
     exclude_path,
     exclude_model,
-    path_level,
     include_freshness,
     include_seeds,
     seeds_method,
@@ -145,18 +130,11 @@ def generate(
       maestro generate --config maestro-config.yml
 
       # Use command line options
-      maestro generate --manifest target/manifest.json --method fqn
+      maestro generate --manifest target/manifest.json
 
       # Mix config file with overrides
       maestro generate --config maestro-config.yml --exclude-tag deprecated
     """
-    # Validate method - only one allowed (checked before try block for clean error)
-    if len(method) > 1:
-        raise click.BadParameter(
-            f"Only one method can be specified. Got: {', '.join(method)}",
-            param_hint="'--method' / '-t'",
-        )
-
     try:
         # Load config from file or use defaults
         if config:
@@ -170,12 +148,6 @@ def generate(
             cfg.manifest_path = manifest
         if output:
             cfg.selectors_output_file = output
-        if method:
-            method_value = method[0]
-            cfg.selector.method = method_value
-            # Auto-set group_by_dependencies to False for path/tag if not explicitly provided
-            if method_value in ("path", "tag") and group_by_dependencies is None:
-                cfg.selector.group_by_dependencies = False
         if group_by_dependencies is not None:
             cfg.selector.group_by_dependencies = group_by_dependencies
         if exclude_tag:
@@ -189,8 +161,6 @@ def generate(
             cfg.selector.exclude_models = list(
                 set(cfg.selector.exclude_models + list(exclude_model))
             )
-        if path_level is not None:
-            cfg.selector.path_grouping_level = path_level
         if include_freshness is not None:
             cfg.selector.include_freshness_selectors = include_freshness
 
@@ -222,7 +192,7 @@ def generate(
 
         graph = GraphBuilder(models)
 
-        click.echo(f"Generating selectors using method: {cfg.selector.method}...")
+        click.echo("Generating FQN-based selectors...")
         if cfg.selector.exclude_tags:
             click.echo(f"Excluding tags: {', '.join(cfg.selector.exclude_tags)}")
         if cfg.selector.exclude_paths:
@@ -248,15 +218,14 @@ def generate(
         click.echo(click.style("\n✓ Selectors generated successfully!", fg="green", bold=True))
         click.echo(f"\nOutput: {output_path}")
 
-        if cfg.selector.method == "fqn":
-            components = graph.find_connected_components()
-            non_freshness_selectors = len(
-                [s for s in selectors if not s["name"].startswith("freshness_")]
-            )
-            click.echo(
-                f"Generated {non_freshness_selectors} selectors "
-                f"from {len(components)} connected components"
-            )
+        components = graph.find_connected_components()
+        non_freshness_selectors = len(
+            [s for s in selectors if not s["name"].startswith("freshness_")]
+        )
+        click.echo(
+            f"Generated {non_freshness_selectors} selectors "
+            f"from {len(components)} connected components"
+        )
 
         click.echo("\n" + "=" * 60)
         click.echo("Next Steps:")
@@ -465,17 +434,8 @@ def info(manifest):
             click.echo(f"   - Largest component: {largest} models")
 
         click.echo("\n" + "=" * 60)
-        click.echo("💡 Suggested Selector Methods:")
+        click.echo("💡 Run `maestro generate` to create FQN-based selectors")
         click.echo("=" * 60)
-
-        if all_tags and len(all_tags) >= 3:
-            click.echo("✓ Tag-based: You have multiple tags - consider --method tag")
-
-        if path_prefixes and len(path_prefixes) >= 3:
-            click.echo("✓ Path-based: You have multiple directories - consider --method path")
-
-        if components and len(components) >= 2:
-            click.echo("✓ FQN-based: You have connected components - consider --method fqn")
 
         click.echo("\n")
 

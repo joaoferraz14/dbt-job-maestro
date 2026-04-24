@@ -85,7 +85,6 @@ class TestGenerateCommand:
         result = runner.invoke(main, ["generate", "--help"])
         assert result.exit_code == 0
         assert "--manifest" in result.output
-        assert "--method" in result.output
         assert "--exclude-tag" in result.output
         assert "--exclude-path" in result.output
         assert "--exclude-model" in result.output
@@ -101,7 +100,7 @@ class TestGenerateCommand:
             assert Path("selectors.yml").exists()
 
     def test_generate_fqn_method(self, runner, temp_manifest):
-        """Test generate with FQN method."""
+        """Test generate produces FQN-based selectors."""
         with runner.isolated_filesystem():
             result = runner.invoke(
                 main,
@@ -109,48 +108,12 @@ class TestGenerateCommand:
                     "generate",
                     "--manifest",
                     temp_manifest,
-                    "--method",
-                    "fqn",
                     "--output",
                     "selectors.yml",
                 ],
             )
             assert result.exit_code == 0
             assert Path("selectors.yml").exists()
-
-    def test_generate_path_method(self, runner, temp_manifest):
-        """Test generate with path method."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                main,
-                [
-                    "generate",
-                    "--manifest",
-                    temp_manifest,
-                    "--method",
-                    "path",
-                    "--output",
-                    "selectors.yml",
-                ],
-            )
-            assert result.exit_code == 0
-
-    def test_generate_tag_method(self, runner, temp_manifest):
-        """Test generate with tag method."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                main,
-                [
-                    "generate",
-                    "--manifest",
-                    temp_manifest,
-                    "--method",
-                    "tag",
-                    "--output",
-                    "selectors.yml",
-                ],
-            )
-            assert result.exit_code == 0
 
     def test_generate_with_exclude_tag(self, runner, temp_manifest):
         """Test generate with exclude-tag option."""
@@ -270,7 +233,6 @@ class TestGenerateCommand:
 manifest_path: {temp_manifest}
 selectors_output_file: selectors.yml
 selector:
-  method: fqn
   exclude_tags:
     - deprecated
 """
@@ -464,8 +426,6 @@ class TestCLIIntegration:
                     "generate",
                     "--manifest",
                     temp_manifest,
-                    "--method",
-                    "fqn",
                     "--output",
                     "selectors.yml",
                 ],
@@ -489,7 +449,6 @@ manifest_path: {temp_manifest}
 selectors_output_file: selectors.yml
 jobs_output_file: jobs.yml
 selector:
-  method: fqn
   exclude_tags:
     - deprecated
 job:

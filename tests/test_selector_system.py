@@ -316,7 +316,7 @@ class TestSelectorOrchestrator:
         try:
             os.chdir(tmp_path)  # Isolate from existing selectors.yml
 
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -351,7 +351,7 @@ class TestManualSelectorPreservation:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -386,7 +386,7 @@ class TestIntegration:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -434,7 +434,7 @@ class TestManualSelectorOverlaps:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -473,7 +473,7 @@ class TestManualSelectorOverlaps:
         try:
             os.chdir(tmp_path)
 
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
 
@@ -516,7 +516,7 @@ class TestManualSelectorPersistence:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             # First generation
             orchestrator1 = SelectorOrchestrator(mock_parser, mock_graph, config)
@@ -569,7 +569,7 @@ class TestManualSelectorPersistence:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -610,7 +610,7 @@ class TestManualSelectorModelExclusion:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -653,7 +653,7 @@ class TestManualSelectorModelExclusion:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -696,7 +696,7 @@ class TestManualSelectorModelExclusion:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -748,7 +748,7 @@ class TestManualSelectorModelExclusion:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -787,7 +787,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -803,7 +803,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -838,7 +838,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -877,7 +877,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -911,7 +911,7 @@ class TestEdgeCases:
         original_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
 
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             selectors = orchestrator.generate_selectors()
@@ -938,7 +938,7 @@ class TestFreshnessSelectors:
 
     def test_freshness_disabled_by_default(self, mock_parser, mock_graph):
         """Test that freshness selectors are not generated by default."""
-        config = SelectorConfig(method="fqn", group_by_dependencies=True)
+        config = SelectorConfig(group_by_dependencies=True)
         orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
         selectors = orchestrator.generate_selectors()
 
@@ -948,9 +948,7 @@ class TestFreshnessSelectors:
 
     def test_freshness_enabled_globally(self, mock_parser, mock_graph):
         """Test that freshness selectors are generated when globally enabled."""
-        config = SelectorConfig(
-            method="fqn", group_by_dependencies=True, include_freshness_selectors=True
-        )
+        config = SelectorConfig(group_by_dependencies=True, include_freshness_selectors=True)
         orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
         selectors = orchestrator.generate_selectors()
 
@@ -967,7 +965,7 @@ class TestFreshnessSelectors:
             os.chdir(tmp_path)  # Isolate from existing selectors.yml
 
             # First generate to get selector names
-            config = SelectorConfig(method="fqn", group_by_dependencies=True)
+            config = SelectorConfig(group_by_dependencies=True)
             orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
             base_selectors = orchestrator.generate_selectors()
             non_freshness = [
@@ -978,7 +976,6 @@ class TestFreshnessSelectors:
                 # Only enable freshness for first selector
                 target_selector = non_freshness[0]
                 config_with_freshness = SelectorConfig(
-                    method="fqn",
                     group_by_dependencies=True,
                     freshness_selector_names=[target_selector],
                 )
@@ -995,9 +992,7 @@ class TestFreshnessSelectors:
     def test_freshness_exclude_specific_selectors(self, mock_parser, mock_graph):
         """Test that specific selectors can be excluded from freshness generation."""
         # First generate to get selector names
-        config = SelectorConfig(
-            method="fqn", group_by_dependencies=True, include_freshness_selectors=True
-        )
+        config = SelectorConfig(group_by_dependencies=True, include_freshness_selectors=True)
         orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
         base_selectors = orchestrator.generate_selectors()
         non_freshness = [
@@ -1008,7 +1003,6 @@ class TestFreshnessSelectors:
             # Exclude first selector from freshness
             excluded_selector = non_freshness[0]
             config_with_exclusion = SelectorConfig(
-                method="fqn",
                 group_by_dependencies=True,
                 include_freshness_selectors=True,
                 exclude_freshness_selector_names=[excluded_selector],
@@ -1024,9 +1018,7 @@ class TestFreshnessSelectors:
 
     def test_exclude_overrides_include(self, mock_parser, mock_graph):
         """Test that exclude_freshness_selector_names overrides freshness_selector_names."""
-        config = SelectorConfig(
-            method="fqn", group_by_dependencies=True, include_freshness_selectors=True
-        )
+        config = SelectorConfig(group_by_dependencies=True, include_freshness_selectors=True)
         orchestrator = SelectorOrchestrator(mock_parser, mock_graph, config)
         base_selectors = orchestrator.generate_selectors()
         non_freshness = [
@@ -1037,7 +1029,6 @@ class TestFreshnessSelectors:
             target_selector = non_freshness[0]
             # Both include and exclude the same selector - exclude should win
             config_with_both = SelectorConfig(
-                method="fqn",
                 group_by_dependencies=True,
                 freshness_selector_names=[target_selector],
                 exclude_freshness_selector_names=[target_selector],
@@ -1063,7 +1054,6 @@ class TestFreshnessSelectors:
 
             # Step 1: Generate WITH freshness selectors
             config_with_freshness = SelectorConfig(
-                method="fqn",
                 group_by_dependencies=True,
                 include_freshness_selectors=True,
                 selector_prefix="maestro",
@@ -1082,7 +1072,6 @@ class TestFreshnessSelectors:
 
             # Step 2: Regenerate WITHOUT freshness selectors
             config_without_freshness = SelectorConfig(
-                method="fqn",
                 group_by_dependencies=True,
                 include_freshness_selectors=False,
                 selector_prefix="maestro",
