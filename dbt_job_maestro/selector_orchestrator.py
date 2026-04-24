@@ -48,6 +48,9 @@ class SelectorOrchestrator:
             SelectorPriority.AUTO_FQN: FQNSelector(manifest_parser, graph_builder, config),
         }
 
+        # Raw YAML text blocks for manual selectors (populated during generation)
+        self._raw_manual_blocks: List[str] = []
+
     def generate_selectors(self) -> List[Dict[str, Any]]:
         """Generate FQN-based selectors.
 
@@ -331,6 +334,10 @@ class SelectorOrchestrator:
         manual_selectors, manual_excluded = self._get_manual_selectors_and_excluded_models()
         excluded_models.update(manual_excluded)
         all_selectors.extend(manual_selectors)
+
+        # Capture raw text blocks from the manual generator
+        manual_gen = self.generators[SelectorPriority.MANUAL]
+        self._raw_manual_blocks = list(manual_gen.raw_manual_blocks)
 
         # Generate FQN-based selectors for remaining models
         fqn_gen = self.generators[SelectorPriority.AUTO_FQN]
@@ -696,34 +703,67 @@ class SelectorOrchestrator:
     def write_selectors(self, selectors: List[Dict[str, Any]], output_path: str) -> None:
         """Write selectors to YAML file with blank lines between selectors.
 
+        When config.reformat_manual_selectors is False, manual selectors are
+        written using their original raw YAML text (preserving indentation,
+        quoting, comments). Auto-generated selectors are always formatted
+        through yaml.dump.
+
         Args:
             selectors: List of selector definitions
             output_path: Path to output file
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
+        # Separate manual and auto-generated selectors
+        manual_gen = self.generators[SelectorPriority.MANUAL]
+        manual_selectors = []
+        auto_selectors = []
+        for s in selectors:
+            if manual_gen.is_manually_created(s):
+                manual_selectors.append(s)
+            else:
+                auto_selectors.append(s)
+
         with open(output_path, "w") as f:
             # Write the selectors key
             f.write("selectors:\n")
 
-            # Write each selector with a blank line after it
-            for i, selector in enumerate(selectors):
-                # Convert selector to YAML
-                selector_yaml = yaml.dump(
-                    [selector], default_flow_style=False, sort_keys=False, indent=2
-                )
+            # Determine which selectors to dump vs preserve raw
+            if not self.config.reformat_manual_selectors and self._raw_manual_blocks:
+                # Write manual selectors as raw text (preserving original formatting)
+                for i, raw_block in enumerate(self._raw_manual_blocks):
+                    f.write(raw_block)
+                    f.write("\n\n")
 
-                # Remove the leading "- " from the first line and adjust indentation
-                lines = selector_yaml.split("\n")
-                if lines and lines[0].startswith("- "):
-                    lines[0] = "  - " + lines[0][2:]  # Add proper indentation
-                    for j in range(1, len(lines)):
-                        if lines[j]:  # Only add indentation to non-empty lines
-                            lines[j] = "  " + lines[j]
+                # Write auto-generated selectors through yaml.dump
+                for i, selector in enumerate(auto_selectors):
+                    self._write_single_selector(f, selector)
+                    if i < len(auto_selectors) - 1:
+                        f.write("\n")
+            else:
+                # Default: dump all selectors through yaml.dump (consistent formatting)
+                all_selectors = manual_selectors + auto_selectors
+                for i, selector in enumerate(all_selectors):
+                    self._write_single_selector(f, selector)
+                    if i < len(all_selectors) - 1:
+                        f.write("\n")
 
-                # Write the selector
-                f.write("\n".join(lines))
+    def _write_single_selector(self, f, selector: Dict[str, Any]) -> None:
+        """Write a single selector to file using yaml.dump formatting.
 
-                # Add blank line between selectors (but not after the last one)
-                if i < len(selectors) - 1:
-                    f.write("\n")
+        Args:
+            f: File handle to write to
+            selector: Selector definition dictionary
+        """
+        selector_yaml = yaml.dump([selector], default_flow_style=False, sort_keys=False, indent=2)
+
+        # Remove the leading "- " from the first line and adjust indentation
+        lines = selector_yaml.split("\n")
+        if lines and lines[0].startswith("- "):
+            lines[0] = "  - " + lines[0][2:]  # Add proper indentation
+            for j in range(1, len(lines)):
+                if lines[j]:  # Only add indentation to non-empty lines
+                    lines[j] = "  " + lines[j]
+
+        # Write the selector
+        f.write("\n".join(lines))

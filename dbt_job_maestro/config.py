@@ -63,6 +63,14 @@ class SelectorConfig:
     # When True, detects and logs warnings when multiple manual selectors cover the same model
     warn_on_manual_overlaps: bool = True
 
+    # Whether to reformat manual selectors when writing selectors.yml
+    # When True (default), manual selectors are re-serialized through yaml.dump
+    # for consistent formatting with auto-generated selectors.
+    # When False, manual selectors are preserved exactly as written in the original
+    # selectors.yml file — indentation, quoting, comments, and line breaks are untouched.
+    # Use False if you maintain specific YAML formatting in your manual selectors.
+    reformat_manual_selectors: bool = True
+
     # -------------------------------------------------------------------------
     # SEEDS SELECTOR OPTIONS
     # -------------------------------------------------------------------------
@@ -377,6 +385,7 @@ class Config:
             prefix_order=selector_data.get("prefix_order", []),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
             warn_on_manual_overlaps=selector_data.get("warn_on_manual_overlaps", True),
+            reformat_manual_selectors=selector_data.get("reformat_manual_selectors", True),
             include_seeds_selectors=selector_data.get("include_seeds_selectors", False),
             seeds_selector_method=selector_data.get("seeds_selector_method", "path"),
             seeds_path=selector_data.get("seeds_path", ""),
@@ -678,6 +687,13 @@ selector:
 
   # Warn when multiple manual selectors cover the same model
   warn_on_manual_overlaps: {str(self.selector.warn_on_manual_overlaps).lower()}
+
+  # Reformat manual selectors when writing selectors.yml
+  # When true (default): manual selectors are reformatted through yaml.dump for
+  #   consistent style with auto-generated selectors
+  # When false: manual selectors are preserved exactly as written in the original
+  #   selectors.yml (indentation, quoting, comments, line breaks are untouched)
+  reformat_manual_selectors: {str(self.selector.reformat_manual_selectors).lower()}
 
 # -----------------------------------------------------------------------------
 # JOB GENERATION (for dbt-jobs-as-code)
