@@ -6,7 +6,6 @@ import tempfile
 import os
 from pathlib import Path
 from click.testing import CliRunner
-from unittest.mock import patch
 
 from dbt_job_maestro.cli import main
 
@@ -74,7 +73,7 @@ class TestMainCommand:
         """Test main --version."""
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert "0.3.0" in result.output
 
 
 class TestGenerateCommand:
@@ -340,77 +339,6 @@ class TestInitCommand:
             # Run init with no input
             result = runner.invoke(main, ["init"], input="n\n")
             assert "Cancelled" in result.output
-
-
-class TestCheckCommand:
-    """Test the check command."""
-
-    def test_check_help(self, runner):
-        """Test check --help."""
-        result = runner.invoke(main, ["check", "--help"])
-        assert result.exit_code == 0
-        assert "--config" in result.output
-        assert "--dbt-project" in result.output
-
-    @patch("dbt_job_maestro.cli.check_dbt_jobs_as_code_installed")
-    @patch("dbt_job_maestro.cli.get_current_branch")
-    @patch("dbt_job_maestro.cli.check_packages_yml")
-    def test_check_all_pass(self, mock_packages, mock_branch, mock_installed, runner):
-        """Test check when all requirements pass."""
-        mock_installed.return_value = True
-        mock_branch.return_value = "main"
-        mock_packages.return_value = (True, "packages.yml")
-
-        with runner.isolated_filesystem():
-            # Create required files
-            Path("selectors.yml").write_text("selectors: []")
-            Path("jobs.yml").write_text("jobs: {}")
-
-            result = runner.invoke(main, ["check"])
-            assert result.exit_code == 0
-            assert "All checks passed" in result.output
-
-    @patch("dbt_job_maestro.cli.check_dbt_jobs_as_code_installed")
-    @patch("dbt_job_maestro.cli.get_current_branch")
-    @patch("dbt_job_maestro.cli.check_packages_yml")
-    def test_check_missing_package(self, mock_packages, mock_branch, mock_installed, runner):
-        """Test check when dbt-jobs-as-code not installed."""
-        mock_installed.return_value = False
-        mock_branch.return_value = "main"
-        mock_packages.return_value = (False, "packages.yml")
-
-        with runner.isolated_filesystem():
-            result = runner.invoke(main, ["check"])
-            assert result.exit_code == 1
-            assert "Not installed" in result.output
-
-    @patch("dbt_job_maestro.cli.check_dbt_jobs_as_code_installed")
-    @patch("dbt_job_maestro.cli.get_current_branch")
-    @patch("dbt_job_maestro.cli.check_packages_yml")
-    def test_check_wrong_branch(self, mock_packages, mock_branch, mock_installed, runner):
-        """Test check when on wrong branch."""
-        mock_installed.return_value = True
-        mock_branch.return_value = "feature/test"
-        mock_packages.return_value = (False, None)
-
-        with runner.isolated_filesystem():
-            result = runner.invoke(main, ["check"])
-            # Should still pass but show warning
-            assert "feature/test" in result.output
-
-    @patch("dbt_job_maestro.cli.check_dbt_jobs_as_code_installed")
-    @patch("dbt_job_maestro.cli.get_current_branch")
-    @patch("dbt_job_maestro.cli.check_packages_yml")
-    def test_check_missing_files(self, mock_packages, mock_branch, mock_installed, runner):
-        """Test check when selectors.yml and jobs.yml missing."""
-        mock_installed.return_value = True
-        mock_branch.return_value = "main"
-        mock_packages.return_value = (False, None)
-
-        with runner.isolated_filesystem():
-            result = runner.invoke(main, ["check"])
-            assert "selectors.yml not found" in result.output
-            assert "jobs.yml not found" in result.output
 
 
 class TestCLIIntegration:

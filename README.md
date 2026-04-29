@@ -2,7 +2,7 @@
 
 **Automatically generate dbt selectors and dbt Cloud jobs from your manifest.json by analyzing dependencies.**
 
-`dbt-job-maestro` analyzes your dbt project's dependency graph and generates organized, maintainable selectors — grouping related models by connected components. Manual selectors are always preserved. Optionally generates dbt Cloud job definitions compatible with [dbt-jobs-as-code](https://github.com/dbt-labs/dbt-jobs-as-code).
+`dbt-job-maestro` analyzes your dbt project's dependency graph and generates organized, maintainable selectors — grouping related models by connected components. Manual selectors are always preserved. Optionally generates dbt Cloud job definition YAML files that you can sync to dbt Cloud with dbt-jobs-as-code.
 
 ---
 
@@ -15,7 +15,6 @@
 - [Configuration](#configuration)
 - [Manual Selector Preservation](#manual-selector-preservation)
 - [Job Generation & Orchestration](#job-generation--orchestration)
-- [CI/CD Integration](#cicd-integration)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
 
@@ -76,7 +75,7 @@ dbt build --selector maestro_stg_customers
 
 ```bash
 maestro generate-jobs --config maestro-config.yml
-dbt-jobs-as-code sync jobs.yml
+# Sync to dbt Cloud: dbt-jobs-as-code sync --config jobs.yml
 ```
 
 ---
@@ -205,14 +204,6 @@ Analyze your dbt project structure — shows model counts, tags, folders, and de
 maestro info --manifest target/manifest.json
 ```
 
-### `maestro check`
-
-Validate deployment requirements before deploying to dbt Cloud.
-
-```bash
-maestro check --config maestro-config.yml
-```
-
 ---
 
 ## Configuration
@@ -312,7 +303,7 @@ selector:
   reformat_manual_selectors: true
 
 # ============================================================================
-# JOB GENERATION (for dbt-jobs-as-code)
+# JOB GENERATION
 # ============================================================================
 job:
   # dbt Cloud credentials
@@ -334,11 +325,12 @@ job:
   include_manual_selectors_in_jobs: true    # Create jobs for manual selectors
   selector_prefix: maestro                  # Synced from selector.selector_prefix
 
-  # Orchestration mode: simple, cron_incremental, or cascade
+  # Orchestration mode: simple, staggered, or none
+  # (cron_incremental is accepted as an alias for staggered)
   orchestration_mode: simple
   cron_schedule: "0 */6 * * *"
 
-  # For cron_incremental and cascade modes
+  # For staggered mode
   start_hour: 6
   start_minute: 0
   cron_increment_minutes: 5
@@ -346,10 +338,6 @@ job:
 
   # Combine small selectors into one job (FQN model jobs only)
   min_models_per_job: 1
-
-  # Cascade mode (two-phase deployment)
-  cascade_initial_deployment: true
-  job_id_mapping: {}
 
   # Execution order for resource types
   execution_order:
@@ -368,13 +356,6 @@ job:
     enabled: false
     cron_schedule: "0 0 * * 0"
 
-# ============================================================================
-# DEPLOYMENT
-# ============================================================================
-deployment:
-  deploy_branch: main
-  require_dbt_jobs_as_code: true
-  dbt_project_path: .
 ```
 
 ---
@@ -425,7 +406,7 @@ selectors:
 
 ## Job Generation & Orchestration
 
-Maestro generates dbt Cloud job definitions compatible with [dbt-jobs-as-code](https://github.com/dbt-labs/dbt-jobs-as-code).
+Maestro generates dbt Cloud job definition YAML files (`jobs.yml`).
 
 ### Job Inclusion
 
@@ -446,13 +427,13 @@ job:
   cron_schedule: "0 6 * * *"
 ```
 
-#### Cron Incremental Mode (Staggered)
+#### Staggered Mode
 
-Jobs staggered with time increments.
+Jobs staggered with time increments. (`cron_incremental` is accepted as a backward-compatible alias.)
 
 ```yaml
 job:
-  orchestration_mode: cron_incremental
+  orchestration_mode: staggered
   start_hour: 6
   start_minute: 0
   cron_increment_minutes: 5
@@ -461,31 +442,18 @@ job:
 
 Result: jobs at 6:00, 6:05, 6:10, etc.
 
-#### Cascade Mode (Sequential)
+#### None Mode (Manual Trigger Only)
 
-Jobs trigger when previous completes. **Requires two-phase deployment:**
-
-**Phase 1:** Deploy with `cascade_initial_deployment: true` — all jobs get cron schedules.
-
-```bash
-maestro generate-jobs --config maestro-config.yml
-dbt-jobs-as-code sync jobs.yml
-```
-
-**Phase 2:** Get job IDs from dbt Cloud, add to `job_id_mapping`, set `cascade_initial_deployment: false`, redeploy.
+Jobs are generated with `triggers.schedule = false` and no `schedule` field. Useful when you want to trigger jobs manually or via an external orchestrator.
 
 ```yaml
 job:
-  orchestration_mode: cascade
-  cascade_initial_deployment: false
-  job_id_mapping:
-    dbt_maestro_stg_customers: 12345
-    dbt_maestro_dim_products: 12346
+  orchestration_mode: none
 ```
 
 #### Execution Order
 
-Control resource type ordering in staggered/cascade modes:
+Control resource type ordering in staggered mode:
 
 ```yaml
 job:
@@ -528,82 +496,8 @@ maestro init --output maestro-config.yml     # Create config
 dbt compile                                    # Generate manifest
 maestro generate --config maestro-config.yml   # Generate selectors
 maestro generate-jobs --config maestro-config.yml  # Generate jobs
-dbt-jobs-as-code sync jobs.yml                 # Deploy to dbt Cloud
+# Sync to dbt Cloud: dbt-jobs-as-code sync --config jobs.yml
 ```
-
----
-
-## CI/CD Integration
-
-### GitHub Actions Workflow
-
-```yaml
-# .github/workflows/maestro-sync.yml
-name: Sync dbt Selectors and Jobs
-
-on:
-  push:
-    branches: [main]
-    paths: ['models/**', 'dbt_project.yml', 'maestro-config.yml']
-  workflow_dispatch:
-
-jobs:
-  generate-and-deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install dbt-core dbt-postgres  # or your adapter
-          pip install dbt-job-maestro dbt-jobs-as-code
-
-      - run: dbt compile
-      - run: maestro generate --config maestro-config.yml
-      - run: maestro generate-jobs --config maestro-config.yml
-      - run: dbt-jobs-as-code sync jobs.yml
-        env:
-          DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}
-
-      - uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update selectors and jobs [skip ci]"
-          file_pattern: "selectors.yml jobs.yml"
-```
-
-### PR Preview (No Deploy)
-
-```yaml
-# .github/workflows/maestro-preview.yml
-name: Preview Selector Changes
-
-on:
-  pull_request:
-    paths: ['models/**', 'dbt_project.yml', 'maestro-config.yml']
-
-jobs:
-  preview:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install dbt-core dbt-postgres dbt-job-maestro
-      - run: dbt compile
-      - run: maestro generate --config maestro-config.yml
-      - run: git diff selectors.yml || echo "No changes"
-```
-
-### Tips
-
-1. Always use `--config maestro-config.yml` for reproducible builds
-2. Pin `dbt-job-maestro` version in `requirements.txt`
-3. Use `[skip ci]` in auto-commit messages to avoid infinite loops
-4. Separate preview (PRs) from deploy (main branch)
 
 ---
 
@@ -636,7 +530,7 @@ dbt compile
 maestro generate --config maestro-config.yml
 git diff selectors.yml                              # Review changes
 maestro generate-jobs --config maestro-config.yml
-dbt-jobs-as-code sync jobs.yml
+# Sync to dbt Cloud: dbt-jobs-as-code sync --config jobs.yml
 ```
 
 ### 4. Test Selectors Before Deployment

@@ -152,7 +152,7 @@ class FQNSelector(BaseSelector):
         models_with_sources = self.graph.get_models_with_sources()
 
         selector = {
-            "name": f"model_{model_name}",
+            "name": f"{self.config.selector_prefix}_{model_name}",
             "description": f"Selector for model {model_name}",
             "definition": {"union": []},
         }
