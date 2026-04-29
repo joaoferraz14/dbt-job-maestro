@@ -122,6 +122,19 @@ class SelectorConfig:
     # - empty: exclude all tests
     indirect_selection: str = "eager"
 
+    # -------------------------------------------------------------------------
+    # SINGLE-MODEL SELECTOR GROUPING
+    # -------------------------------------------------------------------------
+
+    # When true, all single-model components (orphan models) are combined into
+    # one selector instead of creating individual selectors for each.
+    combine_single_model_selectors: bool = False
+
+    # Name suffix for the combined single-model selector.
+    # The full name will be: {selector_prefix}_{single_model_selector_name}
+    # e.g., maestro_orphan_models
+    single_model_selector_name: str = "orphan_models"
+
     def validate(self) -> None:
         """Validate configuration options for compatibility.
 
@@ -372,6 +385,12 @@ class Config:
             full_refresh_exclude_paths=selector_data.get("full_refresh_exclude_paths", []),
             full_refresh_exclude_models=selector_data.get("full_refresh_exclude_models", []),
             indirect_selection=selector_data.get("indirect_selection", "eager"),
+            combine_single_model_selectors=selector_data.get(
+                "combine_single_model_selectors", False
+            ),
+            single_model_selector_name=selector_data.get(
+                "single_model_selector_name", "orphan_models"
+            ),
         )
 
         # Validate selector config
@@ -682,6 +701,18 @@ selector:
   #   selectors.yml (indentation, quoting, comments, line breaks are untouched)
   reformat_manual_selectors: {str(self.selector.reformat_manual_selectors).lower()}
 
+  # ---------------------------------------------------------------------------
+  # SINGLE-MODEL SELECTOR GROUPING
+  # ---------------------------------------------------------------------------
+  # When true, all single-model components (orphan models with no dependency
+  # connections to other auto-generated models) are combined into one selector
+  # instead of creating individual selectors for each.
+  combine_single_model_selectors: {str(self.selector.combine_single_model_selectors).lower()}
+
+  # Name suffix for the combined single-model selector
+  # Full name: {{selector_prefix}}_{{single_model_selector_name}}
+  single_model_selector_name: {self.selector.single_model_selector_name}
+
 # -----------------------------------------------------------------------------
 # JOB GENERATION (for dbt-jobs-as-code)
 # -----------------------------------------------------------------------------
@@ -734,6 +765,7 @@ job:
   # ORCHESTRATION MODE
   # ---------------------------------------------------------------------------
   # Job orchestration: 'simple', 'staggered', or 'none'
+  # ('cron_incremental' is accepted as an alias for 'staggered')
   # - simple: All jobs use the same cron_schedule (parallel execution)
   # - staggered: Jobs staggered by cron_increment_minutes from start_hour:start_minute
   # - none: No schedule — jobs exist but must be triggered manually in dbt Cloud

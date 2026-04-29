@@ -298,6 +298,8 @@ class JobGenerator:
             Number of models in the selector, or 0 if unable to determine
         """
         definition = selector.get("definition", {})
+        if not isinstance(definition, dict):
+            return 0
         union = definition.get("union", [])
 
         count = 0
