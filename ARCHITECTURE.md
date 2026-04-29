@@ -18,17 +18,14 @@
 └─────────────────────────────────────────────────────────────┘
 
 6. Pull request review
-7. Merge to main branch (configured in maestro-config.yml)
+7. Merge to main branch
 
 ┌─────────────────────────────────────────────────────────────┐
-│                    CI/CD PIPELINE                            │
+│                    SYNC TO DBT CLOUD                         │
 └─────────────────────────────────────────────────────────────┘
 
-8. GitHub Actions triggers on main branch
-9. Check: current branch == config.deployment.deploy_branch
-10. Validate: dbt-jobs-as-code installed & in packages.yml
-11. dbt-jobs-as-code sync-jobs jobs.yml
-12. Jobs deployed to dbt Cloud ✅
+8. Sync jobs.yml to dbt Cloud: `dbt-jobs-as-code sync --config jobs.yml`
+9. Jobs deployed to dbt Cloud ✅
 ```
 
 ## Components
@@ -36,12 +33,7 @@
 ### dbt-job-maestro (This Package)
 - **Input**: `manifest.json`
 - **Output**: `selectors.yml`, `jobs.yml` (YAML files)
-- **Purpose**: Generate selector and job definitions
-
-### dbt-jobs-as-code (dbt-labs)
-- **Input**: `jobs.yml`
-- **Output**: Jobs in dbt Cloud (via API)
-- **Purpose**: Deploy jobs to dbt Cloud
+- **Purpose**: Generate selector and job definition YAML files
 
 ## Selector Generation Methods
 
@@ -200,28 +192,18 @@ job:
   environment_id: 11111
   cron_schedule: "0 */6 * * *"
   # ... more options
-
-# Deployment control
-deployment:
-  deploy_branch: main  # Only deploy from this branch
-  require_dbt_jobs_as_code: true
 ```
 
 ## Safety Features
 
-### 1. Branch Protection
-- Jobs only deployed from configured branch (e.g., `main`)
-- Prevents concurrent deployments by multiple devs
-- CI/CD validates branch before deploying
-
-### 2. Package Validation
-- Checks if dbt-jobs-as-code installed
-- Verifies it's in packages.yml
-- Fails fast if requirements not met
-
-### 3. Manual Selector Protection
+### 1. Manual Selector Protection
 - Selectors NOT starting with `maestro_` prefix are preserved
 - Won't overwrite custom selector configurations during regeneration
+
+### 2. Version-Controlled Definitions
+- All changes in YAML files (version controlled)
+- Merge conflicts resolved in git
+- Single source of truth for job definitions
 
 ## Files Generated
 
@@ -236,7 +218,7 @@ selectors:
           value: stg_customers
 ```
 
-### jobs.yml (dbt-jobs-as-code format)
+### jobs.yml
 ```yaml
 jobs:
   dbt_stg_customers:
@@ -278,9 +260,6 @@ maestro generate-jobs --config maestro-config.yml
 
 # Analyze project
 maestro info --manifest target/manifest.json
-
-# Check deployment requirements
-maestro check --config maestro-config.yml
 ```
 
 ## Dependencies
@@ -289,48 +268,6 @@ maestro check --config maestro-config.yml
 - Python >= 3.8
 - pyyaml >= 6.0
 - click >= 8.0.0
-
-### For Deployment
-- dbt-jobs-as-code (from dbt-labs)
-- DBT_CLOUD_SERVICE_TOKEN environment variable
-
-## Security
-
-### Service Token Permissions
-- Required: "Job Admin" in dbt Cloud
-- Scope: Account level or project level
-- Storage: CI/CD secrets only (never in code)
-
-### Branch Protection
-- Enforce in GitHub/GitLab settings
-- Require PR reviews before merge
-- Prevent force pushes to main
-
-## Concurrency Handling
-
-**Problem**: Multiple devs editing jobs simultaneously
-
-**Solution**:
-1. All changes in YAML files (version controlled)
-2. Merge conflicts resolved in git
-3. Only CI/CD deploys (single source of truth)
-4. Deployment only on configured branch
-
-## Error Handling
-
-```python
-from dbt_job_maestro.deployment import validate_deployment_requirements
-
-is_valid, issues = validate_deployment_requirements(
-    dbt_project_path=".",
-    deploy_branch="main"
-)
-
-if not is_valid:
-    for issue in issues:
-        print(f"❌ {issue}")
-    exit(1)
-```
 
 ## Testing
 
@@ -346,31 +283,9 @@ cat selectors.yml
 cat jobs.yml
 ```
 
-## Monitoring
-
-### CI/CD Logs
-- Check GitHub Actions / GitLab CI logs
-- Verify dbt-jobs-as-code sync output
-
-### dbt Cloud
-- Review jobs in dbt Cloud UI
-- Check job run history
-- Validate schedules
-
-## Rollback
-
-```bash
-# Revert to previous version
-git revert <commit-hash>
-git push origin main
-
-# CI/CD will deploy previous version
-```
-
 ## Best Practices
 
 1. **Always use config file** - Consistency across team
 2. **Review before merge** - Check diffs in selectors.yml and jobs.yml
 3. **Test locally** - Run `dbt list --selector` before committing
-4. **Deploy from CI/CD only** - Never manual deployments
-5. **Use branch protection** - Enforce review process
+4. **Use version control** - Track selectors.yml and jobs.yml in git

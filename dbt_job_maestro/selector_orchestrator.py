@@ -82,6 +82,13 @@ class SelectorOrchestrator:
             warnings = self.overlap_detector.detect_overlaps(selectors)
             self.overlap_detector.report_overlaps(warnings)
 
+        # Apply indirect_selection to all auto-generated selectors when not default
+        if self.config.indirect_selection != "eager":
+            manual_gen = self.generators[SelectorPriority.MANUAL]
+            for selector in selectors:
+                if not manual_gen.is_manually_created(selector) and "default" not in selector:
+                    selector["default"] = {"indirect_selection": self.config.indirect_selection}
+
         # Warn about models not covered by any selector
         self._warn_uncovered_models(selectors)
 
@@ -688,10 +695,6 @@ class SelectorOrchestrator:
             "description": "Selector for full refresh of all incremental models",
             "definition": definition,
         }
-
-        # Add indirect_selection if not the default
-        if self.config.indirect_selection != "eager":
-            selector["default"] = {"indirect_selection": self.config.indirect_selection}
 
         logger.info(
             f"Generated full refresh selector for incremental models "

@@ -253,21 +253,11 @@ class JobConfig:
     # Job name prefix
     job_name_prefix: str = "dbt"
 
-    # Job orchestration mode: "simple", "cron_incremental", or "cascade"
-    # - simple: All jobs use the same cron_schedule
-    # - cron_incremental: Stagger jobs with time increments (e.g., 6:00, 6:05, 6:10)
-    # - cascade: Chain jobs so each triggers after the previous completes
+    # Job orchestration mode: "simple", "staggered", or "none"
+    # - simple: All jobs use the same cron_schedule (parallel execution)
+    # - staggered: Jobs staggered with time increments (e.g., 6:00, 6:30, 7:00)
+    # - none: No schedule — jobs are created but must be triggered manually
     orchestration_mode: str = "simple"
-
-    # For cascade mode: use two-phase deployment
-    # Phase 1: Set to True to generate jobs without cascade triggers (for initial deployment)
-    # Phase 2: Set to False to generate jobs with cascade triggers using job_id_mapping
-    cascade_initial_deployment: bool = True
-
-    # Mapping of job names to dbt Cloud job IDs (for cascade mode phase 2)
-    # After deploying jobs, populate this with actual job IDs from dbt Cloud API
-    # Example: {"dbt_revenue_critical": 12345, "dbt_customer_analytics": 12346}
-    job_id_mapping: Dict[str, int] = field(default_factory=dict)
 
     # Whether to automatically create jobs for maestro_ selectors (auto-generated)
     # When True: maestro_ selectors automatically become dbt Cloud jobs
@@ -285,16 +275,16 @@ class JobConfig:
     # Selectors NOT starting with this prefix are manual
     selector_prefix: str = "maestro"
 
-    # Starting hour for first job (0-23) when using cron_incremental or cascade modes
+    # Starting hour for first job (0-23) when using staggered mode
     start_hour: int = 6
 
-    # Starting minute for first job (0-59) when using cron_incremental or cascade modes
+    # Starting minute for first job (0-59) when using staggered mode
     start_minute: int = 0
 
-    # Time increment in minutes between jobs for cron_incremental mode
+    # Time increment in minutes between jobs for staggered mode
     cron_increment_minutes: int = 5
 
-    # Days of week for cron jobs (used in cron_incremental mode)
+    # Days of week for cron jobs (used in staggered mode)
     # Empty list means every day, or specify: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
     cron_days_of_week: List[str] = field(default_factory=list)
 
@@ -318,26 +308,11 @@ class JobConfig:
 
 
 @dataclass
-class DeploymentConfig:
-    """Configuration for deploying jobs to dbt Cloud"""
-
-    # Branch that triggers job deployment (e.g., 'main', 'production')
-    deploy_branch: str = "main"
-
-    # Whether to validate dbt-jobs-as-code is installed
-    require_dbt_jobs_as_code: bool = True
-
-    # Path to dbt_project.yml (to check packages.yml)
-    dbt_project_path: str = "."
-
-
-@dataclass
 class Config:
     """Main configuration class"""
 
     selector: SelectorConfig = field(default_factory=SelectorConfig)
     job: JobConfig = field(default_factory=JobConfig)
-    deployment: DeploymentConfig = field(default_factory=DeploymentConfig)
 
     # Path to manifest.json
     manifest_path: str = "target/manifest.json"
@@ -420,14 +395,14 @@ class Config:
             generate_docs=job_data.get("generate_docs", False),
             run_generate_sources=job_data.get("run_generate_sources", False),
             job_name_prefix=job_data.get("job_name_prefix", "dbt"),
-            orchestration_mode=job_data.get("orchestration_mode", "simple"),
+            orchestration_mode=cls._normalize_orchestration_mode(
+                job_data.get("orchestration_mode", "simple")
+            ),
             start_hour=job_data.get("start_hour", 6),
             start_minute=job_data.get("start_minute", 0),
             cron_increment_minutes=job_data.get("cron_increment_minutes", 5),
             cron_days_of_week=job_data.get("cron_days_of_week", []),
             min_models_per_job=job_data.get("min_models_per_job", 1),
-            cascade_initial_deployment=job_data.get("cascade_initial_deployment", True),
-            job_id_mapping=job_data.get("job_id_mapping", {}),
             execution_order=job_data.get("execution_order", []),
             include_maestro_selectors_in_jobs=job_data.get(
                 "include_maestro_selectors_in_jobs", True
@@ -440,24 +415,37 @@ class Config:
             ),
         )
 
-        # Create deployment config
-        deployment_data = data.get("deployment", {})
-        deployment_config = DeploymentConfig(
-            deploy_branch=deployment_data.get("deploy_branch", "main"),
-            require_dbt_jobs_as_code=deployment_data.get("require_dbt_jobs_as_code", True),
-            dbt_project_path=deployment_data.get("dbt_project_path", "."),
-        )
-
         # Create main config
         return cls(
             selector=selector_config,
             job=job_config,
-            deployment=deployment_config,
             manifest_path=data.get("manifest_path", "target/manifest.json"),
             output_dir=data.get("output_dir", "."),
             selectors_output_file=data.get("selectors_output_file", "selectors.yml"),
             jobs_output_file=data.get("jobs_output_file", "jobs.yml"),
         )
+
+    @classmethod
+    def _normalize_orchestration_mode(cls, mode: str) -> str:
+        """Normalize orchestration mode, handling backward-compatible aliases.
+
+        Args:
+            mode: Raw orchestration mode string from config
+
+        Returns:
+            Normalized mode string (simple, staggered, or none)
+        """
+        aliases = {
+            "cron_incremental": "staggered",
+        }
+        normalized = aliases.get(mode, mode)
+        valid_modes = {"simple", "staggered", "none"}
+        if normalized not in valid_modes:
+            raise ValueError(
+                f"Invalid orchestration_mode '{mode}'. "
+                f"Valid options: {', '.join(sorted(valid_modes))}"
+            )
+        return normalized
 
     def _format_custom_schedules(self) -> str:
         """Format custom full refresh schedules for YAML output.
@@ -559,9 +547,8 @@ class Config:
         config_template = f"""# =============================================================================
 # dbt-job-maestro Configuration
 # =============================================================================
-# Generate selectors and jobs: maestro generate --config {os.path.basename(yaml_path)}
-# Generate jobs only: maestro generate-jobs --config {os.path.basename(yaml_path)}
-# Check deployment: maestro check --config {os.path.basename(yaml_path)}
+# Generate selectors: maestro generate --config {os.path.basename(yaml_path)}
+# Generate jobs:      maestro generate-jobs --config {os.path.basename(yaml_path)}
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -746,22 +733,22 @@ job:
   # ---------------------------------------------------------------------------
   # ORCHESTRATION MODE
   # ---------------------------------------------------------------------------
-  # Job orchestration: 'simple', 'cron_incremental', or 'cascade'
-  # - simple: All jobs use the same cron_schedule
-  # - cron_incremental: Jobs staggered by cron_increment_minutes
-  # - cascade: Jobs trigger after previous job completes
+  # Job orchestration: 'simple', 'staggered', or 'none'
+  # - simple: All jobs use the same cron_schedule (parallel execution)
+  # - staggered: Jobs staggered by cron_increment_minutes from start_hour:start_minute
+  # - none: No schedule — jobs exist but must be triggered manually in dbt Cloud
   orchestration_mode: {self.job.orchestration_mode}
 
   # Cron schedule for simple mode (e.g., "0 */6 * * *" = every 6 hours)
   cron_schedule: {self.job.cron_schedule}
 
-  # Starting hour for first job (0-23) - for cron_incremental/cascade modes
+  # Starting hour for first job (0-23) - for staggered mode
   start_hour: {self.job.start_hour}
 
   # Starting minute for first job (0-59)
   start_minute: {self.job.start_minute}
 
-  # Minutes between jobs (for cron_incremental mode)
+  # Minutes between jobs (for staggered mode)
   cron_increment_minutes: {self.job.cron_increment_minutes}
 
   # Days of week for cron (empty = every day)
@@ -775,15 +762,6 @@ job:
   # Only applies to model jobs with method=fqn. Does NOT apply to seeds,
   # snapshots, or full refresh jobs. Set to 1 to disable combining.
   min_models_per_job: {self.job.min_models_per_job}
-
-  # Cascade mode: initial deployment (true = use cron, false = use triggers)
-  # Phase 1: Set true, deploy, get job IDs from dbt Cloud
-  # Phase 2: Set false, populate job_id_mapping, redeploy
-  cascade_initial_deployment: {str(self.job.cascade_initial_deployment).lower()}
-
-  # Job ID mapping for cascade mode phase 2
-  # Example: {{"dbt_maestro_staging": 12345, "dbt_maestro_marts": 12346}}
-  job_id_mapping: {self.job.job_id_mapping or '{}'}
 
   # ---------------------------------------------------------------------------
   # EXECUTION ORDER
@@ -839,19 +817,6 @@ job:
     # Format: minute hour day_of_month month day_of_week
     # Example: "0 0 * * 0" = every Sunday at midnight
     cron_schedule: "{self.job.seeds_full_refresh.cron_schedule}"
-
-# -----------------------------------------------------------------------------
-# DEPLOYMENT
-# -----------------------------------------------------------------------------
-deployment:
-  # Git branch that triggers deployment (e.g., 'main', 'production')
-  deploy_branch: {self.deployment.deploy_branch}
-
-  # Validate dbt-jobs-as-code is installed before deployment
-  require_dbt_jobs_as_code: {str(self.deployment.require_dbt_jobs_as_code).lower()}
-
-  # Path to dbt project (for checking packages.yml)
-  dbt_project_path: {self.deployment.dbt_project_path}
 """
 
         with open(yaml_path, "w") as f:

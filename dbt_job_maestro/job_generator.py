@@ -1,13 +1,12 @@
 """
 Generate dbt Cloud job definitions from selectors
 
-This module generates jobs.yml file that can be deployed using dbt-jobs-as-code package.
-See: https://github.com/dbt-labs/dbt-jobs-as-code
+This module generates a jobs.yml file with dbt Cloud job definitions.
 """
 
 import os
 import yaml
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from dbt_job_maestro.config import JobConfig, CustomFullRefreshSchedule
 
@@ -99,14 +98,7 @@ class JobGenerator:
                 continue
 
             # Create job definition with orchestration
-            job = self._create_job_definition(
-                selector_name,
-                job_index=idx,
-                total_jobs=len(large_selectors) + (1 if small_selectors else 0),
-                previous_job_name=(
-                    self._generate_job_name(large_selectors[idx - 1]["name"]) if idx > 0 else None
-                ),
-            )
+            job = self._create_job_definition(selector_name, job_index=idx)
             jobs[job_name] = job
 
         # Create combined job for small selectors
@@ -119,14 +111,7 @@ class JobGenerator:
             ):
                 selector_names = [s["name"] for s in small_selectors]
                 job = self._create_combined_job_definition(
-                    selector_names,
-                    job_index=len(large_selectors),
-                    total_jobs=len(large_selectors) + 1,
-                    previous_job_name=(
-                        self._generate_job_name(large_selectors[-1]["name"])
-                        if large_selectors
-                        else None
-                    ),
+                    selector_names, job_index=len(large_selectors)
                 )
                 jobs[combined_job_name] = job
 
@@ -165,81 +150,20 @@ class JobGenerator:
         self,
         selector_name: str,
         job_index: int = 0,
-        total_jobs: int = 1,
-        previous_job_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create job definition for a selector
 
         Args:
             selector_name: Name of the selector
-            job_index: Index of this job in the list (for cron_incremental)
-            total_jobs: Total number of jobs being created
-            previous_job_name: Name of the previous job (for cascade mode)
+            job_index: Index of this job in the list (for staggered mode)
 
         Returns:
-            Job definition dictionary compatible with dbt-jobs-as-code
+            Job definition dictionary
         """
         job_dbt_name = f"{self.config.job_name_prefix}-{selector_name}"
+        triggers, schedule = self._build_schedule(job_index)
 
-        # Determine orchestration based on mode
-        if self.config.orchestration_mode == "cron_incremental":
-            cron_schedule = self._generate_incremental_cron(job_index)
-            triggers = {
-                "git_provider_webhook": False,
-                "github_webhook": False,
-                "schedule": True,
-            }
-            schedule = {"cron": cron_schedule}
-        elif self.config.orchestration_mode == "cascade":
-            if job_index == 0:
-                # First job is always scheduled
-                cron_schedule = self._generate_start_time_cron()
-                triggers = {
-                    "git_provider_webhook": False,
-                    "github_webhook": False,
-                    "schedule": True,
-                }
-                schedule = {"cron": cron_schedule}
-            else:
-                # Subsequent jobs trigger on completion of previous
-                if self.config.cascade_initial_deployment:
-                    # PHASE 1: Initial deployment - all jobs are scheduled
-                    # (Need job IDs first, so temporarily use cron schedule)
-                    cron_schedule = self._generate_start_time_cron()
-                    triggers = {
-                        "git_provider_webhook": False,
-                        "github_webhook": False,
-                        "schedule": True,
-                    }
-                    schedule = {"cron": cron_schedule}
-                else:
-                    # PHASE 2: Update with cascade triggers using job IDs
-                    previous_job_id = self.config.job_id_mapping.get(previous_job_name)
-                    if previous_job_id is None:
-                        raise ValueError(
-                            f"Job ID not found for '{previous_job_name}' in job_id_mapping. "
-                            f"Make sure to populate job_id_mapping after initial deployment."
-                        )
-                    triggers = {
-                        "git_provider_webhook": False,
-                        "github_webhook": False,
-                        "schedule": False,
-                        "on_job_completion": {
-                            "job_id": previous_job_id,
-                            "statuses": ["success", "error", "cancelled"],
-                        },
-                    }
-                    schedule = None
-        else:  # simple mode (default)
-            triggers = {
-                "git_provider_webhook": False,
-                "github_webhook": False,
-                "schedule": True,
-            }
-            schedule = {"cron": self.config.cron_schedule}
-
-        # Build job definition matching dbt-jobs-as-code schema
         job = {
             "account_id": self.config.account_id,
             "dbt_version": self.config.dbt_version if self.config.dbt_version else None,
@@ -261,7 +185,6 @@ class JobGenerator:
             "triggers": triggers,
         }
 
-        # Add schedule if applicable
         if schedule:
             job["schedule"] = schedule
 
@@ -271,8 +194,6 @@ class JobGenerator:
         self,
         selector_names: List[str],
         job_index: int = 0,
-        total_jobs: int = 1,
-        previous_job_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create job definition for multiple selectors combined into one job.
@@ -282,76 +203,17 @@ class JobGenerator:
 
         Args:
             selector_names: List of selector names to include in the job
-            job_index: Index of this job in the list (for cron_incremental)
-            total_jobs: Total number of jobs being created
-            previous_job_name: Name of the previous job (for cascade mode)
+            job_index: Index of this job in the list (for staggered mode)
 
         Returns:
-            Job definition dictionary compatible with dbt-jobs-as-code
+            Job definition dictionary
         """
         job_dbt_name = f"{self.config.job_name_prefix}-combined_small_selectors"
+        triggers, schedule = self._build_schedule(job_index)
 
-        # Determine orchestration based on mode
-        if self.config.orchestration_mode == "cron_incremental":
-            cron_schedule = self._generate_incremental_cron(job_index)
-            triggers = {
-                "git_provider_webhook": False,
-                "github_webhook": False,
-                "schedule": True,
-            }
-            schedule = {"cron": cron_schedule}
-        elif self.config.orchestration_mode == "cascade":
-            if job_index == 0:
-                # First job is always scheduled
-                cron_schedule = self._generate_start_time_cron()
-                triggers = {
-                    "git_provider_webhook": False,
-                    "github_webhook": False,
-                    "schedule": True,
-                }
-                schedule = {"cron": cron_schedule}
-            else:
-                # Subsequent jobs trigger on completion of previous
-                if self.config.cascade_initial_deployment:
-                    # PHASE 1: Initial deployment - all jobs are scheduled
-                    cron_schedule = self._generate_start_time_cron()
-                    triggers = {
-                        "git_provider_webhook": False,
-                        "github_webhook": False,
-                        "schedule": True,
-                    }
-                    schedule = {"cron": cron_schedule}
-                else:
-                    # PHASE 2: Update with cascade triggers using job IDs
-                    previous_job_id = self.config.job_id_mapping.get(previous_job_name)
-                    if previous_job_id is None:
-                        raise ValueError(
-                            f"Job ID not found for '{previous_job_name}' in job_id_mapping. "
-                            f"Make sure to populate job_id_mapping after initial deployment."
-                        )
-                    triggers = {
-                        "git_provider_webhook": False,
-                        "github_webhook": False,
-                        "schedule": False,
-                        "on_job_completion": {
-                            "job_id": previous_job_id,
-                            "statuses": ["success", "error", "cancelled"],
-                        },
-                    }
-                    schedule = None
-        else:  # simple mode (default)
-            triggers = {
-                "git_provider_webhook": False,
-                "github_webhook": False,
-                "schedule": True,
-            }
-            schedule = {"cron": self.config.cron_schedule}
-
-        # Build execute_steps with multiple --selector flags
         selector_args = " ".join([f"--selector {name}" for name in selector_names])
         execute_steps = [f"dbt build {selector_args}"]
 
-        # Build job definition matching dbt-jobs-as-code schema
         job = {
             "account_id": self.config.account_id,
             "dbt_version": self.config.dbt_version if self.config.dbt_version else None,
@@ -373,11 +235,42 @@ class JobGenerator:
             "triggers": triggers,
         }
 
-        # Add schedule if applicable
         if schedule:
             job["schedule"] = schedule
 
         return job
+
+    def _build_schedule(
+        self, job_index: int = 0
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, str]]]:
+        """
+        Build triggers and schedule based on orchestration mode.
+
+        Args:
+            job_index: Index of this job (for staggered mode cron calculation)
+
+        Returns:
+            Tuple of (triggers dict, schedule dict or None)
+        """
+        if self.config.orchestration_mode == "none":
+            triggers = {
+                "git_provider_webhook": False,
+                "github_webhook": False,
+                "schedule": False,
+            }
+            return triggers, None
+
+        if self.config.orchestration_mode == "staggered":
+            cron = self._generate_incremental_cron(job_index)
+        else:  # simple (default)
+            cron = self.config.cron_schedule
+
+        triggers = {
+            "git_provider_webhook": False,
+            "github_webhook": False,
+            "schedule": True,
+        }
+        return triggers, {"cron": cron}
 
     def _is_manually_created(self, job: Dict[str, Any]) -> bool:
         """
@@ -514,32 +407,6 @@ class JobGenerator:
 
         # Cron format: minute hour day_of_month month day_of_week
         return f"{minute} {hour} * * {days}"
-
-    def _generate_start_time_cron(self) -> str:
-        """
-        Generate cron schedule for the start time (first job in cascade).
-
-        Returns:
-            Cron schedule string
-        """
-        # Build day of week part
-        if self.config.cron_days_of_week:
-            day_mapping = {
-                "SUN": "0",
-                "MON": "1",
-                "TUE": "2",
-                "WED": "3",
-                "THU": "4",
-                "FRI": "5",
-                "SAT": "6",
-            }
-            days = ",".join(
-                [day_mapping.get(day.upper(), "*") for day in self.config.cron_days_of_week]
-            )
-        else:
-            days = "*"
-
-        return f"{self.config.start_minute} {self.config.start_hour} * * {days}"
 
     def _generate_full_refresh_jobs(
         self, selectors: List[Dict[str, Any]]
