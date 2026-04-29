@@ -46,23 +46,33 @@ class FQNSelector(BaseSelector):
             # Track models added to component selectors
             component_models = set()
 
-            # Generate selector for each component
+            # Separate single-model and multi-model components
+            single_model_components = []
+            multi_model_components = []
+
             for component in components:
                 filtered_component = [m for m in component if m not in excluded_models]
+                if not filtered_component:
+                    continue
+                if len(filtered_component) == 1:
+                    single_model_components.append(filtered_component[0])
+                else:
+                    multi_model_components.append(filtered_component)
 
-                if filtered_component:
-                    selector = self._create_component_selector(filtered_component)
-                    selectors.append(selector)
+            # Generate selector for each multi-model component
+            for filtered_component in multi_model_components:
+                selector = self._create_component_selector(filtered_component)
+                selectors.append(selector)
 
-                    # Track these models to exclude from independent selector
-                    component_models.update(filtered_component)
+                # Track these models to exclude from independent selector
+                component_models.update(filtered_component)
 
-                    # Optionally create freshness selector
-                    if self._should_create_freshness(selector["name"]):
-                        freshness = self._create_freshness_selector(
-                            selector["name"], filtered_component
-                        )
-                        selectors.append(freshness)
+                # Optionally create freshness selector
+                if self._should_create_freshness(selector["name"]):
+                    freshness = self._create_freshness_selector(
+                        selector["name"], filtered_component
+                    )
+                    selectors.append(freshness)
 
             # Handle independent models (exclude models already in components)
             independent = set(self.graph.find_independent_models())
@@ -70,15 +80,40 @@ class FQNSelector(BaseSelector):
                 m for m in independent if m not in excluded_models and m not in component_models
             ]
 
-            if filtered_independent:
-                selector = self._create_independent_selector(filtered_independent)
-                selectors.append(selector)
+            if self.config.combine_single_model_selectors:
+                # Combine all single-model components + independent models
+                # into one "orphan" selector
+                all_orphans = sorted(set(single_model_components) | set(filtered_independent))
 
-                if self._should_create_freshness("selector_independent"):
-                    freshness = self._create_freshness_selector(
-                        "selector_independent", filtered_independent
-                    )
-                    selectors.append(freshness)
+                if all_orphans:
+                    selector = self._create_orphan_selector(all_orphans)
+                    selectors.append(selector)
+
+                    if self._should_create_freshness(selector["name"]):
+                        freshness = self._create_freshness_selector(selector["name"], all_orphans)
+                        selectors.append(freshness)
+            else:
+                # Original behavior: individual selectors for single-model components
+                for model_name in single_model_components:
+                    selector = self._create_single_model_selector(model_name)
+                    selectors.append(selector)
+
+                    component_models.add(model_name)
+
+                    if self._should_create_freshness(selector["name"]):
+                        freshness = self._create_freshness_selector(selector["name"], [model_name])
+                        selectors.append(freshness)
+
+                # Independent models selector
+                if filtered_independent:
+                    selector = self._create_independent_selector(filtered_independent)
+                    selectors.append(selector)
+
+                    if self._should_create_freshness("selector_independent"):
+                        freshness = self._create_freshness_selector(
+                            "selector_independent", filtered_independent
+                        )
+                        selectors.append(freshness)
 
         return selectors
 
@@ -186,6 +221,43 @@ class FQNSelector(BaseSelector):
         selector = {
             "name": "selector_independent",
             "description": "Selector for independent models",
+            "definition": {"union": []},
+        }
+
+        for model in sorted_models:
+            if model in models_with_sources and self.config.include_parent_sources:
+                selector["definition"]["union"].append(
+                    {"method": "fqn", "value": model, "parents": True}
+                )
+            else:
+                selector["definition"]["union"].append({"method": "fqn", "value": model})
+
+        # Add combined exclusion clause if any exclusions are configured
+        exclusion = self._create_exclusion()
+        if exclusion:
+            selector["definition"]["union"].append(exclusion)
+
+        return selector
+
+    def _create_orphan_selector(self, models: List[str]) -> Dict[str, Any]:
+        """Create a combined selector for all single-model components (orphan models).
+
+        Args:
+            models: List of orphan model names
+
+        Returns:
+            Selector definition dictionary
+        """
+        sorted_models = self._custom_sort(models)
+        models_with_sources = self.graph.get_models_with_sources()
+        selector_name = f"{self.config.selector_prefix}_{self.config.single_model_selector_name}"
+
+        selector = {
+            "name": selector_name,
+            "description": (
+                f"Combined selector for {len(models)} orphan models "
+                f"(single-model components with no shared dependencies)"
+            ),
             "definition": {"union": []},
         }
 

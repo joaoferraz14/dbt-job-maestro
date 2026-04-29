@@ -35,28 +35,23 @@
 - **Output**: `selectors.yml`, `jobs.yml` (YAML files)
 - **Purpose**: Generate selector and job definition YAML files
 
-## Selector Generation Methods
+## Selector Generation
 
-### Method: fqn (Fully Qualified Names)
-Groups models by shared dependencies using graph analysis.
+### FQN-Based Dependency Analysis
 
-**Use when:** Your models have clear dependency chains
+Maestro uses **FQN (Fully Qualified Name) selector generation**. It analyzes the
+dependency graph in `manifest.json`, finds connected components, and creates one
+selector per component using `method: fqn`.
 
-### Method: path
-Groups models by their folder structure at the configured `path_grouping_level`.
+- **Multi-model components**: Models sharing dependencies are grouped into a single selector
+- **Single-model components (orphans)**: Models with no dependency connections to other auto-generated models. By default, each gets its own selector. With `combine_single_model_selectors: true`, all orphans are combined into one selector (e.g., `maestro_orphan_models`)
 
-**Use when:** Your models are well-organized by directory
+### Special Selectors
 
-**Path Matching:** Uses strict directory boundary matching to prevent overlaps:
-- `stage/sap` matches `stage/sap/model.sql`
-- `stage/sap` does NOT match `stage/sap_snpglue/model.sql`
-
-Models are assigned to their first matching path only (sorted by path length, shortest first).
-
-### Method: tag
-Groups models by dbt tags.
-
-**Use when:** You have a comprehensive tagging strategy
+In addition to dependency-based selectors, maestro can generate:
+- **Seeds selector** (`maestro_seeds`): groups all seed files via `method: path` or `method: fqn`
+- **Snapshots selector** (`maestro_snapshots`): groups all snapshot files
+- **Full refresh selector** (`maestro_full_refresh_incremental`): selects all incremental models for full refresh runs
 
 ## Manual Selector Preservation
 
@@ -150,11 +145,10 @@ jobs_output_file: jobs.yml
 
 # Selector generation
 selector:
-  method: fqn | path | tag
   exclude_tags: [deprecated, archived]
   exclude_paths: []
   exclude_models: []
-  group_by_dependencies: true  # Only for fqn method
+  group_by_dependencies: true  # Group models by shared dependencies
   selector_prefix: maestro  # Prefix for auto-generated selectors
 
   # Freshness selector options
@@ -184,6 +178,10 @@ selector:
   # Indirect selection mode for tests (applies to ALL selectors)
   # Options: eager, cautious, buildable, empty
   indirect_selection: eager
+
+  # Single-model selector grouping
+  combine_single_model_selectors: false  # Combine orphan models into one selector
+  single_model_selector_name: orphan_models  # → {prefix}_orphan_models
 
 # Job definitions
 job:

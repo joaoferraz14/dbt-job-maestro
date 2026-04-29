@@ -11,6 +11,7 @@
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
+- [Data Flow & What It Solves](#data-flow--what-it-solves)
 - [CLI Commands](#cli-commands)
 - [Configuration](#configuration)
 - [Manual Selector Preservation](#manual-selector-preservation)
@@ -126,6 +127,143 @@ Maestro uses a naming convention to distinguish selector types:
 | Anything else | Manual | Always preserved during regeneration |
 
 **Customizable Prefix:** The default prefix is `maestro`, configurable via `selector_prefix`. If you change it, all logic automatically uses the new prefix.
+
+---
+
+## Data Flow & What It Solves
+
+### The Problem
+
+In large dbt projects, managing selectors and jobs manually creates several issues:
+
+```
+WITHOUT MAESTRO:
+
+  500+ dbt models
+       │
+       ▼
+  ┌──────────────────────────────┐
+  │ Manually written selectors   │ ← Error-prone
+  │ - Duplicated models          │ ← Hard to audit
+  │ - Missing models             │ ← Drift over time
+  │ - No dependency awareness    │ ← Broken builds
+  └──────────┬───────────────────┘
+             │
+             ▼
+  ┌──────────────────────────────┐
+  │ Manually created dbt Cloud   │ ← Tedious
+  │ jobs (one per selector)      │ ← No orchestration
+  │ - Wrong schedules            │ ← Manual sync
+  │ - Missing new selectors      │
+  └──────────────────────────────┘
+```
+
+### The Solution
+
+```
+WITH MAESTRO:
+
+  500+ dbt models
+       │
+       ▼
+  ┌─────────────────┐
+  │ dbt compile     │ → target/manifest.json
+  └────────┬────────┘
+           │
+           ▼
+  ┌─────────────────────────────────────────────┐
+  │ maestro generate                            │
+  │                                             │
+  │  manifest.json                              │
+  │       │                                     │
+  │       ▼                                     │
+  │  ┌───────────────────┐                      │
+  │  │ Dependency Graph  │ ← Finds connected    │
+  │  │ Analysis          │   components          │
+  │  └────────┬──────────┘                      │
+  │           │                                 │
+  │           ▼                                 │
+  │  ┌───────────────────┐  ┌───────────────┐  │
+  │  │ Auto-generated    │  │ Manual        │  │
+  │  │ selectors         │  │ selectors     │  │
+  │  │ (maestro_*)       │  │ (preserved)   │  │
+  │  └────────┬──────────┘  └───────┬───────┘  │
+  │           │                     │           │
+  │           └──────────┬──────────┘           │
+  │                      │                      │
+  │                      ▼                      │
+  │              selectors.yml                  │
+  └─────────────────────────────────────────────┘
+           │
+           ▼
+  ┌─────────────────────────────────────────────┐
+  │ maestro generate-jobs                       │
+  │                                             │
+  │  selectors.yml → 1 job per selector         │
+  │                                             │
+  │  Orchestration:                             │
+  │  ┌─────────┐ ┌───────────┐ ┌──────┐        │
+  │  │ simple  │ │ staggered │ │ none │        │
+  │  │ All same│ │ 6:00 6:30 │ │ No   │        │
+  │  │ cron    │ │ 7:00 7:30 │ │ cron │        │
+  │  └─────────┘ └───────────┘ └──────┘        │
+  │                                             │
+  │                      ▼                      │
+  │               jobs.yml                      │
+  └─────────────────────────────────────────────┘
+           │
+           ▼
+  ┌─────────────────────────────────────────────┐
+  │ dbt-jobs-as-code sync --config jobs.yml     │
+  │                                             │
+  │ → Jobs deployed to dbt Cloud ✅              │
+  └─────────────────────────────────────────────┘
+```
+
+### Example: Staggered Mode
+
+With 4 selectors, `start_hour: 6`, `cron_increment_minutes: 30`:
+
+```
+Time    Job
+──────  ──────────────────────────────
+6:00    dbt build --selector maestro_seeds
+6:30    dbt build --selector maestro_staging
+7:00    dbt build --selector maestro_intermediate
+7:30    dbt build --selector maestro_marts
+```
+
+Each job runs independently on its own schedule — no cascade dependencies, no job ID management.
+
+### Example: min_models_per_job
+
+With `min_models_per_job: 5`, small selectors are combined:
+
+```
+BEFORE (6 separate jobs):                 AFTER (3 jobs):
+  maestro_stg_orders     (8 models)  →    maestro_stg_orders     (8 models)
+  maestro_stg_customers  (6 models)  →    maestro_stg_customers  (6 models)
+  maestro_stg_products   (2 models)  ┐    maestro_combined_small (2+1+3 = 6 models)
+  maestro_stg_regions    (1 model)   ┤
+  maestro_stg_currencies (3 models)  ┘
+```
+
+### Example: combine_single_model_selectors
+
+In large projects, many models end up as isolated components (no shared dependencies
+with other auto-generated models). Each gets its own selector, causing sprawl.
+
+With `combine_single_model_selectors: true`:
+
+```
+BEFORE (300+ selectors):                  AFTER (~80 selectors):
+  maestro_stg_orders     (chain)     →    maestro_stg_orders     (chain)
+  maestro_stg_customers  (chain)     →    maestro_stg_customers  (chain)
+  maestro_fct_revenue    (1 model)   ┐    maestro_orphan_models  (all 220 isolated models)
+  maestro_stg_events     (1 model)   ┤
+  maestro_dim_products   (1 model)   ┤
+  ... 217 more single-model ...      ┘
+```
 
 ---
 
@@ -301,6 +439,15 @@ selector:
   # false: manual selectors are preserved exactly as written in the original
   #   selectors.yml (indentation, quoting, comments, line breaks are untouched)
   reformat_manual_selectors: true
+
+  # -------------------------------------------------------------------------
+  # SINGLE-MODEL SELECTOR GROUPING
+  # -------------------------------------------------------------------------
+  # Combine all single-model components (orphan models) into one selector
+  # instead of creating individual selectors for each isolated model.
+  # Dramatically reduces selector count in large projects.
+  combine_single_model_selectors: false
+  single_model_selector_name: orphan_models  # → {selector_prefix}_orphan_models
 
 # ============================================================================
 # JOB GENERATION

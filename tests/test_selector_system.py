@@ -933,6 +933,217 @@ class TestEdgeCases:
             os.chdir(original_dir)
 
 
+class TestCombineSingleModelSelectors:
+    """Test combine_single_model_selectors feature (orphan grouping)."""
+
+    @pytest.fixture
+    def mixed_models(self):
+        """Models with both multi-model and single-model components."""
+        return {
+            # Multi-model component: a -> b -> c
+            "model_a": {
+                "name": "model_a",
+                "fqn": ["project", "staging", "model_a"],
+                "path": "staging/model_a.sql",
+                "tags": [],
+                "dependencies": [],
+                "sources": ["source.raw.users"],
+            },
+            "model_b": {
+                "name": "model_b",
+                "fqn": ["project", "staging", "model_b"],
+                "path": "staging/model_b.sql",
+                "tags": [],
+                "dependencies": ["model_a"],
+                "sources": [],
+            },
+            "model_c": {
+                "name": "model_c",
+                "fqn": ["project", "marts", "model_c"],
+                "path": "marts/model_c.sql",
+                "tags": [],
+                "dependencies": ["model_b"],
+                "sources": [],
+            },
+            # Single-model components (orphans)
+            "orphan_x": {
+                "name": "orphan_x",
+                "fqn": ["project", "staging", "orphan_x"],
+                "path": "staging/orphan_x.sql",
+                "tags": [],
+                "dependencies": [],
+                "sources": ["source.raw.events"],
+            },
+            "orphan_y": {
+                "name": "orphan_y",
+                "fqn": ["project", "marts", "orphan_y"],
+                "path": "marts/orphan_y.sql",
+                "tags": [],
+                "dependencies": [],
+                "sources": [],
+            },
+            "orphan_z": {
+                "name": "orphan_z",
+                "fqn": ["project", "staging", "orphan_z"],
+                "path": "staging/orphan_z.sql",
+                "tags": [],
+                "dependencies": [],
+                "sources": ["source.raw.clicks"],
+            },
+        }
+
+    @pytest.fixture
+    def mixed_parser(self, mixed_models):
+        parser = Mock(spec=ManifestParser)
+        parser.get_models.return_value = mixed_models
+        parser.get_all_tags.return_value = set()
+        return parser
+
+    @pytest.fixture
+    def mixed_graph(self, mixed_models):
+        graph = Mock(spec=GraphBuilder)
+        graph.models = mixed_models
+        graph.get_models_with_sources.return_value = {"model_a", "orphan_x", "orphan_z"}
+        # One multi-model component + three single-model components
+        graph.find_connected_components.return_value = [
+            ["model_a", "model_b", "model_c"],
+            ["orphan_x"],
+            ["orphan_y"],
+            ["orphan_z"],
+        ]
+        graph.find_independent_models.return_value = []
+        return graph
+
+    def test_combine_disabled_creates_individual_selectors(self, mixed_parser, mixed_graph):
+        """When disabled, each single-model component gets its own selector."""
+        config = SelectorConfig(
+            group_by_dependencies=True,
+            combine_single_model_selectors=False,
+        )
+        selector = FQNSelector(mixed_parser, mixed_graph, config)
+        selectors = selector.generate(excluded_models=set())
+
+        names = [s["name"] for s in selectors]
+        # 1 multi-model + 3 individual single-model = 4 selectors
+        assert len(selectors) == 4
+        assert "maestro_orphan_x" in names
+        assert "maestro_orphan_y" in names
+        assert "maestro_orphan_z" in names
+
+    def test_combine_enabled_creates_one_orphan_selector(self, mixed_parser, mixed_graph):
+        """When enabled, all single-model components are combined into one selector."""
+        config = SelectorConfig(
+            group_by_dependencies=True,
+            combine_single_model_selectors=True,
+        )
+        selector = FQNSelector(mixed_parser, mixed_graph, config)
+        selectors = selector.generate(excluded_models=set())
+
+        names = [s["name"] for s in selectors]
+        # 1 multi-model + 1 combined orphan = 2 selectors
+        assert len(selectors) == 2
+        assert "maestro_orphan_models" in names
+
+        # Check the orphan selector contains all 3 models
+        orphan = next(s for s in selectors if s["name"] == "maestro_orphan_models")
+        fqn_values = [
+            item["value"]
+            for item in orphan["definition"]["union"]
+            if isinstance(item, dict) and "value" in item
+        ]
+        assert "orphan_x" in fqn_values
+        assert "orphan_y" in fqn_values
+        assert "orphan_z" in fqn_values
+
+    def test_custom_orphan_selector_name(self, mixed_parser, mixed_graph):
+        """Custom name for the combined orphan selector."""
+        config = SelectorConfig(
+            group_by_dependencies=True,
+            combine_single_model_selectors=True,
+            single_model_selector_name="uncategorized",
+        )
+        selector = FQNSelector(mixed_parser, mixed_graph, config)
+        selectors = selector.generate(excluded_models=set())
+
+        names = [s["name"] for s in selectors]
+        assert "maestro_uncategorized" in names
+        assert "maestro_orphan_models" not in names
+
+    def test_combine_includes_independent_models(self, mixed_parser, mixed_graph):
+        """Independent models are also included in the orphan selector."""
+        # Add independent models to the mock
+        mixed_graph.find_independent_models.return_value = ["indie_model"]
+
+        config = SelectorConfig(
+            group_by_dependencies=True,
+            combine_single_model_selectors=True,
+        )
+        selector = FQNSelector(mixed_parser, mixed_graph, config)
+        selectors = selector.generate(excluded_models=set())
+
+        orphan = next(s for s in selectors if s["name"] == "maestro_orphan_models")
+        fqn_values = [
+            item["value"]
+            for item in orphan["definition"]["union"]
+            if isinstance(item, dict) and "value" in item
+        ]
+        assert "indie_model" in fqn_values
+        assert "orphan_x" in fqn_values
+
+    def test_combine_respects_parent_sources(self, mixed_parser, mixed_graph):
+        """Models with sources get parents: true in the orphan selector."""
+        config = SelectorConfig(
+            group_by_dependencies=True,
+            combine_single_model_selectors=True,
+            include_parent_sources=True,
+        )
+        selector = FQNSelector(mixed_parser, mixed_graph, config)
+        selectors = selector.generate(excluded_models=set())
+
+        orphan = next(s for s in selectors if s["name"] == "maestro_orphan_models")
+        union_items = orphan["definition"]["union"]
+
+        # orphan_x has sources -> should have parents: True
+        orphan_x_item = next(
+            item
+            for item in union_items
+            if isinstance(item, dict) and item.get("value") == "orphan_x"
+        )
+        assert orphan_x_item.get("parents") is True
+
+        # orphan_y has no sources -> should not have parents
+        orphan_y_item = next(
+            item
+            for item in union_items
+            if isinstance(item, dict) and item.get("value") == "orphan_y"
+        )
+        assert "parents" not in orphan_y_item
+
+    def test_no_orphan_selector_when_no_single_models(self, mock_parser, mock_graph):
+        """No orphan selector created when there are no single-model components."""
+        config = SelectorConfig(
+            group_by_dependencies=True,
+            combine_single_model_selectors=True,
+        )
+        selector = FQNSelector(mock_parser, mock_graph, config)
+        selectors = selector.generate(excluded_models=set())
+
+        names = [s["name"] for s in selectors]
+        assert "maestro_orphan_models" not in names
+
+    def test_orphan_selector_description_shows_count(self, mixed_parser, mixed_graph):
+        """Orphan selector description includes model count."""
+        config = SelectorConfig(
+            group_by_dependencies=True,
+            combine_single_model_selectors=True,
+        )
+        selector = FQNSelector(mixed_parser, mixed_graph, config)
+        selectors = selector.generate(excluded_models=set())
+
+        orphan = next(s for s in selectors if s["name"] == "maestro_orphan_models")
+        assert "3 orphan models" in orphan["description"]
+
+
 class TestFreshnessSelectors:
     """Test freshness selector configuration and generation."""
 
