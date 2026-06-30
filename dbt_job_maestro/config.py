@@ -67,7 +67,7 @@ class SelectorConfig:
     # When True (default), manual selectors are re-serialized through yaml.dump
     # for consistent formatting with auto-generated selectors.
     # When False, manual selectors are preserved exactly as written in the original
-    # selectors.yml file — indentation, quoting, comments, and line breaks are untouched.
+    # selectors.yml file - indentation, quoting, comments, and line breaks are untouched.
     # Use False if you maintain specific YAML formatting in your manual selectors.
     reformat_manual_selectors: bool = True
 
@@ -230,6 +230,57 @@ class FullRefreshConfig:
 
 
 @dataclass
+class AirflowConfig:
+    """Configuration for Airflow DAG generation."""
+
+    # Airflow DAG identifier
+    dag_id: str = "dbt_maestro_dag"
+
+    # Cron schedule for the DAG (same format as dbt Cloud)
+    schedule_interval: str = "0 6 * * *"
+
+    # DAG start date (YYYY-MM-DD)
+    start_date: str = "2024-01-01"
+
+    # Owner shown in Airflow UI
+    owner: str = "airflow"
+
+    # Number of task retries on failure
+    retries: int = 1
+
+    # Minutes to wait before retrying a failed task
+    retry_delay_minutes: int = 5
+
+    # Absolute path to the dbt project root (passed via --project-dir)
+    dbt_project_dir: str = ""
+
+    # Absolute path to dbt profiles directory (passed via --profiles-dir)
+    dbt_profiles_dir: str = ""
+
+    # dbt target name (e.g. "prod")
+    dbt_target: str = "prod"
+
+    # dbt --threads value
+    dbt_threads: int = 8
+
+    # Airflow DAG tags shown in the UI
+    tags: List[str] = field(default_factory=lambda: ["dbt", "maestro"])
+
+    # Must match selector.selector_prefix so the generator can classify selectors
+    selector_prefix: str = "maestro"
+
+    # How to wire task dependencies in the generated DAG:
+    # - parallel:    all tasks run concurrently (no dependencies set)
+    # - sequential:  each task waits for the previous one (list order)
+    # - dependency:  type-based ordering (seeds → snapshots → models) plus
+    #                optional manifest-derived cross-selector dependencies
+    orchestration_mode: str = "dependency"
+
+    # Output file name for the generated Airflow DAG
+    dag_output_file: str = "dbt_maestro_dag.py"
+
+
+@dataclass
 class JobConfig:
     """Configuration for dbt Cloud job generation"""
 
@@ -269,7 +320,7 @@ class JobConfig:
     # Job orchestration mode: "simple", "staggered", or "none"
     # - simple: All jobs use the same cron_schedule (parallel execution)
     # - staggered: Jobs staggered with time increments (e.g., 6:00, 6:30, 7:00)
-    # - none: No schedule — jobs are created but must be triggered manually
+    # - none: No schedule - jobs are created but must be triggered manually
     orchestration_mode: str = "simple"
 
     # Whether to automatically create jobs for maestro_ selectors (auto-generated)
@@ -326,6 +377,7 @@ class Config:
 
     selector: SelectorConfig = field(default_factory=SelectorConfig)
     job: JobConfig = field(default_factory=JobConfig)
+    airflow: AirflowConfig = field(default_factory=AirflowConfig)
 
     # Path to manifest.json
     manifest_path: str = "target/manifest.json"
@@ -434,10 +486,30 @@ class Config:
             ),
         )
 
+        # Create airflow config
+        airflow_data = data.get("airflow", {})
+        airflow_config = AirflowConfig(
+            dag_id=airflow_data.get("dag_id", "dbt_maestro_dag"),
+            schedule_interval=airflow_data.get("schedule_interval", "0 6 * * *"),
+            start_date=airflow_data.get("start_date", "2024-01-01"),
+            owner=airflow_data.get("owner", "airflow"),
+            retries=airflow_data.get("retries", 1),
+            retry_delay_minutes=airflow_data.get("retry_delay_minutes", 5),
+            dbt_project_dir=airflow_data.get("dbt_project_dir", ""),
+            dbt_profiles_dir=airflow_data.get("dbt_profiles_dir", ""),
+            dbt_target=airflow_data.get("dbt_target", "prod"),
+            dbt_threads=airflow_data.get("dbt_threads", 8),
+            tags=airflow_data.get("tags", ["dbt", "maestro"]),
+            selector_prefix=selector_data.get("selector_prefix", "maestro"),
+            orchestration_mode=airflow_data.get("orchestration_mode", "dependency"),
+            dag_output_file=airflow_data.get("dag_output_file", "dbt_maestro_dag.py"),
+        )
+
         # Create main config
         return cls(
             selector=selector_config,
             job=job_config,
+            airflow=airflow_config,
             manifest_path=data.get("manifest_path", "target/manifest.json"),
             output_dir=data.get("output_dir", "."),
             selectors_output_file=data.get("selectors_output_file", "selectors.yml"),
@@ -768,7 +840,7 @@ job:
   # ('cron_incremental' is accepted as an alias for 'staggered')
   # - simple: All jobs use the same cron_schedule (parallel execution)
   # - staggered: Jobs staggered by cron_increment_minutes from start_hour:start_minute
-  # - none: No schedule — jobs exist but must be triggered manually in dbt Cloud
+  # - none: No schedule, jobs exist but must be triggered manually in dbt Cloud
   orchestration_mode: {self.job.orchestration_mode}
 
   # Cron schedule for simple mode (e.g., "0 */6 * * *" = every 6 hours)
@@ -790,9 +862,12 @@ job:
   # ---------------------------------------------------------------------------
   # ADVANCED JOB OPTIONS
   # ---------------------------------------------------------------------------
-  # Minimum models per job (smaller selectors are combined into one job)
-  # Only applies to model jobs with method=fqn. Does NOT apply to seeds,
-  # snapshots, or full refresh jobs. Set to 1 to disable combining.
+  # Minimum models per job - only applies to auto-generated (maestro) selectors.
+  # Manual selectors always get their own individual job regardless of this setting.
+  # Maestro selectors with fewer than this number of models are combined into one
+  # job, with a separate dbt build step per selector.
+  # Does NOT apply to seeds, snapshots, or full refresh jobs.
+  # Set to 1 to disable combining.
   min_models_per_job: {self.job.min_models_per_job}
 
   # ---------------------------------------------------------------------------
@@ -849,6 +924,64 @@ job:
     # Format: minute hour day_of_month month day_of_week
     # Example: "0 0 * * 0" = every Sunday at midnight
     cron_schedule: "{self.job.seeds_full_refresh.cron_schedule}"
+
+# -----------------------------------------------------------------------------
+# AIRFLOW DAG GENERATION
+# -----------------------------------------------------------------------------
+airflow:
+  # Airflow DAG identifier (must be unique within your Airflow instance)
+  dag_id: {self.airflow.dag_id}
+
+  # Cron schedule for the DAG (same format as dbt Cloud job schedules)
+  schedule_interval: "{self.airflow.schedule_interval}"
+
+  # DAG start date in YYYY-MM-DD format
+  start_date: "{self.airflow.start_date}"
+
+  # Owner displayed in the Airflow UI
+  owner: {self.airflow.owner}
+
+  # Number of retries on task failure
+  retries: {self.airflow.retries}
+
+  # Minutes to wait between retry attempts
+  retry_delay_minutes: {self.airflow.retry_delay_minutes}
+
+  # ---------------------------------------------------------------------------
+  # DBT RUNTIME PATHS
+  # ---------------------------------------------------------------------------
+  # Absolute path to your dbt project root (passed as --project-dir)
+  # Leave empty to rely on Airflow worker's working directory
+  dbt_project_dir: '{self.airflow.dbt_project_dir}'
+
+  # Absolute path to dbt profiles directory (passed as --profiles-dir)
+  # Leave empty to use the default ~/.dbt location
+  dbt_profiles_dir: '{self.airflow.dbt_profiles_dir}'
+
+  # dbt target name (e.g. "prod", "production")
+  dbt_target: {self.airflow.dbt_target}
+
+  # Number of threads passed to dbt via --threads
+  dbt_threads: {self.airflow.dbt_threads}
+
+  # ---------------------------------------------------------------------------
+  # AIRFLOW UI OPTIONS
+  # ---------------------------------------------------------------------------
+  # Tags shown in the Airflow DAG list view
+  tags: {self.airflow.tags}
+
+  # ---------------------------------------------------------------------------
+  # ORCHESTRATION
+  # ---------------------------------------------------------------------------
+  # How to wire task dependencies in the generated DAG:
+  # - parallel:    all tasks run concurrently (no >> dependencies set)
+  # - sequential:  each task waits for the previous one (list order)
+  # - dependency:  seeds → snapshots → models ordering, plus any
+  #                cross-selector model dependencies found in manifest.json
+  orchestration_mode: {self.airflow.orchestration_mode}
+
+  # Output file name for the generated Airflow DAG Python file
+  dag_output_file: {self.airflow.dag_output_file}
 """
 
         with open(yaml_path, "w") as f:

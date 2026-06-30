@@ -1,8 +1,13 @@
 # dbt-job-maestro
 
-**Automatically generate dbt selectors and dbt Cloud jobs from your manifest.json by analyzing dependencies.**
+**Automatically generate dbt selectors, dbt Cloud jobs, and Airflow DAGs from your manifest.json by analyzing dependencies.**
 
-`dbt-job-maestro` analyzes your dbt project's dependency graph and generates organized, maintainable selectors — grouping related models by connected components. Manual selectors are always preserved. Optionally generates dbt Cloud job definition YAML files that you can sync to dbt Cloud with dbt-jobs-as-code.
+`dbt-job-maestro` analyzes your dbt project's dependency graph and generates organized, maintainable selectors, grouping related models by connected components. Manual selectors are always preserved. From those selectors it can generate **two kinds of orchestration artifacts from the same logic**:
+
+- **dbt Cloud jobs** (`jobs.yml`) - sync to dbt Cloud with `dbt-jobs-as-code`.
+- **Airflow DAGs** (`*.py`) - drop into your Airflow `dags/` folder; each selector becomes a `BashOperator` running `dbt build --selector <name>`.
+
+Pick whichever orchestrator your team uses - the selector generation is identical for both.
 
 ---
 
@@ -16,6 +21,7 @@
 - [Configuration](#configuration)
 - [Manual Selector Preservation](#manual-selector-preservation)
 - [Job Generation & Orchestration](#job-generation--orchestration)
+- [Airflow DAG Generation](#airflow-dag-generation)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
 
@@ -72,12 +78,21 @@ dbt list --selector maestro_stg_customers
 dbt build --selector maestro_stg_customers
 ```
 
-### 5. (Optional) Generate dbt Cloud jobs
+### 5a. (Optional) Generate dbt Cloud jobs
 
 ```bash
 maestro generate-jobs --config maestro-config.yml
 # Sync to dbt Cloud: dbt-jobs-as-code sync --config jobs.yml
 ```
+
+### 5b. (Optional) Generate an Airflow DAG
+
+```bash
+maestro generate-dags --config maestro-config.yml
+# Copy the generated dbt_maestro_dag.py into your Airflow dags/ folder
+```
+
+> Use **5a** if you orchestrate with dbt Cloud, or **5b** if you orchestrate with Airflow. Both consume the same `selectors.yml`.
 
 ---
 
@@ -88,7 +103,7 @@ Maestro uses **FQN-based (Fully Qualified Name) selector generation**. It analyz
 **What it does:**
 1. Reads `target/manifest.json` and builds a dependency graph
 2. Finds connected components (groups of models that share dependencies)
-3. Generates one FQN selector per component — no duplicate models across selectors
+3. Generates one FQN selector per component, with no duplicate models across selectors
 4. Preserves any existing manual selectors (those without the `maestro_` prefix)
 5. Excludes models already covered by manual selectors from auto-generation
 
@@ -233,19 +248,20 @@ Time    Job
 7:30    dbt build --selector maestro_marts
 ```
 
-Each job runs independently on its own schedule — no cascade dependencies, no job ID management.
+Each job runs independently on its own schedule. No cascade dependencies, no job ID management.
 
 ### Example: min_models_per_job
 
-With `min_models_per_job: 5`, small selectors are combined:
+With `min_models_per_job: 5`, small maestro selectors are combined into one job with a separate `dbt build` step per selector. Manual selectors always get their own individual job regardless of model count.
 
 ```
 BEFORE (6 separate jobs):                 AFTER (3 jobs):
-  maestro_stg_orders     (8 models)  →    maestro_stg_orders     (8 models)
-  maestro_stg_customers  (6 models)  →    maestro_stg_customers  (6 models)
-  maestro_stg_products   (2 models)  ┐    maestro_combined_small (2+1+3 = 6 models)
-  maestro_stg_regions    (1 model)   ┤
-  maestro_stg_currencies (3 models)  ┘
+  maestro_stg_orders     (8 models)  ->   maestro_stg_orders     (8 models)
+  maestro_stg_customers  (6 models)  ->   maestro_stg_customers  (6 models)
+  maestro_stg_products   (2 models)  -+
+  maestro_stg_regions    (1 model)    +-> maestro_combined_small (3 separate steps)
+  maestro_stg_currencies (3 models)  -+
+  my_manual_selector     (any size)  ->   my_manual_selector     (always its own job)
 ```
 
 ### Example: combine_single_model_selectors
@@ -292,13 +308,13 @@ maestro generate --config maestro-config.yml --include-freshness
 **Options:**
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--config, -c` | Path to configuration YAML file | — |
+| `--config, -c` | Path to configuration YAML file | |
 | `--manifest, -m` | Path to manifest.json | `target/manifest.json` |
 | `--output, -o` | Output file for selectors | `selectors.yml` |
 | `--group-by-dependencies / --no-group-by-dependencies` | Group models by shared dependencies | `true` |
-| `--exclude-tag` | Tags to exclude (repeatable) | — |
-| `--exclude-path` | Paths to exclude (repeatable) | — |
-| `--exclude-model` | Models to exclude (repeatable) | — |
+| `--exclude-tag` | Tags to exclude (repeatable) | |
+| `--exclude-path` | Paths to exclude (repeatable) | |
+| `--exclude-model` | Models to exclude (repeatable) | |
 | `--include-freshness / --no-include-freshness` | Generate freshness selectors | `false` |
 | `--include-seeds / --no-include-seeds` | Generate seeds selector | `false` |
 | `--seeds-method` | Seeds grouping: `path` or `fqn` | `path` |
@@ -319,12 +335,35 @@ maestro generate-jobs --config maestro-config.yml --account-id 12345
 **Options:**
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--config, -c` | Path to configuration file | — |
+| `--config, -c` | Path to configuration file | |
 | `--selectors, -s` | Path to selectors.yml | `selectors.yml` |
 | `--output, -o` | Output jobs file | `jobs.yml` |
-| `--account-id` | dbt Cloud account ID | — |
-| `--project-id` | dbt Cloud project ID | — |
-| `--environment-id` | dbt Cloud environment ID | — |
+| `--account-id` | dbt Cloud account ID | |
+| `--project-id` | dbt Cloud project ID | |
+| `--environment-id` | dbt Cloud environment ID | |
+
+### `maestro generate-dags`
+
+Generate an Airflow DAG Python file from selectors. Each selector becomes a `BashOperator` task that runs the appropriate dbt command (`dbt build`, `dbt seed`, or `dbt snapshot`).
+
+```bash
+maestro generate-dags --config maestro-config.yml
+maestro generate-dags --config maestro-config.yml --orchestration-mode sequential
+maestro generate-dags --selectors selectors.yml --output dags/dbt_dag.py --dag-id my_pipeline
+```
+
+**Options:**
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--config, -c` | Path to configuration file | |
+| `--selectors, -s` | Path to selectors.yml | `selectors.yml` |
+| `--manifest, -m` | Path to manifest.json (for dependency-mode analysis) | `target/manifest.json` |
+| `--output, -o` | Output path for the DAG `.py` file | `dbt_maestro_dag.py` |
+| `--dag-id` | Airflow DAG ID | `dbt_maestro_dag` |
+| `--schedule-interval` | Cron schedule for the DAG | `0 6 * * *` |
+| `--orchestration-mode` | `parallel`, `sequential`, or `dependency` | `dependency` |
+
+See [Airflow DAG Generation](#airflow-dag-generation) for details on orchestration modes.
 
 ### `maestro init`
 
@@ -336,7 +375,7 @@ maestro init --output maestro-config.yml
 
 ### `maestro info`
 
-Analyze your dbt project structure — shows model counts, tags, folders, and dependency analysis.
+Analyze your dbt project structure. Shows model counts, tags, folders, and dependency analysis.
 
 ```bash
 maestro info --manifest target/manifest.json
@@ -381,14 +420,14 @@ selector:
   group_by_dependencies: true
 
   # -------------------------------------------------------------------------
-  # EXCLUSIONS — Models to completely skip from all selectors
+  # EXCLUSIONS - Models to completely skip from all selectors
   # -------------------------------------------------------------------------
   exclude_tags: []          # Tags to exclude (e.g., [deprecated, archived])
   exclude_models: []        # Specific model names to exclude
   exclude_paths: []         # Paths to exclude (e.g., [models/staging/legacy])
 
   # How to combine exclusion criteria in selector definitions
-  # 'union': Exclude models matching ANY criteria (OR logic) — default
+  # 'union': Exclude models matching ANY criteria (OR logic) - default
   # 'intersection': Exclude models matching ALL criteria (AND logic)
   exclusion_mode: union
 
@@ -503,6 +542,34 @@ job:
     enabled: false
     cron_schedule: "0 0 * * 0"
 
+# ============================================================================
+# AIRFLOW DAG GENERATION
+# ============================================================================
+airflow:
+  dag_id: dbt_maestro_dag             # Airflow DAG identifier (must be unique)
+  schedule_interval: "0 6 * * *"      # Cron schedule for the DAG
+  start_date: "2024-01-01"            # DAG start date (YYYY-MM-DD)
+  owner: airflow                       # Owner shown in the Airflow UI
+  retries: 1                           # Task retries on failure
+  retry_delay_minutes: 5               # Minutes between retries
+
+  # dbt runtime paths (added to every dbt command)
+  dbt_project_dir: ""                 # --project-dir (empty = worker cwd)
+  dbt_profiles_dir: ""                # --profiles-dir (empty = ~/.dbt)
+  dbt_target: prod                     # --target
+  dbt_threads: 8                       # --threads
+
+  tags: [dbt, maestro]                # Tags shown in the Airflow DAG list
+
+  # Task dependency wiring:
+  # - parallel:   all tasks run concurrently (no dependencies)
+  # - sequential: each task waits for the previous one (list order)
+  # - dependency: seeds → snapshots → models ordering, plus cross-selector
+  #               dependencies derived from manifest.json when available
+  orchestration_mode: dependency
+
+  dag_output_file: dbt_maestro_dag.py # Output file name for the generated DAG
+
 ```
 
 ---
@@ -528,7 +595,7 @@ selector:
   reformat_manual_selectors: false
 ```
 
-When `false`, manual selectors are written using their original raw YAML text — indentation, quoting, comments, and line breaks are untouched.
+When `false`, manual selectors are written using their original raw YAML text. Indentation, quoting, comments, and line breaks are untouched.
 
 ### Example
 
@@ -547,7 +614,7 @@ selectors:
 
 **With `reformat_manual_selectors: true` (default):** The selector is reformatted with 2-space indent and comments are stripped.
 
-**With `reformat_manual_selectors: false`:** The selector is written back exactly as above — 4-space indent and comments intact.
+**With `reformat_manual_selectors: false`:** The selector is written back exactly as above, 4-space indent and comments intact.
 
 ---
 
@@ -557,10 +624,10 @@ Maestro generates dbt Cloud job definition YAML files (`jobs.yml`).
 
 ### Job Inclusion
 
-| Selector Type | Included in jobs.yml? | To Disable |
-|--------------|----------------------|-----------|
-| `maestro_*` | ✅ Yes (default) | `include_maestro_selectors_in_jobs: false` |
-| Manual | ✅ Yes (default) | `include_manual_selectors_in_jobs: false` |
+| Selector Type | Included in jobs.yml? | To Disable | Notes |
+|--------------|----------------------|-----------|-------|
+| `maestro_*` | Yes (default) | `include_maestro_selectors_in_jobs: false` | Subject to `min_models_per_job` combining |
+| Manual | Yes (default) | `include_manual_selectors_in_jobs: false` | Always gets its own individual job |
 
 ### Orchestration Modes
 
@@ -628,11 +695,11 @@ job:
 
 #### Combining Small Selectors
 
-Reduce job count by combining small FQN selectors:
+Reduce job count by combining small maestro selectors into one job. Each selector still gets its own `dbt build` step. Manual selectors always get their own individual job regardless of this setting.
 
 ```yaml
 job:
-  min_models_per_job: 4  # Selectors with < 4 models get combined into one job
+  min_models_per_job: 4  # Maestro selectors with < 4 models get combined into one job
 ```
 
 ### Complete Workflow
@@ -644,6 +711,126 @@ dbt compile                                    # Generate manifest
 maestro generate --config maestro-config.yml   # Generate selectors
 maestro generate-jobs --config maestro-config.yml  # Generate jobs
 # Sync to dbt Cloud: dbt-jobs-as-code sync --config jobs.yml
+```
+
+---
+
+## Airflow DAG Generation
+
+If you orchestrate with **Apache Airflow** instead of dbt Cloud, maestro generates a ready-to-run DAG Python file from the same `selectors.yml`. Each selector becomes a `BashOperator` task running the appropriate dbt command:
+
+| Selector type | dbt command |
+|---------------|-------------|
+| Models (default) | `dbt build --selector <name>` |
+| `*_seeds` | `dbt seed --selector <name>` |
+| `*_snapshots` | `dbt snapshot --selector <name>` |
+| `*_full_refresh_incremental` | `dbt build --full-refresh --selector <name>` |
+
+Freshness selectors (`freshness_*`) are skipped - they don't map to a dbt build step.
+
+### Generate a DAG
+
+```bash
+maestro generate-dags --config maestro-config.yml
+```
+
+This writes `dbt_maestro_dag.py`. Copy or symlink it into your Airflow `dags/` folder.
+
+### Orchestration Modes
+
+Set `airflow.orchestration_mode` in your config (or `--orchestration-mode` on the CLI):
+
+#### `parallel`
+
+All tasks run concurrently - no dependencies are set. Use when selectors are fully independent.
+
+```
+run_maestro_seeds      run_maestro_staging      run_maestro_marts
+   (all run at the same time)
+```
+
+#### `sequential`
+
+Each task waits for the previous one (in selector list order). Safest, but slowest.
+
+```
+run_maestro_seeds → run_maestro_staging → run_maestro_marts
+```
+
+#### `dependency` (default)
+
+Tasks are wired by **resource type ordering** (seeds → snapshots → models) plus, when a `manifest.json` is available, **cross-selector dependencies derived from the dbt graph**. For example, if a model in `maestro_marts` depends on a model in `maestro_staging`, the marts task waits for the staging task.
+
+```
+run_maestro_seeds ─┬─→ run_maestro_snapshots ─→ run_maestro_marts
+                   └────────────────────────────↗
+```
+
+> In `dependency` mode, pass `--manifest target/manifest.json` (or set `manifest_path`) so maestro can read the real dependency graph. Without a manifest it falls back to type-based ordering only.
+
+### Example Generated DAG
+
+```python
+"""
+Auto-generated by dbt-job-maestro.
+DO NOT EDIT - regenerate with: maestro generate-dags
+"""
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+with DAG(
+    dag_id="dbt_maestro_dag",
+    default_args=default_args,
+    schedule_interval="0 6 * * *",
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=['dbt', 'maestro'],
+) as dag:
+
+    run_maestro_seeds = BashOperator(
+        task_id="run_maestro_seeds",
+        bash_command="dbt seed --selector maestro_seeds --target prod --threads 8",
+    )
+
+    run_maestro_staging = BashOperator(
+        task_id="run_maestro_staging",
+        bash_command="dbt build --selector maestro_staging --target prod --threads 8",
+    )
+
+    # Task dependencies
+    run_maestro_seeds >> run_maestro_staging
+```
+
+### dbt Runtime Paths
+
+The generated `bash_command` includes `--target` and `--threads` by default. Set `dbt_project_dir` and `dbt_profiles_dir` if your Airflow worker isn't already in the dbt project directory:
+
+```yaml
+airflow:
+  dbt_project_dir: /opt/airflow/dbt_project
+  dbt_profiles_dir: /opt/airflow/.dbt
+```
+
+These map to `--project-dir` and `--profiles-dir`. For more complex setups, consider running dbt via the Astronomer Cosmos provider or a `KubernetesPodOperator` - the generated DAG uses `BashOperator` for maximum portability.
+
+### Regeneration Workflow
+
+```bash
+dbt compile
+maestro generate --config maestro-config.yml        # selectors.yml
+maestro generate-dags --config maestro-config.yml    # dbt_maestro_dag.py
+git diff dbt_maestro_dag.py                           # Review changes
+# Deploy: copy dbt_maestro_dag.py into your Airflow dags/ folder
+airflow dags list                                     # Confirm it loads
 ```
 
 ---
@@ -662,11 +849,11 @@ maestro generate --config maestro-config.yml
 Use descriptive names **without** the `maestro_` prefix:
 
 ```yaml
-# ✅ Good — preserved during regeneration
+# Good - preserved during regeneration
 - name: critical_revenue
 - name: customer_360
 
-# ❌ Bad — will be replaced during regeneration
+# Bad - will be replaced during regeneration
 - name: maestro_my_selector
 ```
 
@@ -705,12 +892,12 @@ dbt list --selector SELECTOR_NAME
 
 ### "Manual selector models still in auto-generated"
 
-Your selector name starts with `maestro_` — rename it to not use the prefix:
+Your selector name starts with `maestro_`. Rename it to not use the prefix:
 ```yaml
-# ❌ Wrong — treated as auto-generated
+# Wrong - treated as auto-generated
 - name: maestro_my_critical_models
 
-# ✅ Correct — treated as manual
+# Correct - treated as manual
 - name: my_critical_models
 ```
 
@@ -741,3 +928,16 @@ Auto-generated freshness selectors must match `freshness_{prefix}_*`:
 # ❌ Manual (always preserved regardless of include_freshness_selectors)
 - name: freshness_my_custom_selector
 ```
+
+### "Airflow DAG fails to import / `dbt: command not found`"
+
+The generated DAG runs `dbt` via `BashOperator`, so `dbt` must be on the Airflow worker's `PATH` and the worker must run from (or point to) the dbt project. Set the runtime paths:
+```yaml
+airflow:
+  dbt_project_dir: /opt/airflow/dbt_project
+  dbt_profiles_dir: /opt/airflow/.dbt
+```
+
+### "Airflow tasks run in the wrong order"
+
+Check `airflow.orchestration_mode`. Use `dependency` (and pass `--manifest`) to derive ordering from the dbt graph, `sequential` for a strict chain, or `parallel` for no dependencies.

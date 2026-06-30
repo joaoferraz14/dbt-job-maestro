@@ -39,7 +39,10 @@ class JobGenerator:
         if existing_jobs is None:
             existing_jobs = {}
 
-        jobs = existing_jobs.get("jobs", {}).copy()
+        # Only preserve manually-created jobs; auto-generated jobs are always rebuilt so that
+        # changes to config (e.g. min_models_per_job) take full effect and stale jobs are removed.
+        all_existing = existing_jobs.get("jobs", {})
+        jobs = {name: job for name, job in all_existing.items() if self._is_manually_created(job)}
 
         # Filter out freshness selectors and full refresh selector
         full_refresh_selector_name = f"{self.config.selector_prefix}_full_refresh_incremental"
@@ -78,6 +81,10 @@ class JobGenerator:
 
         if self.config.min_models_per_job > 1:
             for selector in filtered_selectors:
+                is_auto_generated = selector["name"].startswith(auto_prefix)
+                if not is_auto_generated:
+                    large_selectors.append(selector)
+                    continue
                 model_count = self._count_selector_models(selector)
                 if model_count > 0 and model_count < self.config.min_models_per_job:
                     small_selectors.append(selector)
@@ -164,10 +171,15 @@ class JobGenerator:
         job_dbt_name = f"{self.config.job_name_prefix}-{selector_name}"
         triggers, schedule = self._build_schedule(job_index)
 
+        auto_prefix = f"{self.config.selector_prefix}_"
+        origin = "maestro selector" if selector_name.startswith(auto_prefix) else "manual selector"
+        description = f"Job {job_index + 1} - {origin}"
+
         job = {
             "account_id": self.config.account_id,
             "dbt_version": self.config.dbt_version if self.config.dbt_version else None,
             "deferring_job_definition_id": None,
+            "description": description,
             "environment_id": self.config.environment_id,
             "execute_steps": [f"dbt build --selector {selector_name}"],
             "execution": {
@@ -211,13 +223,24 @@ class JobGenerator:
         job_dbt_name = f"{self.config.job_name_prefix}-combined_small_selectors"
         triggers, schedule = self._build_schedule(job_index)
 
-        selector_args = " ".join([f"--selector {name}" for name in selector_names])
-        execute_steps = [f"dbt build {selector_args}"]
+        execute_steps = [f"dbt build --selector {name}" for name in selector_names]
+
+        auto_prefix = f"{self.config.selector_prefix}_"
+        has_maestro = any(n.startswith(auto_prefix) for n in selector_names)
+        has_manual = any(not n.startswith(auto_prefix) for n in selector_names)
+        if has_maestro and has_manual:
+            origin = "maestro + manual selectors"
+        elif has_maestro:
+            origin = "maestro selectors"
+        else:
+            origin = "manual selectors"
+        description = f"Job {job_index + 1} - combined small selectors ({origin})"
 
         job = {
             "account_id": self.config.account_id,
             "dbt_version": self.config.dbt_version if self.config.dbt_version else None,
             "deferring_job_definition_id": None,
+            "description": description,
             "environment_id": self.config.environment_id,
             "execute_steps": execute_steps,
             "execution": {
@@ -643,8 +666,54 @@ class JobGenerator:
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
+        all_jobs = jobs.get("jobs", {})
+
+        manually_created: Dict[str, Any] = {}
+        maestro_jobs: Dict[str, Any] = {}
+        manual_selector_jobs: Dict[str, Any] = {}
+        full_refresh_jobs: Dict[str, Any] = {}
+
+        for name, job in all_jobs.items():
+            desc = job.get("description", "")
+            if desc.startswith("manually_created"):
+                manually_created[name] = job
+            elif "combined small selectors" in desc or "maestro selector" in desc:
+                maestro_jobs[name] = job
+            elif "manual selector" in desc:
+                manual_selector_jobs[name] = job
+            else:
+                full_refresh_jobs[name] = job
+
+        sections = [
+            (manually_created, "Manually created jobs"),
+            (maestro_jobs, "Auto-generated jobs (maestro selectors)"),
+            (manual_selector_jobs, "Manual selector jobs"),
+            (full_refresh_jobs, "Full refresh jobs"),
+        ]
+
+        lines = ["jobs:\n"]
+        sep = "=" * 62
+
+        for group, label in sections:
+            if not group:
+                continue
+
+            lines.append(f"\n  # {sep}\n")
+            lines.append(f"  # {label}\n")
+            lines.append(f"  # {sep}\n")
+
+            for name, job in group.items():
+                job_yaml = yaml.dump(
+                    {name: job}, default_flow_style=False, sort_keys=False, indent=2
+                )
+                indented = "\n".join(
+                    "  " + line if line.strip() else ""
+                    for line in job_yaml.rstrip("\n").split("\n")
+                )
+                lines.append(f"\n{indented}\n")
+
         with open(output_path, "w") as outfile:
-            yaml.dump(jobs, outfile, default_flow_style=False, sort_keys=False, indent=2)
+            outfile.write("".join(lines))
 
     def read_existing_jobs(self, file_path: str) -> Dict[str, Any]:
         """

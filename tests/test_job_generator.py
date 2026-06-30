@@ -213,14 +213,70 @@ class TestMinModelsPerJob:
         assert "maestro_maestro_big" in jobs
         assert "maestro_combined_small_selectors" in jobs
         combined = jobs["maestro_combined_small_selectors"]
-        assert "--selector maestro_small1" in combined["execute_steps"][0]
-        assert "--selector maestro_small2" in combined["execute_steps"][0]
+        assert len(combined["execute_steps"]) == 2
+        assert combined["execute_steps"][0] == "dbt build --selector maestro_small1"
+        assert combined["execute_steps"][1] == "dbt build --selector maestro_small2"
 
     def test_min_models_1_no_combining(self, base_config, sample_selectors):
         base_config.min_models_per_job = 1
         gen = JobGenerator(base_config)
         result = gen.generate_jobs(sample_selectors)
         assert "maestro_combined_small_selectors" not in result["jobs"]
+
+    def test_stale_combined_job_removed_when_threshold_lowered(self, base_config):
+        """Changing min_models_per_job should remove the old combined job."""
+        selectors = [
+            {
+                "name": "maestro_big",
+                "definition": {"union": [{"method": "fqn", "value": f"m{i}"} for i in range(6)]},
+            },
+            {
+                "name": "maestro_small1",
+                "definition": {"union": [{"method": "fqn", "value": "s1"}]},
+            },
+        ]
+
+        # First run: small1 is combined because threshold is 5
+        base_config.min_models_per_job = 5
+        gen = JobGenerator(base_config)
+        first_result = gen.generate_jobs(selectors)
+        assert "maestro_combined_small_selectors" in first_result["jobs"]
+
+        # Second run: threshold lowered so small1 is now a large selector
+        base_config.min_models_per_job = 1
+        gen2 = JobGenerator(base_config)
+        second_result = gen2.generate_jobs(selectors, existing_jobs=first_result)
+
+        # Stale combined job must be gone; individual job must exist
+        assert "maestro_combined_small_selectors" not in second_result["jobs"]
+        assert "maestro_maestro_small1" in second_result["jobs"]
+
+    def test_stale_individual_jobs_removed_when_threshold_raised(self, base_config):
+        """Raising min_models_per_job should replace individual small jobs with combined job."""
+        selectors = [
+            {
+                "name": "maestro_big",
+                "definition": {"union": [{"method": "fqn", "value": f"m{i}"} for i in range(6)]},
+            },
+            {
+                "name": "maestro_small1",
+                "definition": {"union": [{"method": "fqn", "value": "s1"}]},
+            },
+        ]
+
+        # First run: threshold is 1, individual jobs created
+        base_config.min_models_per_job = 1
+        gen = JobGenerator(base_config)
+        first_result = gen.generate_jobs(selectors)
+        assert "maestro_maestro_small1" in first_result["jobs"]
+
+        # Second run: threshold raised so small1 should be combined
+        base_config.min_models_per_job = 5
+        gen2 = JobGenerator(base_config)
+        second_result = gen2.generate_jobs(selectors, existing_jobs=first_result)
+
+        assert "maestro_combined_small_selectors" in second_result["jobs"]
+        assert "maestro_maestro_small1" not in second_result["jobs"]
 
 
 class TestExecutionOrder:

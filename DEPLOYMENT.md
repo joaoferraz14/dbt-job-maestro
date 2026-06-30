@@ -1,36 +1,28 @@
 # Deployment Guide
 
-This guide shows how to deploy maestro-generated selectors and jobs to dbt Cloud using CI/CD.
+This guide shows how to deploy selectors and jobs to dbt Cloud using CI/CD.
 
 ## Overview
 
 **dbt-job-maestro** generates YAML files that define your selectors and jobs:
-- `selectors.yml` — dbt selector definitions (used directly by dbt)
-- `jobs.yml` — dbt Cloud job definitions
+- `selectors.yml` - dbt selector definitions
+- `jobs.yml` - dbt Cloud job definitions
 
-**dbt-jobs-as-code** (from dbt-labs) syncs `jobs.yml` to dbt Cloud via API.
+**dbt-jobs-as-code** (from dbt-labs) deploys these files to dbt Cloud via API.
 
 ## Workflow
 
-```
-  Developer workstation                     CI/CD
-  ─────────────────────                     ─────
-  dbt compile
-       │
-       ▼
-  maestro generate → selectors.yml
-       │
-       ▼
-  maestro generate-jobs → jobs.yml
-       │
-       ▼
-  git commit & push ──────────────────► merge to main
-                                              │
-                                              ▼
-                                   dbt-jobs-as-code sync
-                                              │
-                                              ▼
-                                     Jobs in dbt Cloud ✅
+```mermaid
+graph LR
+    A[Dev: Edit models] --> B[dbt compile]
+    B --> C[maestro generate]
+    C --> D[Generate selectors.yml]
+    C --> E[maestro generate-jobs]
+    E --> F[Generate jobs.yml]
+    F --> G[Commit to git]
+    G --> H[Merge to main]
+    H --> I[CI/CD: dbt-jobs-as-code sync]
+    I --> J[Jobs in dbt Cloud]
 ```
 
 ## Setup
@@ -145,9 +137,87 @@ export DBT_CLOUD_SERVICE_TOKEN=<your-token>
 dbt-jobs-as-code sync-jobs jobs.yml
 ```
 
+## Branch Protection
+
+Configure branch protection to prevent concurrent deployments:
+
+### GitHub
+
+1. Go to Settings > Branches
+2. Add rule for `main` branch
+3. Enable:
+   - Require pull request reviews
+   - Require status checks to pass
+   - Do not allow bypassing
+
+### GitLab
+
+1. Go to Settings > Repository > Protected Branches
+2. Select `main` branch
+3. Set:
+   - Allowed to merge: Maintainers
+   - Allowed to push: No one
+
+## Validation
+
+Before deploying, validate your setup using the `maestro check` command:
+
+```bash
+# Basic check
+maestro check
+
+# Check with config file
+maestro check --config maestro-config.yml
+
+# Check specific dbt project directory
+maestro check --dbt-project ./my-dbt-project
+```
+
+This validates:
+- dbt-jobs-as-code package is installed
+- Current git branch matches deployment branch
+- packages.yml configuration
+- Required files exist (selectors.yml, jobs.yml)
+
+Or use the Python API:
+
+```python
+# validate_deployment.py
+from dbt_job_maestro.deployment import validate_deployment_requirements
+
+is_valid, issues = validate_deployment_requirements(
+    dbt_project_path=".",
+    deploy_branch="main"
+)
+
+if not is_valid:
+    print("❌ Deployment validation failed:")
+    for issue in issues:
+        print(f"  - {issue}")
+    exit(1)
+
+print("✅ Deployment requirements validated")
+```
+
 ## Troubleshooting
 
-### "DBT_CLOUD_SERVICE_TOKEN not set"
+### Issue: "dbt-jobs-as-code not found"
+
+**Solution:**
+
+```bash
+# Add to packages.yml
+packages:
+  - git: https://github.com/dbt-labs/dbt-jobs-as-code.git
+    revision: main
+
+# Install
+dbt deps
+```
+
+### Issue: "DBT_CLOUD_SERVICE_TOKEN not set"
+
+**Solution:**
 
 1. Create service token in dbt Cloud:
    - Account Settings → Service Tokens
@@ -168,6 +238,18 @@ maestro info --manifest target/manifest.json
 # Verbose sync
 dbt-jobs-as-code sync-jobs jobs.yml --verbose
 ```
+
+### "Airflow DAG not appearing / import errors"
+
+```bash
+# Validate the generated DAG with Airflow's DagBag
+pip install "dbt-job-maestro[airflow]"
+python -c "from airflow.models import DagBag; b=DagBag('.', include_examples=False); print(b.import_errors)"
+```
+
+If `dbt: command not found` at runtime, ensure `dbt` is installed on the Airflow
+worker and set `dbt_project_dir` / `dbt_profiles_dir` in the `airflow:` config so
+the generated commands include `--project-dir` / `--profiles-dir`.
 
 ## Best Practices
 
@@ -228,3 +310,16 @@ repos:
         language: system
         pass_filenames: false
 ```
+
+Install:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+## Support
+
+- **dbt-job-maestro**: https://github.com/yourusername/dbt-job-maestro
+- **dbt-jobs-as-code**: https://github.com/dbt-labs/dbt-jobs-as-code
+- **dbt Cloud API**: https://docs.getdbt.com/dbt-cloud/api-v2
