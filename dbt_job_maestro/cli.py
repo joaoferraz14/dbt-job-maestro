@@ -207,12 +207,17 @@ def generate(
                 f"Including snapshots selectors (method: {cfg.selector.snapshots_selector_method})"
             )
 
+        # Preserve hand-written selectors from the same file we are about to
+        # rewrite, so a custom output filename/dir still keeps manual selectors
+        # (instead of relying on a cwd lookup for "selectors.yml").
+        output_path = Path(cfg.output_dir) / cfg.selectors_output_file
+
         # Use SelectorOrchestrator for all methods
-        generator = SelectorOrchestrator(parser, graph, cfg.selector)
+        generator = SelectorOrchestrator(
+            parser, graph, cfg.selector, existing_selectors_path=str(output_path)
+        )
 
         selectors = generator.generate_selectors()
-
-        output_path = Path(cfg.output_dir) / cfg.selectors_output_file
         click.echo(f"Writing {len(selectors)} selectors to {output_path}...")
         generator.write_selectors(selectors, str(output_path))
 
