@@ -18,17 +18,23 @@ class ManualSelector(BaseSelector):
     exactly as-is. They are never regenerated or modified.
     """
 
-    def __init__(self, manifest_parser, graph_builder, config):
+    def __init__(self, manifest_parser, graph_builder, config, existing_selectors_path=None):
         """Initialize ManualSelector.
 
         Args:
             manifest_parser: ManifestParser instance
             graph_builder: GraphBuilder instance
             config: SelectorConfig instance
+            existing_selectors_path: Path to the selectors file to read manual
+                selectors from. When provided (by the orchestrator/CLI from
+                output_dir + selectors_output_file) it is used instead of guessing
+                ``selectors.yml`` in the cwd, so a custom output filename still
+                preserves hand-written selectors.
         """
         super().__init__(manifest_parser, graph_builder, config)
         # Raw YAML text for each manual selector (populated by generate())
         self.raw_manual_blocks: List[str] = []
+        self.existing_selectors_path = existing_selectors_path
 
     def get_priority(self) -> SelectorPriority:
         """Return the priority level for manual selectors.
@@ -55,12 +61,16 @@ class ManualSelector(BaseSelector):
         manual_selectors = []
         self.raw_manual_blocks = []
 
-        # Try to find existing selectors file
-        possible_paths = [
-            Path("selectors.yml"),
-            Path("dbt_project/selectors.yml"),
-            Path("./selectors.yml"),
-        ]
+        # Prefer the explicitly configured selectors file (the one we are about to
+        # rewrite); fall back to conventional cwd locations for backwards compat.
+        if self.existing_selectors_path:
+            possible_paths = [Path(self.existing_selectors_path)]
+        else:
+            possible_paths = [
+                Path("selectors.yml"),
+                Path("dbt_project/selectors.yml"),
+                Path("./selectors.yml"),
+            ]
 
         for path in possible_paths:
             if path.exists():

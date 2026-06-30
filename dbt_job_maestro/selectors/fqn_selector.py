@@ -104,14 +104,22 @@ class FQNSelector(BaseSelector):
                         freshness = self._create_freshness_selector(selector["name"], [model_name])
                         selectors.append(freshness)
 
-                # Independent models selector
-                if filtered_independent:
-                    selector = self._create_independent_selector(filtered_independent)
+                # Independent models selector - only for independent models that did
+                # NOT already get their own single-model selector above. An isolated
+                # model appears in BOTH find_connected_components() (as a size-1
+                # component) and find_independent_models(); without this filter every
+                # such model would be double-covered: once by its maestro_<name>
+                # selector and again here in selector_independent.
+                remaining_independent = [
+                    m for m in filtered_independent if m not in single_model_components
+                ]
+                if remaining_independent:
+                    selector = self._create_independent_selector(remaining_independent)
                     selectors.append(selector)
 
                     if self._should_create_freshness("selector_independent"):
                         freshness = self._create_freshness_selector(
-                            "selector_independent", filtered_independent
+                            "selector_independent", remaining_independent
                         )
                         selectors.append(freshness)
 

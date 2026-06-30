@@ -21,17 +21,22 @@ class SelectorOrchestrator:
     from auto-generation to prevent duplicates.
     """
 
-    def __init__(self, manifest_parser, graph_builder, config):
+    def __init__(self, manifest_parser, graph_builder, config, existing_selectors_path=None):
         """Initialize the selector orchestrator.
 
         Args:
             manifest_parser: ManifestParser instance
             graph_builder: GraphBuilder instance
             config: SelectorConfig instance
+            existing_selectors_path: Path to the selectors file whose manual
+                selectors should be preserved. Pass the configured output path
+                (output_dir + selectors_output_file) so a custom filename still
+                preserves hand-written selectors. Falls back to cwd lookup if None.
         """
         self.parser = manifest_parser
         self.graph = graph_builder
         self.config = config
+        self.existing_selectors_path = existing_selectors_path
         self.models = manifest_parser.get_models()
 
         # Initialize model resolver
@@ -44,7 +49,12 @@ class SelectorOrchestrator:
 
         # Initialize selector generators
         self.generators = {
-            SelectorPriority.MANUAL: ManualSelector(manifest_parser, graph_builder, config),
+            SelectorPriority.MANUAL: ManualSelector(
+                manifest_parser,
+                graph_builder,
+                config,
+                existing_selectors_path=existing_selectors_path,
+            ),
             SelectorPriority.AUTO_FQN: FQNSelector(manifest_parser, graph_builder, config),
         }
 
@@ -77,6 +87,14 @@ class SelectorOrchestrator:
             full_refresh_selector = self._generate_full_refresh_selector()
             selectors.append(full_refresh_selector)
 
+        # Guarantee unique selector names. dbt treats two selectors with the same
+        # name as an error, and downstream job/DAG generation keys by name. Names
+        # can collide when a model is literally named like a reserved selector
+        # (e.g. the dbt_artifacts package ships models named 'seeds'/'snapshots',
+        # so maestro_seeds from that model collides with the dedicated seeds
+        # selector). Disambiguate deterministically and warn.
+        self._ensure_unique_names(selectors)
+
         # Check for overlaps if configured
         if self.config.warn_on_manual_overlaps:
             warnings = self.overlap_detector.detect_overlaps(selectors)
@@ -93,6 +111,35 @@ class SelectorOrchestrator:
         self._warn_uncovered_models(selectors)
 
         return selectors
+
+    def _ensure_unique_names(self, selectors: List[Dict[str, Any]]) -> None:
+        """Rename any selectors that share a name so every name is unique.
+
+        Mutates ``selectors`` in place. The first occurrence of a name keeps it;
+        later occurrences get a numeric suffix (``_2``, ``_3``, ...). A warning is
+        logged for each rename so the collision is visible.
+
+        Args:
+            selectors: List of selector definitions (modified in place).
+        """
+        seen: Set[str] = set()
+        for selector in selectors:
+            name = selector.get("name", "")
+            if name not in seen:
+                seen.add(name)
+                continue
+            suffix = 2
+            new_name = f"{name}_{suffix}"
+            while new_name in seen:
+                suffix += 1
+                new_name = f"{name}_{suffix}"
+            logger.warning(
+                f"Duplicate selector name '{name}' detected; renaming one occurrence "
+                f"to '{new_name}'. This usually means a model is named like a reserved "
+                f"selector (e.g. a model literally called 'seeds' or 'snapshots')."
+            )
+            selector["name"] = new_name
+            seen.add(new_name)
 
     def _warn_uncovered_models(self, selectors: List[Dict[str, Any]]) -> None:
         """Warn if any models won't be run by any selector.
