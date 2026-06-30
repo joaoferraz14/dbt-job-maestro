@@ -2,7 +2,29 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Set, List, Tuple
+from typing import Any, Dict, Set, List, Tuple
+
+
+def count_fqn_models(selector: Dict[str, Any]) -> int:
+    """Count the number of fqn-method entries in a selector definition.
+
+    Each ``method: fqn`` entry in the selector's ``union`` represents one
+    individual model/seed/snapshot. Shared by the dbt Cloud job generator and
+    the Airflow DAG generator so both classify "small" selectors identically.
+
+    Args:
+        selector: Selector definition dictionary.
+
+    Returns:
+        Number of fqn entries in the selector's union, or 0 if undeterminable.
+    """
+    definition = selector.get("definition", {})
+    if not isinstance(definition, dict):
+        return 0
+    union = definition.get("union", [])
+    if not isinstance(union, list):
+        return 0
+    return sum(1 for entry in union if isinstance(entry, dict) and entry.get("method") == "fqn")
 
 
 class SelectorPriority(Enum):
