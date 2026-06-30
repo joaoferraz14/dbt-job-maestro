@@ -2,6 +2,9 @@
 
 ## Complete Workflow
 
+Maestro generates selectors once, then targets **either** dbt Cloud **or** Airflow
+(or both) from those same selectors.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    LOCAL DEVELOPMENT                         │
@@ -10,7 +13,8 @@
 1. Edit dbt models
 2. dbt compile → target/manifest.json
 3. maestro generate → selectors.yml
-4. maestro generate-jobs → jobs.yml
+4a. maestro generate-jobs → jobs.yml          (dbt Cloud path)
+4b. maestro generate-dags → dbt_maestro_dag.py (Airflow path)
 5. git commit + push
 
 ┌─────────────────────────────────────────────────────────────┐
@@ -20,20 +24,33 @@
 6. Pull request review
 7. Merge to main branch
 
-┌─────────────────────────────────────────────────────────────┐
-│                    SYNC TO DBT CLOUD                         │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────┐   ┌──────────────────────────────┐
+│        DBT CLOUD PATH        │   │         AIRFLOW PATH         │
+└──────────────────────────────┘   └──────────────────────────────┘
 
-8. Sync jobs.yml to dbt Cloud: `dbt-jobs-as-code sync --config jobs.yml`
-9. Jobs deployed to dbt Cloud ✅
+8a. dbt-jobs-as-code sync          8b. Copy dbt_maestro_dag.py into
+    --config jobs.yml                  the Airflow dags/ folder
+9a. Jobs deployed to dbt Cloud ✅   9b. DAG scheduled in Airflow ✅
 ```
 
 ## Components
 
 ### dbt-job-maestro (This Package)
-- **Input**: `manifest.json`
-- **Output**: `selectors.yml`, `jobs.yml` (YAML files)
-- **Purpose**: Generate selector and job definition YAML files
+- **Input**: `manifest.json`, `selectors.yml`
+- **Output**: `selectors.yml`, `jobs.yml` (dbt Cloud), `*.py` Airflow DAGs
+- **Purpose**: Generate selector definitions and orchestration artifacts for
+  dbt Cloud and/or Airflow from the same dependency analysis
+
+### Generator modules
+| Module | Output | Target |
+|--------|--------|--------|
+| `selector_orchestrator.py` | `selectors.yml` | shared |
+| `job_generator.py` | `jobs.yml` | dbt Cloud (`dbt-jobs-as-code`) |
+| `airflow_dag_generator.py` | `*.py` DAG | Apache Airflow |
+
+Both `JobGenerator` and `AirflowDAGGenerator` consume the same `selectors.yml`
+and apply the same selector classification (models / seeds / snapshots / full
+refresh, freshness selectors skipped), so the two orchestrators stay in sync.
 
 ## Selector Generation
 
@@ -219,10 +236,12 @@ selectors:
 ### jobs.yml
 ```yaml
 jobs:
+
   dbt_stg_customers:
     account_id: 12345
     dbt_version: null
     deferring_job_definition_id: null
+    description: "Job 1 - maestro selector"
     environment_id: 11111
     execute_steps:
       - dbt build --selector maestro_stg_customers
@@ -244,6 +263,63 @@ jobs:
       schedule: true
 ```
 
+### dbt_maestro_dag.py (Airflow)
+```python
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+
+default_args = {"owner": "airflow", "retries": 1, "retry_delay": timedelta(minutes=5)}
+
+with DAG(
+    dag_id="dbt_maestro_dag",
+    default_args=default_args,
+    schedule_interval="0 6 * * *",
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=['dbt', 'maestro'],
+) as dag:
+
+    run_maestro_stg_customers = BashOperator(
+        task_id="run_maestro_stg_customers",
+        bash_command="dbt build --selector maestro_stg_customers --target prod --threads 8",
+    )
+```
+
+## Airflow DAG Generation
+
+`AirflowDAGGenerator` (`airflow_dag_generator.py`) renders a standalone Python DAG
+file from `selectors.yml`. It has **no runtime dependency on Airflow** - it emits
+source code as text, so it runs anywhere maestro runs. Airflow is only needed in
+the environment where the DAG is deployed.
+
+### Selector → dbt command mapping
+| Selector type (by name) | dbt command |
+|-------------------------|-------------|
+| default (models) | `dbt build --selector <name>` |
+| `*_seeds` | `dbt seed --selector <name>` |
+| `*_snapshots` | `dbt snapshot --selector <name>` |
+| `*_full_refresh_incremental` | `dbt build --full-refresh --selector <name>` |
+
+Freshness selectors (`freshness_*`, `automatically_generated_freshness_*`) are
+filtered out - they have no dbt build step. Each remaining selector becomes one
+`BashOperator` with `task_id = run_<selector_name>`.
+
+### Orchestration modes (`airflow.orchestration_mode`)
+- **parallel** - no task dependencies; everything runs concurrently.
+- **sequential** - each task depends on the previous one in selector list order.
+- **dependency** (default) - type-based ordering (seeds → snapshots → models) using
+  a rank map, supplemented by cross-selector edges derived from `manifest.json`:
+  for each model node, if an upstream dbt node belongs to a *different* selector,
+  an edge is added between the owning selectors. Self-edges within a selector are
+  ignored. A single upstream renders as `a >> b`; multiple as `[a, b] >> c`.
+
+### dbt runtime flags
+`--target` and `--threads` are always appended. `--project-dir` and
+`--profiles-dir` are appended only when `dbt_project_dir` / `dbt_profiles_dir`
+are configured, keeping commands clean when the worker already runs in the
+project directory.
+
 ## CLI Commands
 
 ```bash
@@ -253,8 +329,11 @@ maestro init --output maestro-config.yml
 # Generate selectors from manifest
 maestro generate --config maestro-config.yml
 
-# Generate jobs from selectors
+# Generate dbt Cloud jobs from selectors
 maestro generate-jobs --config maestro-config.yml
+
+# Generate an Airflow DAG from selectors
+maestro generate-dags --config maestro-config.yml
 
 # Analyze project
 maestro info --manifest target/manifest.json
@@ -266,6 +345,11 @@ maestro info --manifest target/manifest.json
 - Python >= 3.8
 - pyyaml >= 6.0
 - click >= 8.0.0
+
+### Optional
+- apache-airflow >= 2.5.0 - only needed to *render/validate* generated DAGs in a
+  live Airflow environment (`pip install dbt-job-maestro[airflow]`). Generating
+  the DAG file itself requires no Airflow install.
 
 ## Testing
 

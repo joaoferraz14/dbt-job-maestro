@@ -1338,7 +1338,7 @@ class TestReformatManualSelectors:
             orchestrator.write_selectors(selectors, str(output_file))
 
             content = output_file.read_text()
-            # Manual selector should be reformatted — the 4-space indent won't survive yaml.dump
+            # Manual selector should be reformatted - the 4-space indent won't survive yaml.dump
             assert "  - name: my_custom_selector" in content
             # yaml.dump uses 2-space indent, not 4-space
             assert "        union:" not in content

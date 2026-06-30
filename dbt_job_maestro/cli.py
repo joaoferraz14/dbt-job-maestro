@@ -9,6 +9,7 @@ from dbt_job_maestro.manifest_parser import ManifestParser
 from dbt_job_maestro.graph_builder import GraphBuilder
 from dbt_job_maestro.selector_orchestrator import SelectorOrchestrator
 from dbt_job_maestro.job_generator import JobGenerator
+from dbt_job_maestro.airflow_dag_generator import AirflowDAGGenerator
 
 
 @click.group()
@@ -358,6 +359,169 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
         click.echo("1. Review the generated jobs.yml file")
         click.echo("2. Commit selectors.yml and jobs.yml to version control")
         click.echo("3. Sync to dbt Cloud: dbt-jobs-as-code sync --config jobs.yml")
+
+    except FileNotFoundError as e:
+        click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--config",
+    "-c",
+    help="Path to configuration YAML file",
+    type=click.Path(exists=True),
+)
+@click.option(
+    "--selectors",
+    "-s",
+    help="Path to selectors YAML file (overrides config)",
+    type=click.Path(exists=True),
+)
+@click.option(
+    "--manifest",
+    "-m",
+    help="Path to manifest.json for dependency analysis (overrides config)",
+    type=click.Path(exists=True),
+)
+@click.option(
+    "--output",
+    "-o",
+    help="Output path for the generated DAG .py file (overrides config)",
+    type=click.Path(),
+)
+@click.option(
+    "--dag-id",
+    help="Airflow DAG ID (overrides config)",
+    type=str,
+)
+@click.option(
+    "--schedule-interval",
+    help="Cron schedule for the DAG (overrides config)",
+    type=str,
+)
+@click.option(
+    "--orchestration-mode",
+    type=click.Choice(["parallel", "sequential", "dependency"], case_sensitive=False),
+    help="Task dependency mode: parallel, sequential, or dependency (overrides config)",
+)
+def generate_dags(
+    config,
+    selectors,
+    manifest,
+    output,
+    dag_id,
+    schedule_interval,
+    orchestration_mode,
+):
+    """
+    Generate an Airflow DAG Python file from selectors
+
+    Creates a .py file with an Airflow DAG where each selector becomes
+    a BashOperator task running `dbt build --selector <name>`.
+
+    \b
+    Workflow:
+      1. maestro generate --config maestro-config.yml    → selectors.yml
+      2. maestro generate-dags --config maestro-config.yml → dbt_maestro_dag.py
+      3. Copy or symlink dbt_maestro_dag.py into your Airflow dags/ folder
+
+    \b
+    Orchestration modes:
+      parallel    - all tasks run concurrently (good when selectors are independent)
+      sequential  - each task waits for the previous (safest but slowest)
+      dependency  - seeds→snapshots→models ordering plus manifest graph analysis
+
+    Examples:
+
+      # Use config file
+      maestro generate-dags --config maestro-config.yml
+
+      # Override output and schedule
+      maestro generate-dags --config maestro-config.yml --output dags/dbt.py --schedule-interval "0 4 * * *"
+
+      # Fully manual
+      maestro generate-dags --selectors selectors.yml --output dags/dbt.py
+    """
+    import yaml as _yaml
+    from pathlib import Path as _Path
+
+    try:
+        if config:
+            click.echo(f"Loading configuration from {config}...")
+            cfg = Config.from_yaml(config)
+        else:
+            cfg = Config()
+
+        # CLI overrides
+        if selectors:
+            cfg.selectors_output_file = selectors
+        if output:
+            cfg.airflow.dag_output_file = output
+        if dag_id:
+            cfg.airflow.dag_id = dag_id
+        if schedule_interval:
+            cfg.airflow.schedule_interval = schedule_interval
+        if orchestration_mode:
+            cfg.airflow.orchestration_mode = orchestration_mode.lower()
+
+        # Resolve manifest path
+        manifest_path = manifest or cfg.manifest_path
+
+        # Read selectors
+        click.echo(f"Reading selectors from {cfg.selectors_output_file}...")
+        with open(cfg.selectors_output_file, "r") as f:
+            selector_data = _yaml.safe_load(f)
+            selector_list = selector_data.get("selectors", [])
+
+        if not selector_list:
+            click.echo(click.style("✗ No selectors found in file", fg="red", bold=True), err=True)
+            sys.exit(1)
+
+        click.echo(f"Found {len(selector_list)} selectors")
+
+        # Load manifest for dependency analysis (optional)
+        generator = AirflowDAGGenerator(cfg.airflow)
+        if cfg.airflow.orchestration_mode == "dependency":
+            manifest_data = generator.load_manifest(manifest_path)
+            if manifest_data:
+                click.echo(f"Loaded manifest from {manifest_path} for dependency analysis")
+                generator.manifest_data = manifest_data
+            else:
+                click.echo(
+                    click.style(
+                        f"  Note: manifest not found at {manifest_path} - "
+                        "using type-based ordering only (seeds→snapshots→models)",
+                        fg="yellow",
+                    )
+                )
+
+        click.echo(
+            f"Generating Airflow DAG '{cfg.airflow.dag_id}' "
+            f"(mode: {cfg.airflow.orchestration_mode})..."
+        )
+        dag_code = generator.generate_dag(selector_list)
+
+        output_path = _Path(cfg.output_dir) / cfg.airflow.dag_output_file
+        click.echo(f"Writing DAG to {output_path}...")
+        generator.write_dag(dag_code, str(output_path))
+
+        click.echo(click.style("\n✓ Airflow DAG generated successfully!", fg="green", bold=True))
+        click.echo(f"\nOutput: {output_path}")
+
+        click.echo("\n" + "=" * 60)
+        click.echo("Next Steps:")
+        click.echo("=" * 60)
+        click.echo(f"1. Review the generated DAG in {output_path}")
+        click.echo("2. Copy or symlink it into your Airflow dags/ folder")
+        click.echo("3. Verify it loads: airflow dags list")
+        click.echo("4. Trigger a test run: airflow dags trigger dbt_maestro_dag")
 
     except FileNotFoundError as e:
         click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)

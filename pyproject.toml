@@ -38,6 +38,9 @@ dev = [
     "flake8>=4.0.0",
     "mypy>=0.950",
 ]
+airflow = [
+    "apache-airflow>=2.5.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/joaoferraz14/dbt-job-maestro"
