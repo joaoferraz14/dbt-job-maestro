@@ -231,13 +231,32 @@ class FullRefreshConfig:
 
 @dataclass
 class AirflowConfig:
-    """Configuration for Airflow DAG generation."""
+    """Configuration for Airflow DAG generation.
 
-    # Airflow DAG identifier
-    dag_id: str = "dbt_maestro_dag"
+    Mirrors JobConfig: maestro emits one DAG file per selector (the Airflow
+    analogue of one dbt Cloud job per selector), so each unit of work gets its
+    own schedule, SLA, and retry policy. Generation is idempotent - auto-generated
+    DAG files carry a marker and are rebuilt/cleaned on every run, while
+    hand-written DAGs in the same folder are left untouched.
+    """
 
-    # Cron schedule for the DAG (same format as dbt Cloud)
+    # Prefix for generated DAG ids and file names.
+    # Each DAG is named "{dag_id_prefix}_{selector_name}".
+    dag_id_prefix: str = "dbt_maestro"
+
+    # Default cron schedule for auto-generated (maestro) selector DAGs.
     schedule_interval: str = "0 6 * * *"
+
+    # Override cron schedule for manual selector DAGs (empty = use schedule_interval).
+    # Manual selectors often need a different cadence/SLA than auto-generated ones.
+    manual_schedule_interval: str = ""
+
+    # SLA for auto-generated DAGs, in minutes (0 = no SLA).
+    sla_minutes: int = 0
+
+    # SLA for manual selector DAGs, in minutes.
+    # -1 = inherit sla_minutes, 0 = explicitly no SLA, >0 = set that SLA.
+    manual_sla_minutes: int = -1
 
     # DAG start date (YYYY-MM-DD)
     start_date: str = "2024-01-01"
@@ -269,15 +288,58 @@ class AirflowConfig:
     # Must match selector.selector_prefix so the generator can classify selectors
     selector_prefix: str = "maestro"
 
-    # How to wire task dependencies in the generated DAG:
-    # - parallel:    all tasks run concurrently (no dependencies set)
-    # - sequential:  each task waits for the previous one (list order)
-    # - dependency:  type-based ordering (seeds → snapshots → models) plus
-    #                optional manifest-derived cross-selector dependencies
-    orchestration_mode: str = "dependency"
+    # Directory to write generated DAG files into (empty = output_dir).
+    # Stale auto-generated DAGs in this directory are removed on regeneration.
+    dags_dir: str = ""
 
-    # Output file name for the generated Airflow DAG
-    dag_output_file: str = "dbt_maestro_dag.py"
+    # How schedules are assigned across the generated DAGs:
+    # - simple:    every maestro DAG uses schedule_interval (manual DAGs use
+    #              manual_schedule_interval when set)
+    # - staggered: DAGs are offset by cron_increment_minutes from
+    #              start_hour:start_minute, in creation order
+    # - none:      no schedule (schedule_interval=None) - manual trigger only
+    orchestration_mode: str = "simple"
+
+    # Staggered-mode timing (mirrors JobConfig)
+    start_hour: int = 6
+    start_minute: int = 0
+    cron_increment_minutes: int = 5
+    cron_days_of_week: List[str] = field(default_factory=list)
+
+    # Whether to create DAGs for auto-generated (maestro_*) selectors
+    include_maestro_selectors_in_dags: bool = True
+
+    # Whether to create DAGs for manual selectors (non-maestro_*)
+    include_manual_selectors_in_dags: bool = True
+
+    # Minimum models per DAG - only applies to auto-generated (maestro) selectors.
+    # Maestro selectors with fewer models than this are combined into a single
+    # DAG (one chained task per selector). Manual selectors always get their own
+    # DAG. Does NOT apply to seeds/snapshots/full-refresh DAGs. Set to 1 to disable.
+    min_models_per_dag: int = 1
+
+    # Execution order for resource types ('seeds', 'snapshots', 'models').
+    # Controls DAG creation order (and thus staggered-cron assignment).
+    execution_order: List[str] = field(default_factory=list)
+
+    # Full refresh configuration (each becomes its own DAG with its own cron)
+    full_refresh: FullRefreshConfig = field(default_factory=FullRefreshConfig)
+
+    # Seeds full refresh configuration (its own DAG)
+    seeds_full_refresh: SeedsFullRefreshConfig = field(default_factory=SeedsFullRefreshConfig)
+
+    def validate(self) -> None:
+        """Validate Airflow configuration options.
+
+        Raises:
+            ValueError: If orchestration_mode is not recognised.
+        """
+        valid_modes = {"simple", "staggered", "none"}
+        if self.orchestration_mode not in valid_modes:
+            raise ValueError(
+                f"Invalid airflow.orchestration_mode '{self.orchestration_mode}'. "
+                f"Valid options: {', '.join(sorted(valid_modes))}"
+            )
 
 
 @dataclass
@@ -489,8 +551,11 @@ class Config:
         # Create airflow config
         airflow_data = data.get("airflow", {})
         airflow_config = AirflowConfig(
-            dag_id=airflow_data.get("dag_id", "dbt_maestro_dag"),
+            dag_id_prefix=airflow_data.get("dag_id_prefix", "dbt_maestro"),
             schedule_interval=airflow_data.get("schedule_interval", "0 6 * * *"),
+            manual_schedule_interval=airflow_data.get("manual_schedule_interval", ""),
+            sla_minutes=airflow_data.get("sla_minutes", 0),
+            manual_sla_minutes=airflow_data.get("manual_sla_minutes", -1),
             start_date=airflow_data.get("start_date", "2024-01-01"),
             owner=airflow_data.get("owner", "airflow"),
             retries=airflow_data.get("retries", 1),
@@ -501,9 +566,28 @@ class Config:
             dbt_threads=airflow_data.get("dbt_threads", 8),
             tags=airflow_data.get("tags", ["dbt", "maestro"]),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
-            orchestration_mode=airflow_data.get("orchestration_mode", "dependency"),
-            dag_output_file=airflow_data.get("dag_output_file", "dbt_maestro_dag.py"),
+            dags_dir=airflow_data.get("dags_dir", ""),
+            orchestration_mode=cls._normalize_airflow_orchestration_mode(
+                airflow_data.get("orchestration_mode", "simple")
+            ),
+            start_hour=airflow_data.get("start_hour", 6),
+            start_minute=airflow_data.get("start_minute", 0),
+            cron_increment_minutes=airflow_data.get("cron_increment_minutes", 5),
+            cron_days_of_week=airflow_data.get("cron_days_of_week", []),
+            include_maestro_selectors_in_dags=airflow_data.get(
+                "include_maestro_selectors_in_dags", True
+            ),
+            include_manual_selectors_in_dags=airflow_data.get(
+                "include_manual_selectors_in_dags", True
+            ),
+            min_models_per_dag=airflow_data.get("min_models_per_dag", 1),
+            execution_order=airflow_data.get("execution_order", []),
+            full_refresh=cls._parse_full_refresh_config(airflow_data.get("full_refresh", {})),
+            seeds_full_refresh=cls._parse_seeds_full_refresh_config(
+                airflow_data.get("seeds_full_refresh", {})
+            ),
         )
+        airflow_config.validate()
 
         # Create main config
         return cls(
@@ -538,17 +622,44 @@ class Config:
             )
         return normalized
 
-    def _format_custom_schedules(self) -> str:
+    @classmethod
+    def _normalize_airflow_orchestration_mode(cls, mode: str) -> str:
+        """Normalize the airflow orchestration mode, mapping legacy values.
+
+        The pre-rewrite single-DAG modes (parallel/sequential/dependency) wired
+        cross-selector task ordering inside one DAG. With one DAG per selector
+        there is no cross-selector wiring, so they all collapse to 'simple'
+        (independent DAGs scheduled by cron). This keeps existing config files
+        loading without edits.
+
+        Args:
+            mode: Raw orchestration mode string from config.
+
+        Returns:
+            Normalized mode string (simple, staggered, or none).
+        """
+        legacy = {"parallel": "simple", "sequential": "simple", "dependency": "simple"}
+        return legacy.get(mode, mode)
+
+    def _format_custom_schedules(
+        self, custom_schedules: Optional[List["CustomFullRefreshSchedule"]] = None
+    ) -> str:
         """Format custom full refresh schedules for YAML output.
+
+        Args:
+            custom_schedules: Schedules to format. Defaults to the dbt Cloud
+                job block's schedules for backward compatibility.
 
         Returns:
             YAML-formatted string of custom schedules
         """
-        if not self.job.full_refresh.custom_schedules:
+        if custom_schedules is None:
+            custom_schedules = self.job.full_refresh.custom_schedules
+        if not custom_schedules:
             return "[]"
 
         lines = []
-        for schedule in self.job.full_refresh.custom_schedules:
+        for schedule in custom_schedules:
             schedule_dict = {"name": schedule.name, "cron_schedule": schedule.cron_schedule}
             if schedule.selector:
                 schedule_dict["selector"] = schedule.selector
@@ -928,12 +1039,36 @@ job:
 # -----------------------------------------------------------------------------
 # AIRFLOW DAG GENERATION
 # -----------------------------------------------------------------------------
+# Maestro emits ONE DAG file per selector (the Airflow analogue of one dbt Cloud
+# job per selector). Each DAG gets its own schedule, SLA, and retry policy.
+# Generation is idempotent: auto-generated DAG files carry a marker and are
+# rebuilt/cleaned on every run; hand-written DAGs in the same folder are
+# never touched.
 airflow:
-  # Airflow DAG identifier (must be unique within your Airflow instance)
-  dag_id: {self.airflow.dag_id}
+  # Prefix for generated DAG ids and file names.
+  # Each DAG is named "{{dag_id_prefix}}_{{selector_name}}" → e.g. dbt_maestro_staging.py
+  dag_id_prefix: {self.airflow.dag_id_prefix}
 
-  # Cron schedule for the DAG (same format as dbt Cloud job schedules)
+  # Directory to write generated DAG files into (empty = output_dir above).
+  # Stale auto-generated DAGs in this directory are removed on regeneration.
+  dags_dir: '{self.airflow.dags_dir}'
+
+  # ---------------------------------------------------------------------------
+  # SCHEDULES & SLA
+  # ---------------------------------------------------------------------------
+  # Default cron schedule for auto-generated (maestro_*) selector DAGs
   schedule_interval: "{self.airflow.schedule_interval}"
+
+  # Override cron for MANUAL selector DAGs (empty = use schedule_interval).
+  # Use this to give manually-maintained selectors a different cadence.
+  manual_schedule_interval: "{self.airflow.manual_schedule_interval}"
+
+  # SLA for auto-generated DAGs in minutes (0 = no SLA)
+  sla_minutes: {self.airflow.sla_minutes}
+
+  # SLA for MANUAL selector DAGs in minutes
+  # -1 = inherit sla_minutes, 0 = explicitly no SLA, >0 = set that SLA
+  manual_sla_minutes: {self.airflow.manual_sla_minutes}
 
   # DAG start date in YYYY-MM-DD format
   start_date: "{self.airflow.start_date}"
@@ -971,17 +1106,64 @@ airflow:
   tags: {self.airflow.tags}
 
   # ---------------------------------------------------------------------------
+  # SELECTOR INCLUSION
+  # ---------------------------------------------------------------------------
+  # Create DAGs for auto-generated (maestro_*) selectors
+  include_maestro_selectors_in_dags: {str(self.airflow.include_maestro_selectors_in_dags).lower()}
+
+  # Create DAGs for manual selectors (non-maestro_*)
+  include_manual_selectors_in_dags: {str(self.airflow.include_manual_selectors_in_dags).lower()}
+
+  # ---------------------------------------------------------------------------
   # ORCHESTRATION
   # ---------------------------------------------------------------------------
-  # How to wire task dependencies in the generated DAG:
-  # - parallel:    all tasks run concurrently (no >> dependencies set)
-  # - sequential:  each task waits for the previous one (list order)
-  # - dependency:  seeds → snapshots → models ordering, plus any
-  #                cross-selector model dependencies found in manifest.json
+  # How schedules are assigned across the generated DAGs:
+  # - simple:    every maestro DAG uses schedule_interval (manual DAGs use
+  #              manual_schedule_interval when set)
+  # - staggered: DAGs are offset by cron_increment_minutes from
+  #              start_hour:start_minute, in creation order
+  # - none:      no schedule (manual trigger only)
   orchestration_mode: {self.airflow.orchestration_mode}
 
-  # Output file name for the generated Airflow DAG Python file
-  dag_output_file: {self.airflow.dag_output_file}
+  # Staggered-mode timing
+  start_hour: {self.airflow.start_hour}
+  start_minute: {self.airflow.start_minute}
+  cron_increment_minutes: {self.airflow.cron_increment_minutes}
+
+  # Days of week for staggered cron (empty = every day)
+  # Example: ['MON', 'TUE', 'WED', 'THU', 'FRI']
+  cron_days_of_week: {self.airflow.cron_days_of_week}
+
+  # ---------------------------------------------------------------------------
+  # COMBINING SMALL SELECTORS
+  # ---------------------------------------------------------------------------
+  # Minimum models per DAG - only applies to auto-generated (maestro) selectors.
+  # Maestro selectors with fewer models than this are combined into a single DAG
+  # (one chained task per selector) so you don't end up with a battery of tiny
+  # DAGs. Manual selectors always get their own DAG. Set to 1 to disable.
+  min_models_per_dag: {self.airflow.min_models_per_dag}
+
+  # Execution order for resource types: 'seeds', 'snapshots', 'models'
+  # Controls DAG creation order (and therefore staggered-cron assignment)
+  execution_order: {self.airflow.execution_order}
+
+  # ---------------------------------------------------------------------------
+  # FULL REFRESH DAGS (each becomes its own DAG with its own cron)
+  # ---------------------------------------------------------------------------
+  full_refresh:
+    # Enable auto-generated full refresh DAG for all incremental models
+    enabled: {str(self.airflow.full_refresh.enabled).lower()}
+
+    # Cron schedule for the auto-generated full refresh DAG
+    cron_schedule: "{self.airflow.full_refresh.cron_schedule}"
+
+    # Custom full refresh DAGs for specific resources (same shape as job.full_refresh)
+    custom_schedules: {self._format_custom_schedules(self.airflow.full_refresh.custom_schedules)}
+
+  # Seeds full refresh DAG (runs `dbt seed --full-refresh`)
+  seeds_full_refresh:
+    enabled: {str(self.airflow.seeds_full_refresh.enabled).lower()}
+    cron_schedule: "{self.airflow.seeds_full_refresh.cron_schedule}"
 """
 
         with open(yaml_path, "w") as f:

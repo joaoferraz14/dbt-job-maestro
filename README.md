@@ -85,11 +85,12 @@ maestro generate-jobs --config maestro-config.yml
 # Sync to dbt Cloud: dbt-jobs-as-code sync --config jobs.yml
 ```
 
-### 5b. (Optional) Generate an Airflow DAG
+### 5b. (Optional) Generate Airflow DAGs
 
 ```bash
 maestro generate-dags --config maestro-config.yml
-# Copy the generated dbt_maestro_dag.py into your Airflow dags/ folder
+# Writes one dbt_maestro_<selector>.py per selector into dags_dir; point that
+# directory at (or copy the files into) your Airflow dags/ folder
 ```
 
 > Use **5a** if you orchestrate with dbt Cloud, or **5b** if you orchestrate with Airflow. Both consume the same `selectors.yml`.
@@ -344,12 +345,12 @@ maestro generate-jobs --config maestro-config.yml --account-id 12345
 
 ### `maestro generate-dags`
 
-Generate an Airflow DAG Python file from selectors. Each selector becomes a `BashOperator` task that runs the appropriate dbt command (`dbt build`, `dbt seed`, or `dbt snapshot`).
+Generate Airflow DAG Python files from selectors - **one DAG file per selector** (the Airflow analogue of one dbt Cloud job per selector). Each selector becomes a DAG whose `BashOperator` task runs the appropriate dbt command (`dbt build`, `dbt seed`, or `dbt snapshot`). Generation is idempotent: stale auto-generated DAGs are removed and hand-written DAGs left untouched.
 
 ```bash
 maestro generate-dags --config maestro-config.yml
-maestro generate-dags --config maestro-config.yml --orchestration-mode sequential
-maestro generate-dags --selectors selectors.yml --output dags/dbt_dag.py --dag-id my_pipeline
+maestro generate-dags --config maestro-config.yml --orchestration-mode staggered
+maestro generate-dags --selectors selectors.yml --dags-dir /opt/airflow/dags
 ```
 
 **Options:**
@@ -357,13 +358,11 @@ maestro generate-dags --selectors selectors.yml --output dags/dbt_dag.py --dag-i
 |--------|-------------|---------|
 | `--config, -c` | Path to configuration file | |
 | `--selectors, -s` | Path to selectors.yml | `selectors.yml` |
-| `--manifest, -m` | Path to manifest.json (for dependency-mode analysis) | `target/manifest.json` |
-| `--output, -o` | Output path for the DAG `.py` file | `dbt_maestro_dag.py` |
-| `--dag-id` | Airflow DAG ID | `dbt_maestro_dag` |
-| `--schedule-interval` | Cron schedule for the DAG | `0 6 * * *` |
-| `--orchestration-mode` | `parallel`, `sequential`, or `dependency` | `dependency` |
+| `--dags-dir, -o` | Directory to write generated DAG files into | `output_dir` |
+| `--schedule-interval` | Cron schedule for auto-generated DAGs | `0 6 * * *` |
+| `--orchestration-mode` | `simple`, `staggered`, or `none` | `simple` |
 
-See [Airflow DAG Generation](#airflow-dag-generation) for details on orchestration modes.
+See [Airflow DAG Generation](#airflow-dag-generation) for details on schedules, SLAs, and combining small selectors.
 
 ### `maestro init`
 
@@ -545,9 +544,17 @@ job:
 # ============================================================================
 # AIRFLOW DAG GENERATION
 # ============================================================================
+# Emits ONE DAG file per selector. Each DAG gets its own schedule/SLA/retries.
 airflow:
-  dag_id: dbt_maestro_dag             # Airflow DAG identifier (must be unique)
-  schedule_interval: "0 6 * * *"      # Cron schedule for the DAG
+  dag_id_prefix: dbt_maestro          # DAG = "{dag_id_prefix}_{selector_name}"
+  dags_dir: ""                        # Output dir for DAG files (empty = output_dir)
+
+  # Schedules & SLA
+  schedule_interval: "0 6 * * *"      # Cron for auto-generated (maestro_*) DAGs
+  manual_schedule_interval: ""        # Override cron for manual selectors (empty = inherit)
+  sla_minutes: 0                      # SLA for auto DAGs in minutes (0 = none)
+  manual_sla_minutes: -1              # -1 inherit, 0 none, >0 set (for manual DAGs)
+
   start_date: "2024-01-01"            # DAG start date (YYYY-MM-DD)
   owner: airflow                       # Owner shown in the Airflow UI
   retries: 1                           # Task retries on failure
@@ -561,14 +568,33 @@ airflow:
 
   tags: [dbt, maestro]                # Tags shown in the Airflow DAG list
 
-  # Task dependency wiring:
-  # - parallel:   all tasks run concurrently (no dependencies)
-  # - sequential: each task waits for the previous one (list order)
-  # - dependency: seeds → snapshots → models ordering, plus cross-selector
-  #               dependencies derived from manifest.json when available
-  orchestration_mode: dependency
+  # Which selectors become DAGs
+  include_maestro_selectors_in_dags: true
+  include_manual_selectors_in_dags: true
 
-  dag_output_file: dbt_maestro_dag.py # Output file name for the generated DAG
+  # Schedule assignment:
+  # - simple:    every maestro DAG uses schedule_interval
+  # - staggered: DAGs offset by cron_increment_minutes from start_hour:start_minute
+  # - none:      no schedule (manual trigger only)
+  orchestration_mode: simple
+  start_hour: 6
+  start_minute: 0
+  cron_increment_minutes: 5
+  cron_days_of_week: []
+
+  # Combine maestro selectors with fewer than N models into one DAG
+  # (manual/seeds/snapshots/full-refresh DAGs are never combined). 1 = disable.
+  min_models_per_dag: 1
+  execution_order: []                 # 'seeds','snapshots','models' creation order
+
+  # Full-refresh DAGs (each its own DAG with its own cron)
+  full_refresh:
+    enabled: false
+    cron_schedule: "0 0 * * 0"
+    custom_schedules: []
+  seeds_full_refresh:
+    enabled: false
+    cron_schedule: "0 0 * * 0"
 
 ```
 
@@ -717,7 +743,7 @@ maestro generate-jobs --config maestro-config.yml  # Generate jobs
 
 ## Airflow DAG Generation
 
-If you orchestrate with **Apache Airflow** instead of dbt Cloud, maestro generates a ready-to-run DAG Python file from the same `selectors.yml`. Each selector becomes a `BashOperator` task running the appropriate dbt command:
+If you orchestrate with **Apache Airflow** instead of dbt Cloud, maestro generates ready-to-run DAG files from the same `selectors.yml`. It emits **one DAG file per selector** - the Airflow analogue of one dbt Cloud job per selector - so each selector gets its own schedule, SLA, and retry policy. Each DAG's `BashOperator` task runs the appropriate dbt command:
 
 | Selector type | dbt command |
 |---------------|-------------|
@@ -726,47 +752,41 @@ If you orchestrate with **Apache Airflow** instead of dbt Cloud, maestro generat
 | `*_snapshots` | `dbt snapshot --selector <name>` |
 | `*_full_refresh_incremental` | `dbt build --full-refresh --selector <name>` |
 
-Freshness selectors (`freshness_*`) are skipped - they don't map to a dbt build step.
+Freshness selectors (`freshness_*`) are skipped - they don't map to a dbt build step. There is intentionally **no cross-selector task wiring**: like dbt Cloud jobs, the DAGs are independent and ordered by their schedules.
 
-### Generate a DAG
+### Generate DAGs
 
 ```bash
 maestro generate-dags --config maestro-config.yml
 ```
 
-This writes `dbt_maestro_dag.py`. Copy or symlink it into your Airflow `dags/` folder.
+This writes a `dbt_maestro_<selector>.py` file per selector into `dags_dir` (or `output_dir`). Point that directory at your Airflow `dags/` folder, or copy the files in.
 
-### Orchestration Modes
+### Schedules & SLAs
 
-Set `airflow.orchestration_mode` in your config (or `--orchestration-mode` on the CLI):
+A single Airflow DAG has a single `schedule_interval`, so per-selector DAGs are what make per-selector schedules possible. Set `airflow.orchestration_mode` (or `--orchestration-mode`):
 
-#### `parallel`
+| Mode | Behaviour |
+|------|-----------|
+| `simple` (default) | every maestro DAG uses `schedule_interval` |
+| `staggered` | DAGs offset by `cron_increment_minutes` from `start_hour:start_minute`, in creation order |
+| `none` | `schedule_interval=None` - manual trigger only |
 
-All tasks run concurrently - no dependencies are set. Use when selectors are fully independent.
+**Manual selectors** (no `maestro_` prefix) commonly need a different cadence/SLA. `manual_schedule_interval` overrides their cron in any mode, and `manual_sla_minutes` sets their SLA (`-1` inherits `sla_minutes`, `0` disables, `>0` sets it). When the resolved SLA is `> 0` it's emitted as `"sla": timedelta(...)` in `default_args`.
 
-```
-run_maestro_seeds      run_maestro_staging      run_maestro_marts
-   (all run at the same time)
-```
+### Combining Small Selectors
 
-#### `sequential`
+To avoid a battery of DAGs that each run only a model or two, set `min_models_per_dag`. Maestro selectors with fewer fqn models than the threshold are merged into a single `dbt_maestro_combined_small_selectors.py` DAG with one chained task per selector (mirroring a job's ordered `execute_steps`). Manual, seeds, snapshots, and full-refresh DAGs are never combined.
 
-Each task waits for the previous one (in selector list order). Safest, but slowest.
+### Full-Refresh DAGs
 
-```
-run_maestro_seeds → run_maestro_staging → run_maestro_marts
-```
+`airflow.full_refresh` (auto + `custom_schedules`) and `airflow.seeds_full_refresh` each produce their own DAG file with their own cron - the same options as the dbt Cloud `job.full_refresh` block.
 
-#### `dependency` (default)
+### Idempotency
 
-Tasks are wired by **resource type ordering** (seeds → snapshots → models) plus, when a `manifest.json` is available, **cross-selector dependencies derived from the dbt graph**. For example, if a model in `maestro_marts` depends on a model in `maestro_staging`, the marts task waits for the staging task.
+Every generated file carries the marker `# Auto-generated by dbt-job-maestro`. Regenerating rewrites all current DAGs, **removes** stale auto-generated DAGs that no longer map to a selector (including legacy single-DAG files such as an old `dbt_maestro_dag.py`), and **never touches** hand-written DAGs in the same folder.
 
-```
-run_maestro_seeds ─┬─→ run_maestro_snapshots ─→ run_maestro_marts
-                   └────────────────────────────↗
-```
-
-> In `dependency` mode, pass `--manifest target/manifest.json` (or set `manifest_path`) so maestro can read the real dependency graph. Without a manifest it falls back to type-based ordering only.
+> **Migrating from a previous version:** the old `airflow.orchestration_mode` values (`parallel`/`sequential`/`dependency`) are automatically normalized to `simple`, so existing config files load unchanged. Point `generate-dags` at your existing `dags/` folder and it will replace the old single DAG with the per-selector files in one pass.
 
 ### Example Generated DAG
 
@@ -775,6 +795,8 @@ run_maestro_seeds ─┬─→ run_maestro_snapshots ─→ run_maestro_marts
 Auto-generated by dbt-job-maestro.
 DO NOT EDIT - regenerate with: maestro generate-dags
 """
+# Auto-generated by dbt-job-maestro - DO NOT EDIT
+
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
@@ -785,10 +807,11 @@ default_args = {
     "email_on_failure": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
+    "sla": timedelta(minutes=120),   # only when sla_minutes > 0
 }
 
 with DAG(
-    dag_id="dbt_maestro_dag",
+    dag_id="dbt_maestro_maestro_staging",
     default_args=default_args,
     schedule_interval="0 6 * * *",
     start_date=datetime(2024, 1, 1),
@@ -796,18 +819,10 @@ with DAG(
     tags=['dbt', 'maestro'],
 ) as dag:
 
-    run_maestro_seeds = BashOperator(
-        task_id="run_maestro_seeds",
-        bash_command="dbt seed --selector maestro_seeds --target prod --threads 8",
-    )
-
     run_maestro_staging = BashOperator(
         task_id="run_maestro_staging",
         bash_command="dbt build --selector maestro_staging --target prod --threads 8",
     )
-
-    # Task dependencies
-    run_maestro_seeds >> run_maestro_staging
 ```
 
 ### dbt Runtime Paths
@@ -820,17 +835,17 @@ airflow:
   dbt_profiles_dir: /opt/airflow/.dbt
 ```
 
-These map to `--project-dir` and `--profiles-dir`. For more complex setups, consider running dbt via the Astronomer Cosmos provider or a `KubernetesPodOperator` - the generated DAG uses `BashOperator` for maximum portability.
+These map to `--project-dir` and `--profiles-dir`. For more complex setups, consider running dbt via the Astronomer Cosmos provider or a `KubernetesPodOperator` - the generated DAGs use `BashOperator` for maximum portability.
 
 ### Regeneration Workflow
 
 ```bash
 dbt compile
-maestro generate --config maestro-config.yml        # selectors.yml
-maestro generate-dags --config maestro-config.yml    # dbt_maestro_dag.py
-git diff dbt_maestro_dag.py                           # Review changes
-# Deploy: copy dbt_maestro_dag.py into your Airflow dags/ folder
-airflow dags list                                     # Confirm it loads
+maestro generate --config maestro-config.yml         # selectors.yml
+maestro generate-dags --config maestro-config.yml     # dbt_maestro_*.py
+git diff dags/                                         # Review changes
+# Deploy: ensure dags_dir is on your Airflow dags/ path
+airflow dags list                                     # Confirm they load
 ```
 
 ---
@@ -938,6 +953,6 @@ airflow:
   dbt_profiles_dir: /opt/airflow/.dbt
 ```
 
-### "Airflow tasks run in the wrong order"
+### "Airflow DAGs run at the wrong time / I have too many tiny DAGs"
 
-Check `airflow.orchestration_mode`. Use `dependency` (and pass `--manifest`) to derive ordering from the dbt graph, `sequential` for a strict chain, or `parallel` for no dependencies.
+Each selector is its own DAG, ordered by schedule rather than task dependencies. Use `airflow.orchestration_mode: staggered` to spread DAG start times, `manual_schedule_interval` to give manual selectors a different cadence, and `min_models_per_dag` to merge small maestro selectors into one combined DAG.

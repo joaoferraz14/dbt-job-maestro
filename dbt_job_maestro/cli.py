@@ -385,72 +385,60 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
     type=click.Path(exists=True),
 )
 @click.option(
-    "--manifest",
-    "-m",
-    help="Path to manifest.json for dependency analysis (overrides config)",
-    type=click.Path(exists=True),
-)
-@click.option(
-    "--output",
+    "--dags-dir",
     "-o",
-    help="Output path for the generated DAG .py file (overrides config)",
+    help="Directory to write generated DAG files into (overrides config)",
     type=click.Path(),
 )
 @click.option(
-    "--dag-id",
-    help="Airflow DAG ID (overrides config)",
-    type=str,
-)
-@click.option(
     "--schedule-interval",
-    help="Cron schedule for the DAG (overrides config)",
+    help="Cron schedule for auto-generated DAGs (overrides config)",
     type=str,
 )
 @click.option(
     "--orchestration-mode",
-    type=click.Choice(["parallel", "sequential", "dependency"], case_sensitive=False),
-    help="Task dependency mode: parallel, sequential, or dependency (overrides config)",
+    type=click.Choice(["simple", "staggered", "none"], case_sensitive=False),
+    help="Schedule assignment: simple, staggered, or none (overrides config)",
 )
 def generate_dags(
     config,
     selectors,
-    manifest,
-    output,
-    dag_id,
+    dags_dir,
     schedule_interval,
     orchestration_mode,
 ):
     """
-    Generate an Airflow DAG Python file from selectors
+    Generate Airflow DAG Python files from selectors
 
-    Creates a .py file with an Airflow DAG where each selector becomes
-    a BashOperator task running `dbt build --selector <name>`.
+    Emits ONE DAG file per selector (the Airflow analogue of one dbt Cloud job
+    per selector). Each selector becomes a DAG whose BashOperator task runs the
+    appropriate dbt command. Generation is idempotent: auto-generated files are
+    rebuilt and stale ones removed, while hand-written DAGs are left untouched.
 
     \b
     Workflow:
-      1. maestro generate --config maestro-config.yml    → selectors.yml
-      2. maestro generate-dags --config maestro-config.yml → dbt_maestro_dag.py
-      3. Copy or symlink dbt_maestro_dag.py into your Airflow dags/ folder
+      1. maestro generate --config maestro-config.yml      → selectors.yml
+      2. maestro generate-dags --config maestro-config.yml → dbt_maestro_*.py
+      3. Point dags_dir at (or copy the files into) your Airflow dags/ folder
 
     \b
-    Orchestration modes:
-      parallel    - all tasks run concurrently (good when selectors are independent)
-      sequential  - each task waits for the previous (safest but slowest)
-      dependency  - seeds→snapshots→models ordering plus manifest graph analysis
+    Orchestration modes (airflow.orchestration_mode):
+      simple     - every maestro DAG uses schedule_interval
+      staggered  - DAGs offset by cron_increment_minutes from start time
+      none       - no schedule (manual trigger only)
 
     Examples:
 
       # Use config file
       maestro generate-dags --config maestro-config.yml
 
-      # Override output and schedule
-      maestro generate-dags --config maestro-config.yml --output dags/dbt.py --schedule-interval "0 4 * * *"
+      # Override output dir and schedule
+      maestro generate-dags --config maestro-config.yml --dags-dir /opt/airflow/dags --schedule-interval "0 4 * * *"
 
       # Fully manual
-      maestro generate-dags --selectors selectors.yml --output dags/dbt.py
+      maestro generate-dags --selectors selectors.yml --dags-dir dags/
     """
     import yaml as _yaml
-    from pathlib import Path as _Path
 
     try:
         if config:
@@ -462,17 +450,13 @@ def generate_dags(
         # CLI overrides
         if selectors:
             cfg.selectors_output_file = selectors
-        if output:
-            cfg.airflow.dag_output_file = output
-        if dag_id:
-            cfg.airflow.dag_id = dag_id
+        if dags_dir:
+            cfg.airflow.dags_dir = dags_dir
         if schedule_interval:
             cfg.airflow.schedule_interval = schedule_interval
         if orchestration_mode:
             cfg.airflow.orchestration_mode = orchestration_mode.lower()
-
-        # Resolve manifest path
-        manifest_path = manifest or cfg.manifest_path
+            cfg.airflow.validate()
 
         # Read selectors
         click.echo(f"Reading selectors from {cfg.selectors_output_file}...")
@@ -486,42 +470,39 @@ def generate_dags(
 
         click.echo(f"Found {len(selector_list)} selectors")
 
-        # Load manifest for dependency analysis (optional)
-        generator = AirflowDAGGenerator(cfg.airflow)
-        if cfg.airflow.orchestration_mode == "dependency":
-            manifest_data = generator.load_manifest(manifest_path)
-            if manifest_data:
-                click.echo(f"Loaded manifest from {manifest_path} for dependency analysis")
-                generator.manifest_data = manifest_data
-            else:
-                click.echo(
-                    click.style(
-                        f"  Note: manifest not found at {manifest_path} - "
-                        "using type-based ordering only (seeds→snapshots→models)",
-                        fg="yellow",
-                    )
-                )
+        target_dir = cfg.airflow.dags_dir or cfg.output_dir
 
         click.echo(
-            f"Generating Airflow DAG '{cfg.airflow.dag_id}' "
+            f"Generating Airflow DAGs into '{target_dir}' "
             f"(mode: {cfg.airflow.orchestration_mode})..."
         )
-        dag_code = generator.generate_dag(selector_list)
+        generator = AirflowDAGGenerator(cfg.airflow)
+        dags = generator.generate_dags(selector_list)
 
-        output_path = _Path(cfg.output_dir) / cfg.airflow.dag_output_file
-        click.echo(f"Writing DAG to {output_path}...")
-        generator.write_dag(dag_code, str(output_path))
+        if not dags:
+            click.echo(
+                click.style("✗ No DAGs generated (all selectors excluded?)", fg="red", bold=True),
+                err=True,
+            )
+            sys.exit(1)
 
-        click.echo(click.style("\n✓ Airflow DAG generated successfully!", fg="green", bold=True))
-        click.echo(f"\nOutput: {output_path}")
+        written, removed = generator.write_dags(dags, target_dir)
+
+        click.echo(click.style("\n✓ Airflow DAGs generated successfully!", fg="green", bold=True))
+        click.echo(f"\nWrote {len(written)} DAG file(s) to {target_dir}:")
+        for name in written:
+            click.echo(f"  + {name}")
+        if removed:
+            click.echo(f"\nRemoved {len(removed)} stale auto-generated DAG file(s):")
+            for name in removed:
+                click.echo(f"  - {name}")
 
         click.echo("\n" + "=" * 60)
         click.echo("Next Steps:")
         click.echo("=" * 60)
-        click.echo(f"1. Review the generated DAG in {output_path}")
-        click.echo("2. Copy or symlink it into your Airflow dags/ folder")
-        click.echo("3. Verify it loads: airflow dags list")
-        click.echo("4. Trigger a test run: airflow dags trigger dbt_maestro_dag")
+        click.echo(f"1. Review the generated DAGs in {target_dir}")
+        click.echo("2. Ensure that directory is on your Airflow dags/ path")
+        click.echo("3. Verify they load: airflow dags list")
 
     except FileNotFoundError as e:
         click.echo(click.style(f"\n✗ Error: {e}", fg="red", bold=True), err=True)
