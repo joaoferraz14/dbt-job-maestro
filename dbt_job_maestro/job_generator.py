@@ -9,6 +9,7 @@ import yaml
 from typing import Any, Dict, List, Optional, Tuple
 
 from dbt_job_maestro.config import JobConfig, CustomFullRefreshSchedule
+from dbt_job_maestro.dbt_commands import build_steps, resolve_command
 
 
 class JobGenerator:
@@ -22,6 +23,22 @@ class JobGenerator:
             config: JobConfig instance
         """
         self.config = config
+
+    def _selector_execute_steps(self, selector_name: str) -> List[str]:
+        """Build the dbt Cloud execute_steps for a selector's configured command.
+
+        Resolves the selector's command and expands it to one or more steps
+        (``run_test`` becomes ``dbt run`` then ``dbt test``). Per-selector
+        overrides apply to manual selectors only; auto-generated selectors all
+        use ``default_command``.
+        """
+        command = resolve_command(
+            selector_name,
+            self.config.default_command,
+            self.config.selector_commands,
+            self.config.selector_prefix,
+        )
+        return build_steps(command, selector_name)
 
     def generate_jobs(
         self, selectors: List[Dict[str, Any]], existing_jobs: Optional[Dict[str, Any]] = None
@@ -181,7 +198,7 @@ class JobGenerator:
             "deferring_job_definition_id": None,
             "description": description,
             "environment_id": self.config.environment_id,
-            "execute_steps": [f"dbt build --selector {selector_name}"],
+            "execute_steps": self._selector_execute_steps(selector_name),
             "execution": {
                 "timeout_seconds": self.config.timeout_seconds,
             },
@@ -223,7 +240,14 @@ class JobGenerator:
         job_dbt_name = f"{self.config.job_name_prefix}-combined_small_selectors"
         triggers, schedule = self._build_schedule(job_index)
 
-        execute_steps = [f"dbt build --selector {name}" for name in selector_names]
+        # Each selector contributes its own step(s). The combined job only ever
+        # holds auto-generated selectors, so they all use default_command. Note:
+        # dbt Cloud runs execute_steps sequentially and stops at the first
+        # failure, so this combined job is fail-fast (continue-on-failure is
+        # Airflow-only - see docs).
+        execute_steps = []
+        for name in selector_names:
+            execute_steps.extend(self._selector_execute_steps(name))
 
         auto_prefix = f"{self.config.selector_prefix}_"
         has_maestro = any(n.startswith(auto_prefix) for n in selector_names)

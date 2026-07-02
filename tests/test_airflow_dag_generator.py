@@ -394,6 +394,43 @@ class TestMinModelsPerDag:
 
 
 # ---------------------------------------------------------------------------
+# Manual vs auto DAG-kind tags
+# ---------------------------------------------------------------------------
+
+
+class TestDagKindTags:
+    def test_auto_selector_tagged_auto(self, gen, sample_selectors):
+        src = gen.generate_dags(sample_selectors)["dbt_maestro_maestro_staging.py"]
+        assert "tags=['dbt', 'maestro', 'auto']" in src
+
+    def test_manual_selector_tagged_manual(self, gen):
+        sels = [{"name": "critical_revenue", "definition": {"union": []}}]
+        src = gen.generate_dags(sels)["dbt_maestro_critical_revenue.py"]
+        assert "'manual'" in src
+        assert "'auto'" not in src
+
+    def test_combined_dag_tagged_auto_combined(self, default_cfg, sample_selectors):
+        default_cfg.min_models_per_dag = 5
+        gen = AirflowDAGGenerator(default_cfg)
+        # both sample selectors have 2 fqn models -> both combined
+        src = gen.generate_dags(sample_selectors)["dbt_maestro_combined_small_selectors.py"]
+        assert "'auto'" in src and "'combined'" in src
+
+    def test_full_refresh_tagged_full_refresh(self, default_cfg, sample_selectors):
+        default_cfg.full_refresh.enabled = True
+        gen = AirflowDAGGenerator(default_cfg)
+        src = gen.generate_dags(sample_selectors)["dbt_maestro_full_refresh_incremental.py"]
+        assert "'auto'" in src and "'full-refresh'" in src
+
+    def test_kind_tag_not_duplicated_in_base_tags(self, default_cfg, sample_selectors):
+        default_cfg.tags = ["dbt", "maestro", "auto"]
+        gen = AirflowDAGGenerator(default_cfg)
+        src = gen.generate_dags(sample_selectors)["dbt_maestro_maestro_staging.py"]
+        # 'auto' already present in base tags -> appears exactly once
+        assert src.count("'auto'") == 1
+
+
+# ---------------------------------------------------------------------------
 # Full refresh DAGs
 # ---------------------------------------------------------------------------
 

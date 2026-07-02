@@ -510,6 +510,12 @@ job:
   include_manual_selectors_in_jobs: true    # Create jobs for manual selectors
   selector_prefix: maestro                  # Synced from selector.selector_prefix
 
+  # Per-selector command: build | run | run_test | test
+  # All maestro_* selectors use default_command; selector_commands overrides
+  # MANUAL selectors only. run_test => two execute_steps (dbt run, then dbt test).
+  default_command: build
+  selector_commands: {}                     # e.g. { critical_revenue: run_test }
+
   # Orchestration mode: simple, staggered, or none
   # (cron_incremental is accepted as an alias for staggered)
   orchestration_mode: simple
@@ -571,6 +577,17 @@ airflow:
   # Which selectors become DAGs
   include_maestro_selectors_in_dags: true
   include_manual_selectors_in_dags: true
+
+  # Per-selector command: build | run | run_test | test
+  # All maestro_* selectors use default_command; selector_commands overrides
+  # MANUAL selectors only. run_test => two tasks wired `run >> test`.
+  default_command: build
+  selector_commands: {}                     # e.g. { critical_revenue: run_test }
+
+  # Keep the other selectors in a combined DAG running if one fails
+  # (false = fail-fast chained tasks; true = independent per-selector groups).
+  # Airflow-only: dbt Cloud jobs are always fail-fast across execute_steps.
+  continue_on_failure: false
 
   # Schedule assignment:
   # - simple:    every maestro DAG uses schedule_interval
@@ -721,12 +738,34 @@ job:
 
 #### Combining Small Selectors
 
-Reduce job count by combining small maestro selectors into one job. Each selector still gets its own `dbt build` step. Manual selectors always get their own individual job regardless of this setting.
+Reduce job count by combining small maestro selectors into one job. Each selector still gets its own step. Manual selectors always get their own individual job regardless of this setting.
 
 ```yaml
 job:
   min_models_per_job: 4  # Maestro selectors with < 4 models get combined into one job
 ```
+
+> **Failure handling:** a dbt Cloud job's `execute_steps` run in order and the job **stops at the first failing step** - so a combined job is fail-fast and there is no way to continue the remaining selectors within it (dbt-jobs-as-code has no continue-on-error, and `--selector` takes a single named selector per step). If you need a failed selector to not block the others, set `min_models_per_job: 1` so each selector becomes its own isolated job. Continuing siblings *within one unit* is only possible in Airflow (see [`continue_on_failure`](#combining-small-selectors-1)).
+
+#### Selector Commands
+
+Choose what each selector runs via `default_command` (applied uniformly to all `maestro_*` selectors) and `selector_commands` (per-selector overrides for **manual** selectors only):
+
+| Command | Steps |
+|---------|-------|
+| `build` (default) | `dbt build --selector X` |
+| `run` | `dbt run --selector X` |
+| `test` | `dbt test --selector X` |
+| `run_test` | `dbt run --selector X`, then `dbt test --selector X` (two `execute_steps`) |
+
+```yaml
+job:
+  default_command: build        # all maestro_* selectors
+  selector_commands:            # manual selectors only
+    critical_revenue: run_test
+```
+
+Seeds, snapshots and full-refresh selectors keep their type-specific command and ignore this setting.
 
 ### Complete Workflow
 
@@ -754,6 +793,8 @@ If you orchestrate with **Apache Airflow** instead of dbt Cloud, maestro generat
 
 Freshness selectors (`freshness_*`) are skipped - they don't map to a dbt build step. There is intentionally **no cross-selector task wiring**: like dbt Cloud jobs, the DAGs are independent and ordered by their schedules.
 
+**Per-selector command.** Model selectors honour the same `default_command` / `selector_commands` options as dbt Cloud jobs (`build` | `run` | `run_test` | `test`; `maestro_*` uniform, manual overridable). `run_test` renders two tasks wired `run >> test`, so the test only runs if the run succeeds. Seeds/snapshots/full-refresh keep their type-specific command above.
+
 ### Generate DAGs
 
 ```bash
@@ -777,6 +818,14 @@ A single Airflow DAG has a single `schedule_interval`, so per-selector DAGs are 
 ### Combining Small Selectors
 
 To avoid a battery of DAGs that each run only a model or two, set `min_models_per_dag`. Maestro selectors with fewer fqn models than the threshold are merged into a single `dbt_maestro_combined_small_selectors.py` DAG with one chained task per selector (mirroring a job's ordered `execute_steps`). Manual, seeds, snapshots, and full-refresh DAGs are never combined.
+
+**Continue on failure (Airflow only).** By default the combined DAG chains its selector tasks, so a failure skips the rest. Set `airflow.continue_on_failure: true` to leave the per-selector task groups **independent** instead - a failing selector then never skips its siblings. Within a `run_test` selector, `run >> test` still holds. This capability does not exist for dbt Cloud jobs (they are always fail-fast); the dbt Cloud fallback is `min_models_per_job: 1`.
+
+```yaml
+airflow:
+  min_models_per_dag: 4
+  continue_on_failure: true   # siblings keep running when one selector fails
+```
 
 ### Full-Refresh DAGs
 

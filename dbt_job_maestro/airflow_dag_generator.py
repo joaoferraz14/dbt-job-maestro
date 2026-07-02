@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from dbt_job_maestro.config import AirflowConfig, CustomFullRefreshSchedule
+from dbt_job_maestro.dbt_commands import build_steps, resolve_command
 from dbt_job_maestro.selector_types import count_fqn_models
 
 # Marker written into every generated file. Used to recognise (and safely
@@ -88,16 +89,25 @@ class AirflowDAGGenerator:
             dag_id = self._dag_id_for(name)
             schedule = self._schedule_for(is_manual, dag_index)
             sla = self._sla_for(is_manual)
-            tasks = [(self._task_id(name), self._get_dbt_command(sel))]
-            dags[f"{dag_id}.py"] = self._render_dag(dag_id, schedule, sla, tasks)
+            # One task group for this selector (2 tasks when its command is run_test).
+            task_groups = [self._task_group_for(sel)]
+            kind = "manual" if is_manual else "auto"
+            dags[f"{dag_id}.py"] = self._render_dag(
+                dag_id, schedule, sla, task_groups, extra_tags=[kind]
+            )
             dag_index += 1
 
         if small:
             dag_id = f"{self.config.dag_id_prefix}_combined_small_selectors"
             schedule = self._schedule_for(False, dag_index)
             sla = self._sla_for(False)
-            tasks = [(self._task_id(s["name"]), self._get_dbt_command(s)) for s in small]
-            dags[f"{dag_id}.py"] = self._render_dag(dag_id, schedule, sla, tasks, chain=True)
+            # One task group per selector. Groups are chained sequentially unless
+            # continue_on_failure is set, in which case they stay independent so a
+            # failing selector does not skip its siblings.
+            task_groups = [self._task_group_for(s) for s in small]
+            dags[f"{dag_id}.py"] = self._render_dag(
+                dag_id, schedule, sla, task_groups, chain=True, extra_tags=["auto", "combined"]
+            )
             dag_index += 1
 
         # Full-refresh DAGs (each its own file with its own cron).
@@ -155,23 +165,46 @@ class AirflowDAGGenerator:
             return "full_refresh"
         return "models"
 
-    def _get_dbt_command(self, selector: Dict[str, Any]) -> str:
-        """Build the dbt CLI invocation for a selector."""
+    def _task_group_for(self, selector: Dict[str, Any]) -> List[Tuple[str, str]]:
+        """Build the ordered task(s) for a selector.
+
+        Returns a list of ``(task_id, bash_command)`` tuples. Most selectors map
+        to a single task; a model selector whose command is ``run_test`` maps to
+        two tasks (run, then test) that the renderer chains ``run >> test``.
+        Seeds, snapshots and full-refresh selectors keep their type-specific
+        command and ignore the configurable per-selector command. Per-selector
+        command overrides apply to manual selectors only; auto-generated
+        selectors all use ``default_command``.
+        """
         name = selector["name"]
         sel_type = self._get_selector_type(name)
+        flags = self._dbt_runtime_flags()
 
         if sel_type == "seeds":
-            parts = ["dbt", "seed"]
-        elif sel_type == "snapshots":
-            parts = ["dbt", "snapshot"]
-        elif sel_type == "full_refresh":
-            parts = ["dbt", "build", "--full-refresh"]
-        else:
-            parts = ["dbt", "build"]
+            cmd = " ".join(["dbt", "seed", "--selector", name] + flags)
+            return [(self._task_id(name), cmd)]
+        if sel_type == "snapshots":
+            cmd = " ".join(["dbt", "snapshot", "--selector", name] + flags)
+            return [(self._task_id(name), cmd)]
+        if sel_type == "full_refresh":
+            cmd = " ".join(["dbt", "build", "--full-refresh", "--selector", name] + flags)
+            return [(self._task_id(name), cmd)]
 
-        parts += ["--selector", name]
-        parts += self._dbt_runtime_flags()
-        return " ".join(parts)
+        # Model selectors: honour the configurable command.
+        command = resolve_command(
+            name,
+            self.config.default_command,
+            self.config.selector_commands,
+            self.config.selector_prefix,
+        )
+        steps = build_steps(command, name, " ".join(flags))
+        if command == "run_test":
+            return [(f"run_{name}", steps[0]), (f"test_{name}", steps[1])]
+        return [(self._task_id(name), steps[0])]
+
+    def _get_dbt_command(self, selector: Dict[str, Any]) -> str:
+        """Primary dbt command string for a selector (first task's command)."""
+        return self._task_group_for(selector)[0][1]
 
     def _dbt_runtime_flags(self) -> List[str]:
         """Common --project-dir/--profiles-dir/--target/--threads flags."""
@@ -313,7 +346,9 @@ class AirflowDAGGenerator:
                 + self._dbt_runtime_flags()
             )
             tasks = [(self._task_id(selector), cmd)]
-            dags[f"{dag_id}.py"] = self._render_dag(dag_id, fr.cron_schedule, 0, tasks)
+            dags[f"{dag_id}.py"] = self._render_dag(
+                dag_id, fr.cron_schedule, 0, [tasks], extra_tags=["auto", "full-refresh"]
+            )
 
         for schedule in fr.custom_schedules:
             if not schedule.name:
@@ -323,7 +358,9 @@ class AirflowDAGGenerator:
                 continue
             dag_id = f"{self.config.dag_id_prefix}_full_refresh_{schedule.name}"
             tasks = [(f"run_full_refresh_{schedule.name}", cmd)]
-            dags[f"{dag_id}.py"] = self._render_dag(dag_id, schedule.cron_schedule, 0, tasks)
+            dags[f"{dag_id}.py"] = self._render_dag(
+                dag_id, schedule.cron_schedule, 0, [tasks], extra_tags=["auto", "full-refresh"]
+            )
 
         if self.config.seeds_full_refresh.enabled:
             dag_id = f"{self.config.dag_id_prefix}_seeds_full_refresh"
@@ -334,7 +371,11 @@ class AirflowDAGGenerator:
             )
             tasks = [(self._task_id(selector), cmd)]
             dags[f"{dag_id}.py"] = self._render_dag(
-                dag_id, self.config.seeds_full_refresh.cron_schedule, 0, tasks
+                dag_id,
+                self.config.seeds_full_refresh.cron_schedule,
+                0,
+                [tasks],
+                extra_tags=["auto", "full-refresh"],
             )
 
         return dags
@@ -365,8 +406,9 @@ class AirflowDAGGenerator:
         dag_id: str,
         schedule_interval: Optional[str],
         sla_minutes: int,
-        tasks: List[Tuple[str, str]],
+        task_groups: List[List[Tuple[str, str]]],
         chain: bool = False,
+        extra_tags: Optional[List[str]] = None,
     ) -> str:
         """Render a single DAG file.
 
@@ -374,8 +416,16 @@ class AirflowDAGGenerator:
             dag_id: Airflow DAG id.
             schedule_interval: Cron string, or None for manual-trigger DAGs.
             sla_minutes: Task SLA in minutes (0 = no SLA).
-            tasks: List of (task_id, bash_command).
-            chain: If True, wire tasks sequentially (used for combined DAGs).
+            task_groups: List of task groups. Each group is a list of
+                ``(task_id, bash_command)`` tuples that always run in order
+                within the group (e.g. ``run >> test`` for a run_test selector).
+            chain: If True, wire the groups to each other sequentially (used for
+                the combined DAG). When ``config.continue_on_failure`` is True the
+                groups are left independent instead, so a failing selector does
+                not skip its siblings. Tasks within a group are always chained.
+            extra_tags: DAG-kind tags appended to the configured ``tags`` (e.g.
+                "manual" vs "auto", "combined", "full-refresh") so manual and
+                auto-generated DAGs can be told apart in the Airflow UI.
         """
         lines: List[str] = [
             '"""',
@@ -414,6 +464,13 @@ class AirflowDAGGenerator:
 
         schedule_expr = f'"{schedule_interval}"' if schedule_interval is not None else "None"
 
+        # Append DAG-kind tags (manual/auto/combined/full-refresh) to the
+        # configured base tags, de-duplicated and order-preserving.
+        dag_tags = list(self.config.tags)
+        for tag in extra_tags or []:
+            if tag not in dag_tags:
+                dag_tags.append(tag)
+
         lines += [
             "with DAG(",
             f'    dag_id="{dag_id}",',
@@ -421,29 +478,45 @@ class AirflowDAGGenerator:
             f"    schedule_interval={schedule_expr},",
             f"    start_date={start_date_expr},",
             "    catchup=False,",
-            f"    tags={repr(self.config.tags)},",
+            f"    tags={repr(dag_tags)},",
             ") as dag:",
             "",
         ]
 
         # Tasks. task_id keeps the (possibly hyphenated) selector name; the
         # Python variable is sanitised so the assignment is always valid.
-        for task_id, cmd in tasks:
-            task_var = self._safe_var(task_id)
-            lines += [
-                f"    {task_var} = BashOperator(",
-                f'        task_id="{task_id}",',
-                f'        bash_command="{cmd}",',
-                "    )",
-                "",
-            ]
+        for group in task_groups:
+            for task_id, cmd in group:
+                task_var = self._safe_var(task_id)
+                lines += [
+                    f"    {task_var} = BashOperator(",
+                    f'        task_id="{task_id}",',
+                    f'        bash_command="{cmd}",',
+                    "    )",
+                    "",
+                ]
 
-        # Chain tasks sequentially for combined DAGs (mirrors a job's ordered
-        # execute_steps). Single-task DAGs need no dependency lines.
-        if chain and len(tasks) > 1:
-            lines.append("    # Run combined selectors in order")
-            chain_expr = " >> ".join(self._safe_var(task_id) for task_id, _ in tasks)
-            lines.append(f"    {chain_expr}")
+        # Dependencies:
+        #  - within a group, tasks always run in order (e.g. run >> test);
+        #  - across groups, chain sequentially (mirrors a job's ordered
+        #    execute_steps) UNLESS continue_on_failure is set, in which case the
+        #    groups stay independent so a failing selector never skips its siblings.
+        dependency_lines: List[str] = []
+        for group in task_groups:
+            if len(group) > 1:
+                dependency_lines.append(
+                    " >> ".join(self._safe_var(task_id) for task_id, _ in group)
+                )
+        if chain and not self.config.continue_on_failure and len(task_groups) > 1:
+            for prev, nxt in zip(task_groups, task_groups[1:]):
+                dependency_lines.append(
+                    f"{self._safe_var(prev[-1][0])} >> {self._safe_var(nxt[0][0])}"
+                )
+
+        if dependency_lines:
+            lines.append("    # Task dependencies")
+            for dep in dependency_lines:
+                lines.append(f"    {dep}")
             lines.append("")
 
         return "\n".join(lines) + "\n"

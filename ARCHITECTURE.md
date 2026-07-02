@@ -318,7 +318,7 @@ Cloud jobs, DAGs are independent and ordered via schedules.
 ### Selector → dbt command mapping
 | Selector type (by name) | dbt command |
 |-------------------------|-------------|
-| default (models) | `dbt build --selector <name>` |
+| default (models) | configurable: `build` (default) / `run` / `run_test` / `test` |
 | `*_seeds` | `dbt seed --selector <name>` |
 | `*_snapshots` | `dbt snapshot --selector <name>` |
 | `*_full_refresh_incremental` | `dbt build --full-refresh --selector <name>` |
@@ -327,6 +327,13 @@ Freshness selectors (`freshness_*`, `automatically_generated_freshness_*`) and t
 auto full-refresh selector are filtered out of the per-selector pass. Each remaining
 selector becomes one DAG whose `BashOperator` has `task_id = run_<selector_name>`,
 in a file named `<dag_id_prefix>_<selector_name>.py`.
+
+**Per-selector command** (`default_command` + `selector_commands`) is resolved by the
+shared `dbt_commands` module, used by both `JobGenerator` and `AirflowDAGGenerator`:
+auto-generated (`maestro_*`) selectors use `default_command` uniformly; `selector_commands`
+overrides **manual** selectors only. A selector maps to a *task group* - normally one
+task, but `run_test` yields two tasks wired `run >> test` (so the test only runs if the
+run succeeds). Seeds/snapshots/full-refresh keep their type-specific command above.
 
 ### Schedules & SLA (`airflow.orchestration_mode`)
 - **simple** (default) - every maestro DAG uses `schedule_interval`.
@@ -342,10 +349,17 @@ SLA is emitted into `default_args` only when the resolved value is `> 0`.
 ### Combining small selectors (`min_models_per_dag`)
 To avoid a battery of DAGs that each run only a model or two, maestro selectors
 with fewer than `min_models_per_dag` fqn models are merged into a single
-`<dag_id_prefix>_combined_small_selectors.py` DAG, with one chained task per
+`<dag_id_prefix>_combined_small_selectors.py` DAG, with one chained task group per
 selector (mirroring a dbt Cloud job's ordered `execute_steps`). Manual selectors,
 seeds, snapshots, and full-refresh DAGs are never combined. The fqn-count logic is
 shared with `JobGenerator` via `selector_types.count_fqn_models`.
+
+**Continue-on-failure (Airflow only).** `airflow.continue_on_failure` controls how the
+combined DAG's task groups relate: `false` (default) chains them sequentially - the
+current fail-fast behaviour; `true` leaves them independent so a failing selector never
+skips its siblings (tasks *within* a group, e.g. `run >> test`, are always chained). dbt
+Cloud jobs cannot do this - their `execute_steps` are strictly sequential and stop at the
+first failure - so the dbt Cloud fallback is `min_models_per_job: 1` (one job per selector).
 
 ### Full-refresh DAGs
 `airflow.full_refresh` (auto + `custom_schedules`) and `airflow.seeds_full_refresh`

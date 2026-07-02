@@ -5,6 +5,8 @@ import yaml
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 
+from dbt_job_maestro.dbt_commands import validate_commands
+
 
 @dataclass
 class SelectorConfig:
@@ -328,11 +330,29 @@ class AirflowConfig:
     # Seeds full refresh configuration (its own DAG)
     seeds_full_refresh: SeedsFullRefreshConfig = field(default_factory=SeedsFullRefreshConfig)
 
+    # Default dbt command for model selectors: 'build', 'run', 'run_test', or 'test'.
+    # 'run_test' emits two tasks wired `run >> test`. All auto-generated (maestro_*)
+    # selectors use this command uniformly. Seeds/snapshots/full-refresh selectors
+    # keep their type-specific command and ignore this setting.
+    default_command: str = "build"
+
+    # Per-selector command overrides for MANUAL selectors: {selector_name: command}.
+    # Auto-generated selectors ignore overrides (they all use default_command).
+    # Same valid values as default_command.
+    selector_commands: Dict[str, str] = field(default_factory=dict)
+
+    # When multiple selectors share ONE DAG (the combined-small-selectors DAG),
+    # keep the other selectors running if one fails instead of skipping them.
+    # False (default) preserves the fail-fast chained behaviour; True leaves the
+    # per-selector task groups independent so a failure never skips its siblings.
+    # Airflow-only: dbt Cloud jobs are always fail-fast across execute_steps.
+    continue_on_failure: bool = False
+
     def validate(self) -> None:
         """Validate Airflow configuration options.
 
         Raises:
-            ValueError: If orchestration_mode is not recognised.
+            ValueError: If orchestration_mode or a command value is invalid.
         """
         valid_modes = {"simple", "staggered", "none"}
         if self.orchestration_mode not in valid_modes:
@@ -340,6 +360,7 @@ class AirflowConfig:
                 f"Invalid airflow.orchestration_mode '{self.orchestration_mode}'. "
                 f"Valid options: {', '.join(sorted(valid_modes))}"
             )
+        validate_commands(self.default_command, self.selector_commands)
 
 
 @dataclass
@@ -431,6 +452,24 @@ class JobConfig:
 
     # Seeds full refresh configuration
     seeds_full_refresh: SeedsFullRefreshConfig = field(default_factory=SeedsFullRefreshConfig)
+
+    # Default dbt command for selectors: 'build', 'run', 'run_test', or 'test'.
+    # 'run_test' emits two execute_steps (dbt run, then dbt test). All
+    # auto-generated (maestro_*) selectors use this command uniformly.
+    default_command: str = "build"
+
+    # Per-selector command overrides for MANUAL selectors: {selector_name: command}.
+    # Auto-generated selectors ignore overrides (they all use default_command).
+    # Same valid values as default_command.
+    selector_commands: Dict[str, str] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        """Validate job configuration options.
+
+        Raises:
+            ValueError: If a command value is invalid.
+        """
+        validate_commands(self.default_command, self.selector_commands)
 
 
 @dataclass
@@ -546,7 +585,12 @@ class Config:
             seeds_full_refresh=cls._parse_seeds_full_refresh_config(
                 job_data.get("seeds_full_refresh", {})
             ),
+            default_command=job_data.get("default_command", "build"),
+            selector_commands=job_data.get("selector_commands", {}) or {},
         )
+
+        # Validate job config (command values)
+        job_config.validate()
 
         # Create airflow config
         airflow_data = data.get("airflow", {})
@@ -586,6 +630,9 @@ class Config:
             seeds_full_refresh=cls._parse_seeds_full_refresh_config(
                 airflow_data.get("seeds_full_refresh", {})
             ),
+            default_command=airflow_data.get("default_command", "build"),
+            selector_commands=airflow_data.get("selector_commands", {}) or {},
+            continue_on_failure=airflow_data.get("continue_on_failure", False),
         )
         airflow_config.validate()
 
@@ -945,6 +992,25 @@ job:
   selector_prefix: {self.job.selector_prefix}
 
   # ---------------------------------------------------------------------------
+  # SELECTOR COMMANDS
+  # ---------------------------------------------------------------------------
+  # Default dbt command for selectors: 'build', 'run', 'run_test', or 'test'
+  #   build     -> dbt build --selector X
+  #   run       -> dbt run --selector X
+  #   test      -> dbt test --selector X
+  #   run_test  -> dbt run --selector X, then dbt test --selector X (two steps)
+  # All auto-generated (maestro_*) selectors use this command uniformly.
+  default_command: {self.job.default_command}
+
+  # Per-selector overrides for MANUAL selectors only: {{selector_name: command}}.
+  # Auto-generated selectors ignore overrides (they all use default_command).
+  # Example:
+  #   selector_commands:
+  #     critical_revenue: run_test
+  #     freshness_checks: test
+  selector_commands: {self.job.selector_commands if self.job.selector_commands else '{}'}
+
+  # ---------------------------------------------------------------------------
   # ORCHESTRATION MODE
   # ---------------------------------------------------------------------------
   # Job orchestration: 'simple', 'staggered', or 'none'
@@ -1113,6 +1179,32 @@ airflow:
 
   # Create DAGs for manual selectors (non-maestro_*)
   include_manual_selectors_in_dags: {str(self.airflow.include_manual_selectors_in_dags).lower()}
+
+  # ---------------------------------------------------------------------------
+  # SELECTOR COMMANDS
+  # ---------------------------------------------------------------------------
+  # Default dbt command for model selectors: 'build', 'run', 'run_test', or 'test'
+  #   build     -> dbt build --selector X
+  #   run       -> dbt run --selector X
+  #   test      -> dbt test --selector X
+  #   run_test  -> two tasks wired `run >> test` (test runs only if run succeeds)
+  # All auto-generated (maestro_*) selectors use this command uniformly.
+  # Seeds/snapshots/full-refresh selectors keep their type-specific command.
+  default_command: {self.airflow.default_command}
+
+  # Per-selector overrides for MANUAL selectors only: {{selector_name: command}}.
+  # Auto-generated selectors ignore overrides (they all use default_command).
+  # Example:
+  #   selector_commands:
+  #     critical_revenue: run_test
+  #     freshness_checks: test
+  selector_commands: {self.airflow.selector_commands if self.airflow.selector_commands else '{}'}
+
+  # When several selectors share ONE DAG (the combined-small-selectors DAG), keep
+  # the other selectors running if one fails instead of skipping them.
+  # false (default) = fail-fast chained tasks; true = independent per-selector
+  # task groups. Airflow-only: dbt Cloud jobs are always fail-fast.
+  continue_on_failure: {str(self.airflow.continue_on_failure).lower()}
 
   # ---------------------------------------------------------------------------
   # ORCHESTRATION
