@@ -421,9 +421,15 @@ class TestTagExclusion:
             assert (
                 len(exclude_items) > 0
             ), f"Selector '{selector['name']}' missing tag exclusion in definition"
-            # Verify exclude contains tag method entries
-            exclude_union = exclude_items[0]["exclude"]["union"]
-            tag_excludes = [e for e in exclude_union if e.get("method") == "tag"]
+            # dbt requires the value of "exclude" to be a list, not a
+            # {union: [...]} dict - a dict makes dbt reject the whole file with
+            # 'Invalid value for key "exclude". Expected a list.'
+            exclude_value = exclude_items[0]["exclude"]
+            assert isinstance(exclude_value, list), (
+                f"Selector '{selector['name']}' emitted a "
+                f"{type(exclude_value).__name__} under 'exclude'; dbt requires a list"
+            )
+            tag_excludes = [e for e in exclude_value if e.get("method") == "tag"]
             assert len(tag_excludes) == 2
             excluded_tags = {e["value"] for e in tag_excludes}
             assert "legacy" in excluded_tags
@@ -479,6 +485,117 @@ class TestExclusionEdgeCases:
 
         assert "temp_debug" in all_fqn_values
         assert "stg_legacy_data" in all_fqn_values
+
+
+class TestExcludeClauseShape:
+    """dbt requires the value of ``exclude`` to be a list of selector definitions.
+
+    Emitting ``exclude: {union: [...]}`` makes dbt reject the entire
+    selectors.yml with 'Invalid value for key "exclude". Expected a list.',
+    which breaks every selector in the file - not just the one with exclusions.
+    """
+
+    def _exclude_values(self, selectors, prefix="maestro_"):
+        out = []
+        for selector in selectors:
+            if not selector["name"].startswith(prefix):
+                continue
+            for item in selector.get("definition", {}).get("union", []) or []:
+                if isinstance(item, dict) and "exclude" in item:
+                    out.append(item["exclude"])
+        return out
+
+    def test_union_mode_emits_flat_list(self, parser, graph):
+        config = SelectorConfig(
+            exclude_tags=["legacy"], exclude_paths=["models/temp"], exclusion_mode="union"
+        )
+        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
+        values = self._exclude_values(selectors)
+        assert values
+        for value in values:
+            assert isinstance(value, list)
+            assert all("method" in entry for entry in value)
+            assert {e["method"] for e in value} == {"tag", "path"}
+
+    def test_intersection_mode_wraps_in_nested_intersection(self, parser, graph):
+        config = SelectorConfig(
+            exclude_tags=["legacy"], exclude_paths=["models/temp"], exclusion_mode="intersection"
+        )
+        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
+        values = self._exclude_values(selectors)
+        assert values
+        for value in values:
+            assert isinstance(value, list)
+            assert len(value) == 1
+            assert "intersection" in value[0]
+            assert {e["method"] for e in value[0]["intersection"]} == {"tag", "path"}
+
+    def test_single_criterion_intersection_stays_flat(self, parser, graph):
+        """One criterion needs no intersection wrapper - AND of one thing is itself."""
+        config = SelectorConfig(exclude_tags=["legacy"], exclusion_mode="intersection")
+        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
+        values = self._exclude_values(selectors)
+        assert values
+        for value in values:
+            assert isinstance(value, list)
+            assert value == [{"method": "tag", "value": "legacy"}]
+
+    def test_full_refresh_exclusions_are_a_list(self, parser, graph):
+        config = SelectorConfig(
+            include_full_refresh_selector=True,
+            full_refresh_exclude_tags=["legacy"],
+            full_refresh_exclude_paths=["models/temp"],
+            full_refresh_exclude_models=["temp_debug"],
+        )
+        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
+        fr = next(s for s in selectors if s["name"].endswith("_full_refresh_incremental"))
+        excludes = [item["exclude"] for item in fr["definition"]["union"] if "exclude" in item]
+        assert excludes
+        for value in excludes:
+            assert isinstance(value, list)
+            assert {e["method"] for e in value} == {"tag", "path", "fqn"}
+
+    def test_no_exclude_clause_when_nothing_configured(self, parser, graph):
+        selectors = SelectorOrchestrator(parser, graph, SelectorConfig()).generate_selectors()
+        assert not self._exclude_values(selectors)
+
+
+class TestLegacyExcludeShapeStillResolves:
+    """A stale selectors.yml may still carry the old {union: [...]} dict.
+
+    The resolver must keep subtracting those models so upgrading maestro does not
+    silently change which models are considered covered by manual selectors.
+    """
+
+    def test_dict_shape_exclusions_are_resolved(self, parser, graph):
+        from dbt_job_maestro.model_resolver import ModelResolver
+
+        resolver = ModelResolver(parser, graph)
+        legacy = {
+            "name": "legacy_manual",
+            "definition": {
+                "union": [
+                    {"method": "path", "value": "models/staging"},
+                    {"exclude": {"union": [{"method": "fqn", "value": "stg_users"}]}},
+                ]
+            },
+        }
+        assert "stg_users" not in resolver.resolve_selector(legacy).models
+
+    def test_list_shape_exclusions_are_resolved(self, parser, graph):
+        from dbt_job_maestro.model_resolver import ModelResolver
+
+        resolver = ModelResolver(parser, graph)
+        current = {
+            "name": "current_manual",
+            "definition": {
+                "union": [
+                    {"method": "path", "value": "models/staging"},
+                    {"exclude": [{"method": "fqn", "value": "stg_users"}]},
+                ]
+            },
+        }
+        assert "stg_users" not in resolver.resolve_selector(current).models
 
 
 # Cleanup fixture

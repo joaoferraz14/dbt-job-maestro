@@ -210,6 +210,49 @@ job:
   # ... more options
 ```
 
+## selectors.yml shapes dbt accepts
+
+Two spots in the schema are easy to get wrong, and both make dbt reject the **entire**
+selectors.yml rather than just the offending selector.
+
+**`exclude` must be a list**, not a dict. The list is implicitly a union, so intersection
+semantics need a nested entry:
+
+```yaml
+# union mode - exclude anything matching ANY criterion
+- exclude:
+    - method: tag
+      value: deprecated
+    - method: path
+      value: models/legacy
+
+# intersection mode - exclude only what matches ALL criteria
+- exclude:
+    - intersection:
+        - method: tag
+          value: deprecated
+        - method: path
+          value: models/legacy
+```
+
+A dict (`exclude: {union: [...]}`) fails with
+`Invalid value for key "exclude". Expected a list.`
+
+**`indirect_selection` belongs on a selector method**, inside `definition`. It is not a
+root-level selector key - `default` is reserved for dbt's boolean default-selector flag:
+
+```yaml
+definition:
+  union:
+    - method: fqn
+      value: my_model
+      indirect_selection: cautious
+```
+
+A root-level `default: {indirect_selection: ...}` fails with
+`Could not parse selector file data ... Valid root-level selector definitions: union,
+intersection, string, dictionary.`
+
 ## Safety Features
 
 ### 1. Manual Selector Protection
@@ -378,6 +421,14 @@ The pre-rewrite `airflow.orchestration_mode` values (`parallel`, `sequential`,
 `dependency`) wired cross-selector ordering inside one DAG. They are normalized to
 `simple` on load, so existing config files keep working without edits - selectors
 become independent DAGs scheduled by cron. Unknown modes still raise a clear error.
+
+### Airflow major version (`airflow.airflow_version`)
+Airflow 3.0 removed the `schedule_interval` DAG kwarg, removed task SLAs, and moved
+`BashOperator` into the standard provider package. `airflow_version` (`2` default, or `3`)
+selects the matching output: `schedule=` vs `schedule_interval=`, the provider vs legacy
+import, and whether `sla` appears in `default_args`. Version 2 output is byte-identical to
+pre-option releases. Targeting Airflow 3 with `airflow_version: 2` makes every DAG fail to
+import with `TypeError: DAG.__init__() got an unexpected keyword argument 'schedule_interval'`.
 
 ### dbt runtime flags
 `--target` and `--threads` are always appended. `--project-dir` and

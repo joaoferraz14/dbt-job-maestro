@@ -1,0 +1,41 @@
+manifest_path: __MANIFEST__
+output_dir: __PROJECT_DIR__
+selectors_output_file: selectors.yml
+jobs_output_file: __WORKDIR__/jobs.yml
+
+selector:
+  selector_prefix: maestro
+  combine_single_model_selectors: true
+  include_seeds_selectors: true
+  seeds_selector_method: path
+  seeds_path: seeds
+  include_snapshots_selectors: true
+  snapshots_selector_method: path
+  snapshots_path: snapshots
+
+airflow:
+  dbt_project_dir: __PROJECT_DIR__
+  dbt_profiles_dir: __PROFILES_DIR__
+  dbt_target: __TARGET__
+  dbt_threads: 4
+  dags_dir: __WORKDIR__/dags/16-fullrefresh
+  orchestration_mode: none
+  full_refresh:
+    enabled: true
+    cron_schedule: "0 0 * * 0"
+    custom_schedules:
+      - name: by_selector
+        cron_schedule: "0 1 * * 0"
+        selector: maestro_orphan_models
+      - name: by_tags
+        cron_schedule: "0 2 * * 0"
+        tags: [example_tag_a, example_tag_b]
+      - name: by_paths
+        cron_schedule: "0 3 * * 0"
+        paths: ['models/marts']
+      - name: by_models
+        cron_schedule: "0 4 * * 0"
+        models: [example_incremental_model]
+  seeds_full_refresh:
+    enabled: true
+    cron_schedule: "0 5 * * 0"

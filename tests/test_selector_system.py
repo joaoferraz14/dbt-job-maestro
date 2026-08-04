@@ -1309,6 +1309,120 @@ class TestFreshnessSelectors:
             os.chdir(original_dir)
 
 
+class TestIndirectSelection:
+    """Test the indirect_selection config option.
+
+    dbt accepts ``indirect_selection`` only on an individual selector *method*
+    inside ``definition``. Emitting it as a root-level key (previously under
+    ``default``) makes dbt reject the entire selectors.yml with "Could not parse
+    selector file data", breaking every selector in the file.
+    """
+
+    def _methods(self, definition):
+        """Collect method dicts from a definition tree."""
+        found = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                if "method" in node:
+                    found.append(node)
+                for key in ("union", "intersection"):
+                    for item in node.get(key, []) or []:
+                        walk(item)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(definition)
+        return found
+
+    def test_eager_adds_nothing(self, mock_parser, mock_graph):
+        config = SelectorConfig(indirect_selection="eager")
+        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
+        for selector in selectors:
+            assert "default" not in selector
+            for method in self._methods(selector.get("definition", {})):
+                assert "indirect_selection" not in method
+
+    def test_non_eager_is_set_on_methods(self, mock_parser, mock_graph):
+        config = SelectorConfig(indirect_selection="cautious")
+        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
+        auto = [s for s in selectors if s["name"].startswith("maestro_")]
+        assert auto, "expected auto-generated selectors"
+        for selector in auto:
+            methods = self._methods(selector.get("definition", {}))
+            assert methods, f"{selector['name']} has no methods"
+            for method in methods:
+                assert method["indirect_selection"] == "cautious"
+
+    def test_never_written_as_root_level_default(self, mock_parser, mock_graph):
+        """Regression: root-level default made dbt reject the whole file."""
+        config = SelectorConfig(indirect_selection="buildable")
+        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
+        for selector in selectors:
+            assert not isinstance(selector.get("default"), dict), (
+                f"{selector['name']} emitted a dict under 'default'; dbt reserves that key "
+                "for the boolean default-selector flag"
+            )
+            assert "indirect_selection" not in selector
+
+    def test_exclude_blocks_are_untouched(self, mock_parser, mock_graph):
+        # The shared mock_graph doesn't stub tag lookups; exclusions need it.
+        mock_graph.get_models_with_tags.return_value = {"model_a"}
+        config = SelectorConfig(
+            indirect_selection="cautious",
+            exclude_tags=["staging"],
+        )
+        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
+
+        def excluded_methods(node, inside_exclude=False):
+            out = []
+            if isinstance(node, dict):
+                if "method" in node and inside_exclude:
+                    out.append(node)
+                if "exclude" in node:
+                    out += excluded_methods(node["exclude"], True)
+                for key in ("union", "intersection"):
+                    for item in node.get(key, []) or []:
+                        out += excluded_methods(item, inside_exclude)
+            elif isinstance(node, list):
+                for item in node:
+                    out += excluded_methods(item, inside_exclude)
+            return out
+
+        for selector in selectors:
+            for method in excluded_methods(selector.get("definition", {})):
+                assert "indirect_selection" not in method
+
+    @pytest.mark.parametrize("mode", ["cautious", "buildable", "empty"])
+    def test_all_non_eager_modes_supported(self, mock_parser, mock_graph, mode):
+        config = SelectorConfig(indirect_selection=mode)
+        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
+        auto = [s for s in selectors if s["name"].startswith("maestro_")]
+        methods = [m for s in auto for m in self._methods(s.get("definition", {}))]
+        assert methods
+        assert all(m["indirect_selection"] == mode for m in methods)
+
+    def test_manual_selectors_not_modified(self, mock_parser, mock_graph, tmp_path):
+        selectors_file = tmp_path / "selectors.yml"
+        selectors_file.write_text(
+            "selectors:\n"
+            "  - name: my_manual\n"
+            "    definition:\n"
+            "      union:\n"
+            "        - method: fqn\n"
+            "          value: model_a\n"
+        )
+        config = SelectorConfig(indirect_selection="cautious")
+        orchestrator = SelectorOrchestrator(
+            mock_parser, mock_graph, config, existing_selectors_path=str(selectors_file)
+        )
+        selectors = orchestrator.generate_selectors()
+        manual = next(s for s in selectors if s["name"] == "my_manual")
+        for method in self._methods(manual["definition"]):
+            assert "indirect_selection" not in method
+
+
 class TestReformatManualSelectors:
     """Test the reformat_manual_selectors config option."""
 

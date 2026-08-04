@@ -1,0 +1,14 @@
+manifest_path: __MANIFEST__
+output_dir: __PROJECT_DIR__
+selectors_output_file: selectors.yml
+jobs_output_file: __WORKDIR__/jobs.yml
+
+selector:
+  selector_prefix: orch
+  combine_single_model_selectors: true
+  reformat_manual_selectors: false
+  indirect_selection: cautious
+  prefix_order: [stg, int, fct, dim]
+  include_seeds_selectors: true
+  seeds_selector_method: path
+  seeds_path: seeds

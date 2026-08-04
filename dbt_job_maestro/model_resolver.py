@@ -42,9 +42,22 @@ class ModelResolver:
 
         definition = selector_def.get("definition", {})
 
+        # Exclusions collected from bare `- exclude:` entries listed alongside
+        # their siblings. dbt applies such an entry to the whole surrounding
+        # clause, not to itself, so they must be subtracted after the positive
+        # set is built - handing them to _resolve_item would subtract them from
+        # an empty set and silently do nothing.
+        sibling_exclusions: Set[str] = set()
+
+        def is_bare_exclude(item: Any) -> bool:
+            return isinstance(item, dict) and set(item.keys()) == {"exclude"}
+
         # Process union definitions
         if "union" in definition:
             for item in definition["union"]:
+                if is_bare_exclude(item):
+                    sibling_exclusions.update(self._resolve_exclusions(item["exclude"]).models)
+                    continue
                 resolved = self._resolve_item(item)
                 models.update(resolved.models)
                 paths.update(resolved.paths)
@@ -56,6 +69,9 @@ class ModelResolver:
         if "intersection" in definition:
             all_sets = []
             for item in definition["intersection"]:
+                if is_bare_exclude(item):
+                    sibling_exclusions.update(self._resolve_exclusions(item["exclude"]).models)
+                    continue
                 resolved = self._resolve_item(item)
                 all_sets.append(resolved.models)
                 paths.update(resolved.paths)
@@ -70,6 +86,7 @@ class ModelResolver:
         if "exclude" in definition:
             excluded = self._resolve_exclusions(definition["exclude"])
             models = models - excluded.models
+        models = models - sibling_exclusions
 
         return ModelResolution(
             models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns
@@ -173,21 +190,33 @@ class ModelResolver:
             models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns
         )
 
-    def _resolve_exclusions(self, exclude_def: Dict[str, Any]) -> ModelResolution:
+    def _resolve_exclusions(self, exclude_def: Any) -> ModelResolution:
         """Resolve exclusion definitions.
 
+        dbt requires ``exclude`` to be a **list** of selector definitions (the
+        list is implicitly a union). Older maestro output wrote a
+        ``{"union": [...]}`` dict instead, which dbt rejects, so both shapes are
+        accepted here: a hand-written or newly generated selectors.yml uses the
+        list form, while a stale file may still carry the dict form.
+
         Args:
-            exclude_def: Exclusion definition dictionary
+            exclude_def: Exclusion definition - a list of items, or a dict
+                keyed by ``union`` / ``intersection``.
 
         Returns:
             ModelResolution for excluded models
         """
-        models = set()
+        models: Set[str] = set()
 
-        if "union" in exclude_def:
-            for item in exclude_def["union"]:
+        if isinstance(exclude_def, list):
+            for item in exclude_def:
                 resolved = self._resolve_item(item)
                 models.update(resolved.models)
+        elif isinstance(exclude_def, dict):
+            for key in ("union", "intersection"):
+                if key in exclude_def:
+                    resolved = self._resolve_item({key: exclude_def[key]})
+                    models.update(resolved.models)
 
         return ModelResolution(
             models=models, paths=set(), tags=set(), fqns=set(), invalid_fqns=set()

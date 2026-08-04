@@ -246,6 +246,14 @@ class AirflowConfig:
     # Each DAG is named "{dag_id_prefix}_{selector_name}".
     dag_id_prefix: str = "dbt_maestro"
 
+    # Major Airflow version the generated DAG files must run on: 2 or 3.
+    # Airflow 3 made three breaking changes that affect rendered DAGs:
+    #   - DAG(schedule_interval=...) was removed in favour of DAG(schedule=...)
+    #   - task SLAs were removed, so "sla" is no longer valid in default_args
+    #   - airflow.operators.bash moved to airflow.providers.standard.operators.bash
+    # Defaults to 2 so existing generated files stay byte-identical.
+    airflow_version: int = 2
+
     # Default cron schedule for auto-generated (maestro) selector DAGs.
     schedule_interval: str = "0 6 * * *"
 
@@ -283,6 +291,16 @@ class AirflowConfig:
 
     # dbt --threads value
     dbt_threads: int = 8
+
+    # Render the selector's dbt lineage as EmptyOperator nodes inside the DAG.
+    # Purely visual: the selector is still built by ONE dbt invocation. The nodes
+    # spawn no dbt process and all succeed together when that build finishes, so
+    # they show the shape of the graph, not per-model status.
+    lineage_tasks: bool = False
+
+    # Skip lineage nodes for selectors with more models than this (a 1000-model
+    # selector would otherwise emit 1000 no-op task instances). 0 = no limit.
+    lineage_max_models: int = 50
 
     # Airflow DAG tags shown in the UI
     tags: List[str] = field(default_factory=lambda: ["dbt", "maestro"])
@@ -352,13 +370,20 @@ class AirflowConfig:
         """Validate Airflow configuration options.
 
         Raises:
-            ValueError: If orchestration_mode or a command value is invalid.
+            ValueError: If orchestration_mode, airflow_version or a command
+                value is invalid.
         """
         valid_modes = {"simple", "staggered", "none"}
         if self.orchestration_mode not in valid_modes:
             raise ValueError(
                 f"Invalid airflow.orchestration_mode '{self.orchestration_mode}'. "
                 f"Valid options: {', '.join(sorted(valid_modes))}"
+            )
+        valid_versions = {2, 3}
+        if self.airflow_version not in valid_versions:
+            raise ValueError(
+                f"Invalid airflow.airflow_version '{self.airflow_version}'. "
+                f"Valid options: {', '.join(str(v) for v in sorted(valid_versions))}"
             )
         validate_commands(self.default_command, self.selector_commands)
 
@@ -596,6 +621,7 @@ class Config:
         airflow_data = data.get("airflow", {})
         airflow_config = AirflowConfig(
             dag_id_prefix=airflow_data.get("dag_id_prefix", "dbt_maestro"),
+            airflow_version=airflow_data.get("airflow_version", 2),
             schedule_interval=airflow_data.get("schedule_interval", "0 6 * * *"),
             manual_schedule_interval=airflow_data.get("manual_schedule_interval", ""),
             sla_minutes=airflow_data.get("sla_minutes", 0),
@@ -608,6 +634,8 @@ class Config:
             dbt_profiles_dir=airflow_data.get("dbt_profiles_dir", ""),
             dbt_target=airflow_data.get("dbt_target", "prod"),
             dbt_threads=airflow_data.get("dbt_threads", 8),
+            lineage_tasks=airflow_data.get("lineage_tasks", False),
+            lineage_max_models=airflow_data.get("lineage_max_models", 50),
             tags=airflow_data.get("tags", ["dbt", "maestro"]),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
             dags_dir=airflow_data.get("dags_dir", ""),
@@ -1115,6 +1143,13 @@ airflow:
   # Each DAG is named "{{dag_id_prefix}}_{{selector_name}}" → e.g. dbt_maestro_staging.py
   dag_id_prefix: {self.airflow.dag_id_prefix}
 
+  # Major Airflow version the generated DAGs must run on: 2 or 3.
+  # Airflow 3 removed DAG(schedule_interval=...), removed task SLAs, and moved
+  # BashOperator to airflow.providers.standard.operators.bash. Set this to 3 if
+  # your Airflow is 3.x, otherwise DAG files will fail to import with
+  # "TypeError: DAG.__init__() got an unexpected keyword argument 'schedule_interval'".
+  airflow_version: {self.airflow.airflow_version}
+
   # Directory to write generated DAG files into (empty = output_dir above).
   # Stale auto-generated DAGs in this directory are removed on regeneration.
   dags_dir: '{self.airflow.dags_dir}'
@@ -1164,6 +1199,20 @@ airflow:
 
   # Number of threads passed to dbt via --threads
   dbt_threads: {self.airflow.dbt_threads}
+
+  # ---------------------------------------------------------------------------
+  # LINEAGE (visual only)
+  # ---------------------------------------------------------------------------
+  # Render the selector's dbt lineage as EmptyOperator nodes inside each DAG, so
+  # Airflow's Graph view shows which models the selector builds and how they feed
+  # each other. The selector is still built by ONE dbt invocation - these nodes
+  # run no dbt and succeed together when that build finishes, so they are a
+  # picture of the graph, not per-model status. Requires a manifest.
+  lineage_tasks: {self.airflow.lineage_tasks}
+
+  # Selectors with more models than this get no lineage nodes (a 1000-model
+  # selector would otherwise emit 1000 no-op task instances). 0 = no limit.
+  lineage_max_models: {self.airflow.lineage_max_models}
 
   # ---------------------------------------------------------------------------
   # AIRFLOW UI OPTIONS

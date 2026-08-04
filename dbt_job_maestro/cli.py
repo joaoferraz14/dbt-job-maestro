@@ -1,6 +1,7 @@
 """Command-line interface for dbt-job-maestro"""
 
 import click
+import json
 import sys
 from pathlib import Path
 
@@ -10,6 +11,29 @@ from dbt_job_maestro.graph_builder import GraphBuilder
 from dbt_job_maestro.selector_orchestrator import SelectorOrchestrator
 from dbt_job_maestro.job_generator import JobGenerator
 from dbt_job_maestro.airflow_dag_generator import AirflowDAGGenerator
+
+
+def _resolve_output_path(cfg: Config, filename: str, explicit: bool = False) -> Path:
+    """Resolve a configured file name against ``output_dir``.
+
+    ``generate`` writes selectors.yml to ``output_dir/selectors_output_file``, so
+    ``generate-jobs`` and ``generate-dags`` must read it from the same place.
+    Resolving only against the cwd made those commands miss the file whenever
+    ``output_dir`` was set to anything other than ".".
+
+    Args:
+        cfg: Loaded configuration.
+        filename: Configured file name (may be absolute).
+        explicit: True when the value came from a CLI flag, in which case it is
+            an explicit path and is used verbatim.
+
+    Returns:
+        Path to use.
+    """
+    path = Path(filename)
+    if explicit or path.is_absolute():
+        return path
+    return Path(cfg.output_dir) / path
 
 
 @click.group()
@@ -322,11 +346,16 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
         if environment_id is not None:
             cfg.job.environment_id = environment_id
 
-        # Read selectors
-        click.echo(f"Reading selectors from {cfg.selectors_output_file}...")
+        # Read selectors from the same place `generate` wrote them.
+        selectors_path = _resolve_output_path(
+            cfg, cfg.selectors_output_file, explicit=bool(selectors)
+        )
+        jobs_path = _resolve_output_path(cfg, cfg.jobs_output_file, explicit=bool(output))
+
+        click.echo(f"Reading selectors from {selectors_path}...")
         import yaml
 
-        with open(cfg.selectors_output_file, "r") as f:
+        with open(selectors_path, "r") as f:
             selector_data = yaml.safe_load(f)
             selector_list = selector_data.get("selectors", [])
 
@@ -338,14 +367,14 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
 
         # Generate jobs
         job_generator = JobGenerator(cfg.job)
-        existing_jobs = job_generator.read_existing_jobs(cfg.jobs_output_file)
+        existing_jobs = job_generator.read_existing_jobs(str(jobs_path))
         jobs = job_generator.generate_jobs(selector_list, existing_jobs)
 
-        click.echo(f"Writing {len(jobs.get('jobs', {}))} jobs to {cfg.jobs_output_file}...")
-        job_generator.write_jobs(jobs, cfg.jobs_output_file)
+        click.echo(f"Writing {len(jobs.get('jobs', {}))} jobs to {jobs_path}...")
+        job_generator.write_jobs(jobs, str(jobs_path))
 
         click.echo(click.style("\n✓ Jobs generated successfully!", fg="green", bold=True))
-        click.echo(f"\nOutput: {cfg.jobs_output_file}")
+        click.echo(f"\nOutput: {jobs_path}")
 
         if not cfg.job.account_id or not cfg.job.project_id or not cfg.job.environment_id:
             click.echo(
@@ -463,9 +492,12 @@ def generate_dags(
             cfg.airflow.orchestration_mode = orchestration_mode.lower()
             cfg.airflow.validate()
 
-        # Read selectors
-        click.echo(f"Reading selectors from {cfg.selectors_output_file}...")
-        with open(cfg.selectors_output_file, "r") as f:
+        # Read selectors from the same place `generate` wrote them.
+        selectors_path = _resolve_output_path(
+            cfg, cfg.selectors_output_file, explicit=bool(selectors)
+        )
+        click.echo(f"Reading selectors from {selectors_path}...")
+        with open(selectors_path, "r") as f:
             selector_data = _yaml.safe_load(f)
             selector_list = selector_data.get("selectors", [])
 
@@ -481,7 +513,25 @@ def generate_dags(
             f"Generating Airflow DAGs into '{target_dir}' "
             f"(mode: {cfg.airflow.orchestration_mode})..."
         )
-        generator = AirflowDAGGenerator(cfg.airflow)
+        # The manifest is only needed for airflow.lineage_tasks. A missing or
+        # unreadable manifest must not break DAG generation, which otherwise
+        # depends solely on selectors.yml.
+        manifest_data = None
+        if cfg.airflow.lineage_tasks:
+            try:
+                with open(cfg.manifest_path, "r") as f:
+                    manifest_data = json.load(f)
+            except (OSError, ValueError) as exc:
+                click.echo(
+                    click.style(
+                        f"⚠ lineage_tasks is on but {cfg.manifest_path} could not be read "
+                        f"({exc}); generating DAGs without lineage nodes.",
+                        fg="yellow",
+                    ),
+                    err=True,
+                )
+
+        generator = AirflowDAGGenerator(cfg.airflow, manifest_data=manifest_data)
         dags = generator.generate_dags(selector_list)
 
         if not dags:

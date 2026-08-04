@@ -1,0 +1,3884 @@
+ .gitignore                                      |  11 +
+ ARCHITECTURE.md                                 |  51 +++
+ README.md                                       |  76 ++++
+ Tiltfile                                        | 170 ++++++++
+ dbt_job_maestro/airflow_dag_generator.py        |  16 +-
+ dbt_job_maestro/cli.py                          |  51 ++-
+ dbt_job_maestro/config.py                       |  25 +-
+ dbt_job_maestro/model_resolver.py               |  39 +-
+ dbt_job_maestro/selector_orchestrator.py        | 154 +++----
+ dbt_job_maestro/selectors/fqn_selector.py       |  19 +-
+ e2e/REPORT.md                                   | 402 +++++++++++++++++
+ e2e/assert_dags.py                              | 264 +++++++++++
+ e2e/assert_idempotency.py                       | 103 +++++
+ e2e/assert_selectors.py                         | 280 ++++++++++++
+ e2e/configs/01-baseline.yml.tmpl                |   9 +
+ e2e/configs/02-special.yml.tmpl                 |  22 +
+ e2e/configs/03-special-fqn.yml.tmpl             |  12 +
+ e2e/configs/04-exclusions.yml.tmpl              |  12 +
+ e2e/configs/05-exclusions-intersection.yml.tmpl |  12 +
+ e2e/configs/06-prefix-format.yml.tmpl           |  14 +
+ e2e/configs/07-freshness-removal.yml.tmpl       |   9 +
+ e2e/configs/08-freshness-all.yml.tmpl           |  11 +
+ e2e/configs/09-freshness-whitelist.yml.tmpl     |  15 +
+ e2e/configs/10-af-simple.yml.tmpl               |  25 ++
+ e2e/configs/11-af-staggered.yml.tmpl            |  30 ++
+ e2e/configs/12-af-none.yml.tmpl                 |  22 +
+ e2e/configs/13-af-combined-failfast.yml.tmpl    |  24 +
+ e2e/configs/14-af-combined-continue.yml.tmpl    |  24 +
+ e2e/configs/15-af-commands.yml.tmpl             |  28 ++
+ e2e/configs/16-af-fullrefresh.yml.tmpl          |  41 ++
+ e2e/configs/17-af-legacy.yml.tmpl               |  22 +
+ e2e/configs/18-af-v3.yml.tmpl                   |  24 +
+ e2e/render_configs.sh                           |  51 +++
+ e2e/run_dag_matrix.sh                           |  56 +++
+ e2e/run_selector_matrix.sh                      |  76 ++++
+ e2e/validate_airflow_imports.sh                 | 100 +++++
+ e2e/validate_with_dbt.sh                        |  87 ++++
+ scripts/maestro_airflow_up.sh                   | 558 ++++++++++++++++++++++++
+ tests/test_airflow_dag_generator.py             | 141 +++++-
+ tests/test_path_exclusion.py                    | 123 +++++-
+ tests/test_selector_commands.py                 |   1 -
+ tests/test_selector_system.py                   | 114 +++++
+ 42 files changed, 3196 insertions(+), 128 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index 4d33de9..2a2bd6a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -141,3 +141,14 @@ jobs_test.yml
+ jobs.yml
+ *.bak
+ CLAUDE.md
++
++# dbt-job-maestro e2e harness: keep configs, scripts and REPORT.md; drop bulky output
++e2e/artifacts/
++e2e/**/target/
++e2e/**/__pycache__/
++
++# local Airflow / Tilt state
++.maestro-airflow/
++.maestro-e2e/
++tilt_modules/
++.tiltbuild/
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 83ab75f..929b701 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -210,6 +210,49 @@ job:
+   # ... more options
+ ```
+
++## selectors.yml shapes dbt accepts
++
++Two spots in the schema are easy to get wrong, and both make dbt reject the **entire**
++selectors.yml rather than just the offending selector.
++
++**`exclude` must be a list**, not a dict. The list is implicitly a union, so intersection
++semantics need a nested entry:
++
++```yaml
++# union mode - exclude anything matching ANY criterion
++- exclude:
++    - method: tag
++      value: deprecated
++    - method: path
++      value: models/legacy
++
++# intersection mode - exclude only what matches ALL criteria
++- exclude:
++    - intersection:
++        - method: tag
++          value: deprecated
++        - method: path
++          value: models/legacy
++```
++
++A dict (`exclude: {union: [...]}`) fails with
++`Invalid value for key "exclude". Expected a list.`
++
++**`indirect_selection` belongs on a selector method**, inside `definition`. It is not a
++root-level selector key - `default` is reserved for dbt's boolean default-selector flag:
++
++```yaml
++definition:
++  union:
++    - method: fqn
++      value: my_model
++      indirect_selection: cautious
++```
++
++A root-level `default: {indirect_selection: ...}` fails with
++`Could not parse selector file data ... Valid root-level selector definitions: union,
++intersection, string, dictionary.`
++
+ ## Safety Features
+
+ ### 1. Manual Selector Protection
+@@ -379,6 +422,14 @@ The pre-rewrite `airflow.orchestration_mode` values (`parallel`, `sequential`,
+ `simple` on load, so existing config files keep working without edits - selectors
+ become independent DAGs scheduled by cron. Unknown modes still raise a clear error.
+
++### Airflow major version (`airflow.airflow_version`)
++Airflow 3.0 removed the `schedule_interval` DAG kwarg, removed task SLAs, and moved
++`BashOperator` into the standard provider package. `airflow_version` (`2` default, or `3`)
++selects the matching output: `schedule=` vs `schedule_interval=`, the provider vs legacy
++import, and whether `sla` appears in `default_args`. Version 2 output is byte-identical to
++pre-option releases. Targeting Airflow 3 with `airflow_version: 2` makes every DAG fail to
++import with `TypeError: DAG.__init__() got an unexpected keyword argument 'schedule_interval'`.
++
+ ### dbt runtime flags
+ `--target` and `--threads` are always appended. `--project-dir` and
+ `--profiles-dir` are appended only when `dbt_project_dir` / `dbt_profiles_dir`
+diff --git a/README.md b/README.md
+index 2da1a8c..932773a 100644
+--- a/README.md
++++ b/README.md
+@@ -554,6 +554,10 @@ job:
+ airflow:
+   dag_id_prefix: dbt_maestro          # DAG = "{dag_id_prefix}_{selector_name}"
+   dags_dir: ""                        # Output dir for DAG files (empty = output_dir)
++  airflow_version: 2                  # 2 or 3 - MUST match your Airflow major version.
++                                      # 3 emits schedule=, the provider BashOperator
++                                      # import, and no task SLA. Wrong value = every
++                                      # DAG fails to import.
+
+   # Schedules & SLA
+   schedule_interval: "0 6 * * *"      # Cron for auto-generated (maestro_*) DAGs
+@@ -803,6 +807,78 @@ maestro generate-dags --config maestro-config.yml
+
+ This writes a `dbt_maestro_<selector>.py` file per selector into `dags_dir` (or `output_dir`). Point that directory at your Airflow `dags/` folder, or copy the files in.
+
++### Airflow 2 vs Airflow 3
++
++Airflow 3.0 made three breaking changes that affect generated DAGs, so tell maestro which major version you run:
++
++```yaml
++airflow:
++  airflow_version: 2   # or 3
++```
++
++| | `airflow_version: 2` (default) | `airflow_version: 3` |
++|---|---|---|
++| schedule kwarg | `DAG(schedule_interval=...)` | `DAG(schedule=...)` |
++| BashOperator import | `airflow.operators.bash` | `airflow.providers.standard.operators.bash` |
++| task SLA | `default_args["sla"]` emitted | omitted (SLAs removed in 3.0) |
++
++Leaving it at `2` keeps output byte-identical to previous versions. **If your Airflow is 3.x and you leave this at `2`, every DAG fails to import** with:
++
++```
++TypeError: DAG.__init__() got an unexpected keyword argument 'schedule_interval'
++```
++
++### Try it locally in one command
++
++`scripts/maestro_airflow_up.sh` points at any dbt project, generates selectors and DAGs, installs an isolated Airflow, and serves the UI. It detects your Airflow major version and sets `airflow_version` for you.
++
++```bash
++./scripts/maestro_airflow_up.sh up --project-dir /path/to/your/dbt/project
++# -> http://localhost:8080  (credentials printed)
++
++./scripts/maestro_airflow_up.sh status
++./scripts/maestro_airflow_up.sh regen --project-dir /path/to/your/dbt/project
++./scripts/maestro_airflow_up.sh down
++```
++
++Every DAG is generated unscheduled and created paused, so nothing runs until you trigger it. Run `--help` for all options (`--port`, `--dbt-bin`, `--profiles-dir`, `--target`, `--airflow-version`, `--min-models-per-dag`, `--orchestration`, …).
++
++Two things worth knowing:
++
++- It writes `selectors.yml` into your project, because dbt only reads it from the project root. Any existing file is backed up first.
++- Pass `--target` a target name your project actually expects. Projects that key `generate_schema_name` on `target.name` (a common `dev`/`ci` pattern) can silently write to the wrong schemas under an unrecognised target name.
++
++For a supervisor (systemd, a container entrypoint, Tilt), split the two halves so the supervisor owns the long-running process:
++
++```bash
++./scripts/maestro_airflow_up.sh prepare --project-dir /path/to/project   # install + generate + migrate
++./scripts/maestro_airflow_up.sh serve   --project-dir /path/to/project   # exec airflow standalone, foreground
++```
++
++### Or with Tilt
++
++A Kubernetes-free `Tiltfile` is included, so no Docker, cluster or registry is needed — every resource is a `local_resource`.
++
++```bash
++brew install tilt-dev/tap/tilt          # once
++tilt up -- --project-dir /path/to/your/dbt/project
++# press SPACE for the Tilt UI; the "airflow" resource carries a link to the Airflow UI
++tilt down
++```
++
++It gives you six resources:
++
++| Resource | What it does |
++|---|---|
++| `maestro-tests` | runs the unit suite, re-runs on edits to `dbt_job_maestro/` or `tests/` |
++| `generate-dags` | regenerates selectors + DAGs when the generator or your `models/` change |
++| `airflow` | `prepare` then `serve` in the foreground, with a `/health` readiness probe |
++| `airflow-status` | manual button — DAG count, import errors, URL |
++| `airflow-credentials` | manual button — prints the admin password |
++| `airflow-down` | manual button — stops Airflow |
++
++Everything is passed through to the launcher, so all its flags work: `tilt up -- --project-dir ~/p --port 8082 --min-models-per-dag 5 --orchestration staggered`.
++
+ ### Schedules & SLAs
+
+ A single Airflow DAG has a single `schedule_interval`, so per-selector DAGs are what make per-selector schedules possible. Set `airflow.orchestration_mode` (or `--orchestration-mode`):
+diff --git a/Tiltfile b/Tiltfile
+new file mode 100644
+index 0000000..b79ad3e
+--- /dev/null
++++ b/Tiltfile
+@@ -0,0 +1,170 @@
++# Tiltfile - drive maestro + a local Airflow from the Tilt UI.
++#
++# This is a Kubernetes-free Tiltfile: everything is a local_resource, so no
++# Docker, cluster or registry is needed. Tilt is used purely as a control panel
++# and file-watcher over the same steps scripts/maestro_airflow_up.sh runs.
++#
++#   tilt up                     # then press SPACE for the web UI
++#   tilt down                   # stops Airflow and tears the resources down
++#
++# ---------------------------------------------------------------------------
++# CONFIGURE ME
++# Pass on the command line, e.g.
++#   tilt up -- --project-dir ~/code/my_dbt_project --target dev --port 8080
++# or set the matching env vars (DBT_PROJECT_DIR, DBT_PROFILES_DIR, ...).
++# ---------------------------------------------------------------------------
++
++config.define_string('project-dir')      # REQUIRED: your dbt project root
++config.define_string('profiles-dir')     # dir containing profiles.yml
++config.define_string('target')           # dbt target name
++config.define_string('dbt-bin')          # dbt executable
++config.define_string('port')             # Airflow UI port
++config.define_string('airflow-version')  # Airflow to install
++config.define_string('python-version')   # python for the Airflow venv
++config.define_string('workdir')          # where generated state lives
++config.define_string('min-models-per-dag')
++config.define_string('orchestration')    # none | simple | staggered
++config.define_string('default-command')  # build | run | test | run_test
++cfg = config.parse()
++
++
++def opt(name, env, default):
++    return cfg.get(name, os.getenv(env, default))
++
++
++def q(value):
++    """Single-quote a value for the shell. Starlark has no shlex module."""
++    return "'" + str(value).replace("'", "'\\''") + "'"
++
++
++PROJECT_DIR = opt('project-dir', 'DBT_PROJECT_DIR', '')
++PROFILES_DIR = opt('profiles-dir', 'DBT_PROFILES_DIR', os.getenv('HOME', '') + '/.dbt')
++TARGET = opt('target', 'DBT_TARGET', 'dev')
++DBT_BIN = opt('dbt-bin', 'DBT_BIN', 'dbt')
++PORT = opt('port', 'PORT', '8080')
++AIRFLOW_VERSION = opt('airflow-version', 'AIRFLOW_VERSION', '2.10.5')
++PYTHON_VERSION = opt('python-version', 'PYTHON_VERSION', '3.12')
++WORKDIR = opt('workdir', 'WORKDIR', os.getcwd() + '/.maestro-airflow')
++MIN_MODELS = opt('min-models-per-dag', 'MIN_MODELS_PER_DAG', '1')
++ORCHESTRATION = opt('orchestration', 'ORCHESTRATION_MODE', 'none')
++DEFAULT_COMMAND = opt('default-command', 'DEFAULT_COMMAND', 'build')
++
++if not PROJECT_DIR:
++    # Starlark has no implicit string concatenation - join with '+'.
++    fail(
++        "project-dir is required.\n" +
++        "  tilt up -- --project-dir /path/to/your/dbt/project\n" +
++        "or: export DBT_PROJECT_DIR=/path/to/your/dbt/project"
++    )
++
++UP = './scripts/maestro_airflow_up.sh'
++COMMON = ' '.join([
++    '--project-dir', q(PROJECT_DIR),
++    '--profiles-dir', q(PROFILES_DIR),
++    '--target', q(TARGET),
++    '--dbt-bin', q(DBT_BIN),
++    '--port', q(PORT),
++    '--workdir', q(WORKDIR),
++    '--airflow-version', q(AIRFLOW_VERSION),
++    '--python-version', q(PYTHON_VERSION),
++    '--min-models-per-dag', q(MIN_MODELS),
++    '--orchestration', q(ORCHESTRATION),
++    '--default-command', q(DEFAULT_COMMAND),
++])
++
++print('maestro/Airflow via Tilt')
++print('  project  : ' + PROJECT_DIR)
++print('  profiles : ' + PROFILES_DIR)
++print('  target   : ' + TARGET)
++print('  workdir  : ' + WORKDIR)
++print('  UI       : http://localhost:' + PORT)
++
++# ---------------------------------------------------------------------------
++# 1. unit tests - fast feedback while editing the generator
++# ---------------------------------------------------------------------------
++local_resource(
++    'maestro-tests',
++    cmd='.venv/bin/pytest tests/ -q 2>/dev/null || pytest tests/ -q',
++    deps=['dbt_job_maestro', 'tests'],
++    labels=['maestro'],
++    allow_parallel=True,
++)
++
++# ---------------------------------------------------------------------------
++# 2. generate selectors.yml + DAG files, and re-generate whenever the
++#    generator or the project's models change
++# ---------------------------------------------------------------------------
++local_resource(
++    'generate-dags',
++    cmd=UP + ' regen ' + COMMON,
++    deps=[
++        'dbt_job_maestro',
++        PROJECT_DIR + '/models',
++        PROJECT_DIR + '/dbt_project.yml',
++    ],
++    labels=['maestro'],
++    resource_deps=['maestro-tests'],
++)
++
++# ---------------------------------------------------------------------------
++# 3. Airflow itself.
++#
++#    `cmd` prepares (install venv, generate, migrate the DB) and `serve_cmd`
++#    runs `airflow standalone` in the FOREGROUND. Tilt must own the long-running
++#    process: the `up` subcommand backgrounds Airflow and returns, and Tilt reaps
++#    the command's process group on exit, which killed Airflow immediately.
++#
++#    `down` runs first so a Tiltfile edit or manual re-trigger restarts cleanly -
++#    otherwise a second Airflow starts while the first still holds the web port
++#    (and standalone's fixed internal ports 8793/8794) and both end up broken.
++# ---------------------------------------------------------------------------
++local_resource(
++    'airflow',
++    cmd=UP + ' down ' + COMMON + ' >/dev/null 2>&1; ' + UP + ' prepare ' + COMMON,
++    serve_cmd=UP + ' serve ' + COMMON,
++    readiness_probe=probe(
++        period_secs=10,
++        timeout_secs=5,
++        # 127.0.0.1, not 'localhost': Tilt's Go dialer resolves localhost to IPv6
++        # [::1] while Airflow's gunicorn binds IPv4 only, so the probe would fail
++        # with "dial tcp [::1]:<port>: connect: connection refused" even though
++        # the UI is serving fine.
++        http_get=http_get_action(port=int(PORT), host='127.0.0.1', path='/health'),
++    ),
++    links=[link('http://localhost:' + PORT, 'Airflow UI')],
++    labels=['airflow'],
++    resource_deps=['generate-dags'],
++)
++
++# ---------------------------------------------------------------------------
++# 4. manual buttons - triggered from the Tilt UI, never automatically
++# ---------------------------------------------------------------------------
++local_resource(
++    'airflow-status',
++    cmd=UP + ' status ' + COMMON,
++    labels=['airflow'],
++    trigger_mode=TRIGGER_MODE_MANUAL,
++    auto_init=False,
++)
++
++local_resource(
++    'airflow-down',
++    cmd=UP + ' down ' + COMMON,
++    labels=['airflow'],
++    trigger_mode=TRIGGER_MODE_MANUAL,
++    auto_init=False,
++)
++
++# Print where the credentials live once Airflow is up.
++local_resource(
++    'airflow-credentials',
++    # printf, not `echo -n`: Tilt runs commands through `sh`, whose builtin echo
++    # prints a literal "-n" on macOS.
++    cmd=(
++        'printf "user: admin\\npassword: "; ' +
++        'cat ' + q(WORKDIR + '/airflow_home/standalone_admin_password.txt')
++    ),
++    labels=['airflow'],
++    trigger_mode=TRIGGER_MODE_MANUAL,
++    auto_init=False,
++)
+diff --git a/dbt_job_maestro/airflow_dag_generator.py b/dbt_job_maestro/airflow_dag_generator.py
+index 98a6c75..77990a8 100644
+--- a/dbt_job_maestro/airflow_dag_generator.py
++++ b/dbt_job_maestro/airflow_dag_generator.py
+@@ -427,6 +427,12 @@ class AirflowDAGGenerator:
+                 "manual" vs "auto", "combined", "full-refresh") so manual and
+                 auto-generated DAGs can be told apart in the Airflow UI.
+         """
++        # Airflow 3 moved BashOperator into the standard provider package.
++        if self.config.airflow_version >= 3:
++            bash_import = "from airflow.providers.standard.operators.bash import BashOperator"
++        else:
++            bash_import = "from airflow.operators.bash import BashOperator"
++
+         lines: List[str] = [
+             '"""',
+             "Auto-generated by dbt-job-maestro.",
+@@ -437,7 +443,7 @@ class AirflowDAGGenerator:
+             "from datetime import datetime, timedelta",
+             "",
+             "from airflow import DAG",
+-            "from airflow.operators.bash import BashOperator",
++            bash_import,
+             "",
+             "",
+         ]
+@@ -451,7 +457,8 @@ class AirflowDAGGenerator:
+             f'    "retries": {self.config.retries},',
+             f'    "retry_delay": timedelta(minutes={self.config.retry_delay_minutes}),',
+         ]
+-        if sla_minutes > 0:
++        # Task SLAs were removed in Airflow 3.0, so "sla" must not be emitted there.
++        if sla_minutes > 0 and self.config.airflow_version < 3:
+             lines.append(f'    "sla": timedelta(minutes={sla_minutes}),')
+         lines += ["}", "", ""]
+
+@@ -471,11 +478,14 @@ class AirflowDAGGenerator:
+             if tag not in dag_tags:
+                 dag_tags.append(tag)
+
++        # Airflow 3 removed the schedule_interval kwarg in favour of schedule.
++        schedule_kwarg = "schedule" if self.config.airflow_version >= 3 else "schedule_interval"
++
+         lines += [
+             "with DAG(",
+             f'    dag_id="{dag_id}",',
+             "    default_args=default_args,",
+-            f"    schedule_interval={schedule_expr},",
++            f"    {schedule_kwarg}={schedule_expr},",
+             f"    start_date={start_date_expr},",
+             "    catchup=False,",
+             f"    tags={repr(dag_tags)},",
+diff --git a/dbt_job_maestro/cli.py b/dbt_job_maestro/cli.py
+index 3917b8e..96f9b57 100644
+--- a/dbt_job_maestro/cli.py
++++ b/dbt_job_maestro/cli.py
+@@ -12,6 +12,29 @@ from dbt_job_maestro.job_generator import JobGenerator
+ from dbt_job_maestro.airflow_dag_generator import AirflowDAGGenerator
+
+
++def _resolve_output_path(cfg: Config, filename: str, explicit: bool = False) -> Path:
++    """Resolve a configured file name against ``output_dir``.
++
++    ``generate`` writes selectors.yml to ``output_dir/selectors_output_file``, so
++    ``generate-jobs`` and ``generate-dags`` must read it from the same place.
++    Resolving only against the cwd made those commands miss the file whenever
++    ``output_dir`` was set to anything other than ".".
++
++    Args:
++        cfg: Loaded configuration.
++        filename: Configured file name (may be absolute).
++        explicit: True when the value came from a CLI flag, in which case it is
++            an explicit path and is used verbatim.
++
++    Returns:
++        Path to use.
++    """
++    path = Path(filename)
++    if explicit or path.is_absolute():
++        return path
++    return Path(cfg.output_dir) / path
++
++
+ @click.group()
+ @click.version_option(version="0.3.0")
+ def main():
+@@ -322,11 +345,16 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
+         if environment_id is not None:
+             cfg.job.environment_id = environment_id
+
+-        # Read selectors
+-        click.echo(f"Reading selectors from {cfg.selectors_output_file}...")
++        # Read selectors from the same place `generate` wrote them.
++        selectors_path = _resolve_output_path(
++            cfg, cfg.selectors_output_file, explicit=bool(selectors)
++        )
++        jobs_path = _resolve_output_path(cfg, cfg.jobs_output_file, explicit=bool(output))
++
++        click.echo(f"Reading selectors from {selectors_path}...")
+         import yaml
+
+-        with open(cfg.selectors_output_file, "r") as f:
++        with open(selectors_path, "r") as f:
+             selector_data = yaml.safe_load(f)
+             selector_list = selector_data.get("selectors", [])
+
+@@ -338,14 +366,14 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
+
+         # Generate jobs
+         job_generator = JobGenerator(cfg.job)
+-        existing_jobs = job_generator.read_existing_jobs(cfg.jobs_output_file)
++        existing_jobs = job_generator.read_existing_jobs(str(jobs_path))
+         jobs = job_generator.generate_jobs(selector_list, existing_jobs)
+
+-        click.echo(f"Writing {len(jobs.get('jobs', {}))} jobs to {cfg.jobs_output_file}...")
+-        job_generator.write_jobs(jobs, cfg.jobs_output_file)
++        click.echo(f"Writing {len(jobs.get('jobs', {}))} jobs to {jobs_path}...")
++        job_generator.write_jobs(jobs, str(jobs_path))
+
+         click.echo(click.style("\n✓ Jobs generated successfully!", fg="green", bold=True))
+-        click.echo(f"\nOutput: {cfg.jobs_output_file}")
++        click.echo(f"\nOutput: {jobs_path}")
+
+         if not cfg.job.account_id or not cfg.job.project_id or not cfg.job.environment_id:
+             click.echo(
+@@ -463,9 +491,12 @@ def generate_dags(
+             cfg.airflow.orchestration_mode = orchestration_mode.lower()
+             cfg.airflow.validate()
+
+-        # Read selectors
+-        click.echo(f"Reading selectors from {cfg.selectors_output_file}...")
+-        with open(cfg.selectors_output_file, "r") as f:
++        # Read selectors from the same place `generate` wrote them.
++        selectors_path = _resolve_output_path(
++            cfg, cfg.selectors_output_file, explicit=bool(selectors)
++        )
++        click.echo(f"Reading selectors from {selectors_path}...")
++        with open(selectors_path, "r") as f:
+             selector_data = _yaml.safe_load(f)
+             selector_list = selector_data.get("selectors", [])
+
+diff --git a/dbt_job_maestro/config.py b/dbt_job_maestro/config.py
+index 4579d79..e40d430 100644
+--- a/dbt_job_maestro/config.py
++++ b/dbt_job_maestro/config.py
+@@ -246,6 +246,14 @@ class AirflowConfig:
+     # Each DAG is named "{dag_id_prefix}_{selector_name}".
+     dag_id_prefix: str = "dbt_maestro"
+
++    # Major Airflow version the generated DAG files must run on: 2 or 3.
++    # Airflow 3 made three breaking changes that affect rendered DAGs:
++    #   - DAG(schedule_interval=...) was removed in favour of DAG(schedule=...)
++    #   - task SLAs were removed, so "sla" is no longer valid in default_args
++    #   - airflow.operators.bash moved to airflow.providers.standard.operators.bash
++    # Defaults to 2 so existing generated files stay byte-identical.
++    airflow_version: int = 2
++
+     # Default cron schedule for auto-generated (maestro) selector DAGs.
+     schedule_interval: str = "0 6 * * *"
+
+@@ -352,7 +360,8 @@ class AirflowConfig:
+         """Validate Airflow configuration options.
+
+         Raises:
+-            ValueError: If orchestration_mode or a command value is invalid.
++            ValueError: If orchestration_mode, airflow_version or a command
++                value is invalid.
+         """
+         valid_modes = {"simple", "staggered", "none"}
+         if self.orchestration_mode not in valid_modes:
+@@ -360,6 +369,12 @@ class AirflowConfig:
+                 f"Invalid airflow.orchestration_mode '{self.orchestration_mode}'. "
+                 f"Valid options: {', '.join(sorted(valid_modes))}"
+             )
++        valid_versions = {2, 3}
++        if self.airflow_version not in valid_versions:
++            raise ValueError(
++                f"Invalid airflow.airflow_version '{self.airflow_version}'. "
++                f"Valid options: {', '.join(str(v) for v in sorted(valid_versions))}"
++            )
+         validate_commands(self.default_command, self.selector_commands)
+
+
+@@ -596,6 +611,7 @@ class Config:
+         airflow_data = data.get("airflow", {})
+         airflow_config = AirflowConfig(
+             dag_id_prefix=airflow_data.get("dag_id_prefix", "dbt_maestro"),
++            airflow_version=airflow_data.get("airflow_version", 2),
+             schedule_interval=airflow_data.get("schedule_interval", "0 6 * * *"),
+             manual_schedule_interval=airflow_data.get("manual_schedule_interval", ""),
+             sla_minutes=airflow_data.get("sla_minutes", 0),
+@@ -1115,6 +1131,13 @@ airflow:
+   # Each DAG is named "{{dag_id_prefix}}_{{selector_name}}" → e.g. dbt_maestro_staging.py
+   dag_id_prefix: {self.airflow.dag_id_prefix}
+
++  # Major Airflow version the generated DAGs must run on: 2 or 3.
++  # Airflow 3 removed DAG(schedule_interval=...), removed task SLAs, and moved
++  # BashOperator to airflow.providers.standard.operators.bash. Set this to 3 if
++  # your Airflow is 3.x, otherwise DAG files will fail to import with
++  # "TypeError: DAG.__init__() got an unexpected keyword argument 'schedule_interval'".
++  airflow_version: {self.airflow.airflow_version}
++
+   # Directory to write generated DAG files into (empty = output_dir above).
+   # Stale auto-generated DAGs in this directory are removed on regeneration.
+   dags_dir: '{self.airflow.dags_dir}'
+diff --git a/dbt_job_maestro/model_resolver.py b/dbt_job_maestro/model_resolver.py
+index ea4ec84..d2e0999 100644
+--- a/dbt_job_maestro/model_resolver.py
++++ b/dbt_job_maestro/model_resolver.py
+@@ -42,9 +42,22 @@ class ModelResolver:
+
+         definition = selector_def.get("definition", {})
+
++        # Exclusions collected from bare `- exclude:` entries listed alongside
++        # their siblings. dbt applies such an entry to the whole surrounding
++        # clause, not to itself, so they must be subtracted after the positive
++        # set is built - handing them to _resolve_item would subtract them from
++        # an empty set and silently do nothing.
++        sibling_exclusions: Set[str] = set()
++
++        def is_bare_exclude(item: Any) -> bool:
++            return isinstance(item, dict) and set(item.keys()) == {"exclude"}
++
+         # Process union definitions
+         if "union" in definition:
+             for item in definition["union"]:
++                if is_bare_exclude(item):
++                    sibling_exclusions.update(self._resolve_exclusions(item["exclude"]).models)
++                    continue
+                 resolved = self._resolve_item(item)
+                 models.update(resolved.models)
+                 paths.update(resolved.paths)
+@@ -56,6 +69,9 @@ class ModelResolver:
+         if "intersection" in definition:
+             all_sets = []
+             for item in definition["intersection"]:
++                if is_bare_exclude(item):
++                    sibling_exclusions.update(self._resolve_exclusions(item["exclude"]).models)
++                    continue
+                 resolved = self._resolve_item(item)
+                 all_sets.append(resolved.models)
+                 paths.update(resolved.paths)
+@@ -70,6 +86,7 @@ class ModelResolver:
+         if "exclude" in definition:
+             excluded = self._resolve_exclusions(definition["exclude"])
+             models = models - excluded.models
++        models = models - sibling_exclusions
+
+         return ModelResolution(
+             models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns
+@@ -173,21 +190,33 @@ class ModelResolver:
+             models=models, paths=paths, tags=tags, fqns=fqns, invalid_fqns=invalid_fqns
+         )
+
+-    def _resolve_exclusions(self, exclude_def: Dict[str, Any]) -> ModelResolution:
++    def _resolve_exclusions(self, exclude_def: Any) -> ModelResolution:
+         """Resolve exclusion definitions.
+
++        dbt requires ``exclude`` to be a **list** of selector definitions (the
++        list is implicitly a union). Older maestro output wrote a
++        ``{"union": [...]}`` dict instead, which dbt rejects, so both shapes are
++        accepted here: a hand-written or newly generated selectors.yml uses the
++        list form, while a stale file may still carry the dict form.
++
+         Args:
+-            exclude_def: Exclusion definition dictionary
++            exclude_def: Exclusion definition - a list of items, or a dict
++                keyed by ``union`` / ``intersection``.
+
+         Returns:
+             ModelResolution for excluded models
+         """
+-        models = set()
++        models: Set[str] = set()
+
+-        if "union" in exclude_def:
+-            for item in exclude_def["union"]:
++        if isinstance(exclude_def, list):
++            for item in exclude_def:
+                 resolved = self._resolve_item(item)
+                 models.update(resolved.models)
++        elif isinstance(exclude_def, dict):
++            for key in ("union", "intersection"):
++                if key in exclude_def:
++                    resolved = self._resolve_item({key: exclude_def[key]})
++                    models.update(resolved.models)
+
+         return ModelResolution(
+             models=models, paths=set(), tags=set(), fqns=set(), invalid_fqns=set()
+diff --git a/dbt_job_maestro/selector_orchestrator.py b/dbt_job_maestro/selector_orchestrator.py
+index 73ae979..3dce3f3 100644
+--- a/dbt_job_maestro/selector_orchestrator.py
++++ b/dbt_job_maestro/selector_orchestrator.py
+@@ -3,7 +3,7 @@
+ import os
+ import yaml
+ import logging
+-from typing import List, Dict, Any, Set, Tuple, Optional
++from typing import List, Dict, Any, Set, Tuple
+
+ from dbt_job_maestro.selector_types import SelectorPriority
+ from dbt_job_maestro.model_resolver import ModelResolver
+@@ -104,14 +104,45 @@ class SelectorOrchestrator:
+         if self.config.indirect_selection != "eager":
+             manual_gen = self.generators[SelectorPriority.MANUAL]
+             for selector in selectors:
+-                if not manual_gen.is_manually_created(selector) and "default" not in selector:
+-                    selector["default"] = {"indirect_selection": self.config.indirect_selection}
++                if not manual_gen.is_manually_created(selector):
++                    self._apply_indirect_selection(
++                        selector.get("definition", {}), self.config.indirect_selection
++                    )
+
+         # Warn about models not covered by any selector
+         self._warn_uncovered_models(selectors)
+
+         return selectors
+
++    def _apply_indirect_selection(self, definition: Any, mode: str) -> None:
++        """Set ``indirect_selection`` on every selection method in a definition.
++
++        dbt accepts ``indirect_selection`` as a key on an individual selector
++        *method* inside ``definition``. It is NOT a root-level selector key: a
++        selector whose root carries ``default: {indirect_selection: ...}`` makes
++        dbt reject the whole selectors.yml with "Could not parse selector file
++        data ... Valid root-level selector definitions: union, intersection,
++        string, dictionary", which breaks every selector in the file, not just
++        that one.
++
++        Only positive selection clauses (``union`` / ``intersection``) are
++        touched; ``exclude`` blocks are left alone since indirect selection has
++        no meaning for exclusions.
++
++        Args:
++            definition: Selector definition subtree (mutated in place).
++            mode: One of eager, cautious, buildable, empty.
++        """
++        if isinstance(definition, dict):
++            if "method" in definition:
++                definition["indirect_selection"] = mode
++            for key in ("union", "intersection"):
++                for item in definition.get(key, []) or []:
++                    self._apply_indirect_selection(item, mode)
++        elif isinstance(definition, list):
++            for item in definition:
++                self._apply_indirect_selection(item, mode)
++
+     def _ensure_unique_names(self, selectors: List[Dict[str, Any]]) -> None:
+         """Rename any selectors that share a name so every name is unique.
+
+@@ -343,19 +374,35 @@ class SelectorOrchestrator:
+             if not isinstance(item, dict):
+                 return
+
+-            # Check for exclude clause
++            # Check for exclude clause. dbt requires a list here; older maestro
++            # output wrote a {union: [...]} dict, so accept both shapes.
+             if "exclude" in item:
+                 exclude_def = item["exclude"]
+                 if isinstance(exclude_def, dict):
+-                    # Handle union of exclusions
+-                    for exc_item in exclude_def.get("union", []):
+-                        if isinstance(exc_item, dict):
+-                            method = exc_item.get("method")
+-                            value = exc_item.get("value")
+-                            if method == "tag" and value:
+-                                excluded_tags.add(value)
+-                            elif method == "path" and value:
+-                                excluded_paths.add(value)
++                    exc_items = []
++                    for key in ("union", "intersection"):
++                        exc_items.extend(exclude_def.get(key, []) or [])
++                elif isinstance(exclude_def, list):
++                    exc_items = exclude_def
++                else:
++                    exc_items = []
++
++                for exc_item in exc_items:
++                    if not isinstance(exc_item, dict):
++                        continue
++                    # Unwrap a nested union/intersection (intersection mode).
++                    nested = []
++                    for key in ("union", "intersection"):
++                        nested.extend(exc_item.get(key, []) or [])
++                    for candidate in nested or [exc_item]:
++                        if not isinstance(candidate, dict):
++                            continue
++                        method = candidate.get("method")
++                        value = candidate.get("value")
++                        if method == "tag" and value:
++                            excluded_tags.add(value)
++                        elif method == "path" and value:
++                            excluded_paths.add(value)
+
+             # Recursively check union items
+             if "union" in item:
+@@ -405,84 +452,6 @@ class SelectorOrchestrator:
+
+         return all_selectors
+
+-    def _create_exclusion(self) -> Optional[Dict[str, Any]]:
+-        """Create combined exclusion definition for tags and paths.
+-
+-        Combines all exclusions (tags and paths) into a single exclude block.
+-        Uses 'union' mode (exclude if ANY criteria matches) or 'intersection'
+-        mode (exclude only if ALL criteria match) based on config.exclusion_mode.
+-
+-        Returns:
+-            Exclusion definition dictionary, or None if no exclusions configured
+-        """
+-        exclusion_items = []
+-
+-        # Add tag exclusions
+-        if self.config.exclude_tags:
+-            for tag in self.config.exclude_tags:
+-                exclusion_items.append({"method": "tag", "value": tag})
+-
+-        # Add path exclusions
+-        if self.config.exclude_paths:
+-            for path in self.config.exclude_paths:
+-                exclusion_items.append({"method": "path", "value": path})
+-
+-        if not exclusion_items:
+-            return None
+-
+-        # Use configured exclusion mode (union or intersection)
+-        mode = self.config.exclusion_mode
+-        return {"exclude": {mode: exclusion_items}}
+-
+-    def _create_freshness_selector(self, base_name: str) -> Dict[str, Any]:
+-        """Create freshness selector.
+-
+-        Args:
+-            base_name: Base selector name
+-
+-        Returns:
+-            Freshness selector definition dictionary
+-        """
+-        return {
+-            "name": f"freshness_{base_name}",
+-            "description": f"Freshness selector for {base_name}",
+-            "definition": {
+-                "union": [
+-                    {
+-                        "intersection": [
+-                            {"method": "selector", "value": base_name},
+-                            {"method": "source_status", "value": "fresher", "children": True},
+-                        ]
+-                    }
+-                ]
+-            },
+-        }
+-
+-    def _should_create_freshness(self, selector_name: str) -> bool:
+-        """Determine if a freshness selector should be created for this selector.
+-
+-        Logic:
+-        1. If selector is in exclude_freshness_selector_names, return False
+-        2. If freshness_selector_names is provided, only create for those selectors
+-        3. Otherwise, use the global include_freshness_selectors flag
+-
+-        Args:
+-            selector_name: Name of the selector to check
+-
+-        Returns:
+-            True if freshness selector should be created, False otherwise
+-        """
+-        # Check exclusion list first
+-        if selector_name in self.config.exclude_freshness_selector_names:
+-            return False
+-
+-        # If include list is provided, only create for those selectors
+-        if self.config.freshness_selector_names:
+-            return selector_name in self.config.freshness_selector_names
+-
+-        # Otherwise use global flag
+-        return self.config.include_freshness_selectors
+-
+     def _generate_seeds_selectors(self) -> List[Dict[str, Any]]:
+         """Generate selectors for seed files.
+
+@@ -735,7 +704,8 @@ class SelectorOrchestrator:
+             exclusion_items.append({"method": "fqn", "value": model})
+
+         if exclusion_items:
+-            definition["union"].append({"exclude": {"union": exclusion_items}})
++            # dbt requires "exclude" to hold a list, not a {union: [...]} dict.
++            definition["union"].append({"exclude": exclusion_items})
+
+         selector = {
+             "name": f"{self.config.selector_prefix}_full_refresh_incremental",
+diff --git a/dbt_job_maestro/selectors/fqn_selector.py b/dbt_job_maestro/selectors/fqn_selector.py
+index 11a9eab..da2acd4 100644
+--- a/dbt_job_maestro/selectors/fqn_selector.py
++++ b/dbt_job_maestro/selectors/fqn_selector.py
+@@ -312,9 +312,16 @@ class FQNSelector(BaseSelector):
+     def _create_exclusion(self) -> Optional[Dict[str, Any]]:
+         """Create combined exclusion definition for tags and paths.
+
+-        Combines all exclusions (tags and paths) into a single exclude block.
+-        Uses 'union' mode (exclude if ANY criteria matches) or 'intersection'
+-        mode (exclude only if ALL criteria match) based on config.exclusion_mode.
++        dbt requires the value of ``exclude`` to be a **list** of selector
++        definitions; a dict (e.g. ``exclude: {union: [...]}``) makes dbt reject
++        the whole selectors.yml with 'Invalid value for key "exclude". Expected
++        a list.', which breaks every selector in the file.
++
++        The list itself is implicitly a union, so:
++          - union mode        -> the criteria are listed directly
++          - intersection mode -> the criteria are wrapped in a single nested
++                                 ``intersection`` entry, so a model is only
++                                 excluded when it matches ALL criteria
+
+         Returns:
+             Exclusion definition dictionary, or None if no exclusions configured
+@@ -334,9 +341,9 @@ class FQNSelector(BaseSelector):
+         if not exclusion_items:
+             return None
+
+-        # Use configured exclusion mode (union or intersection)
+-        mode = self.config.exclusion_mode
+-        return {"exclude": {mode: exclusion_items}}
++        if self.config.exclusion_mode == "intersection" and len(exclusion_items) > 1:
++            return {"exclude": [{"intersection": exclusion_items}]}
++        return {"exclude": exclusion_items}
+
+     def _custom_sort(self, models: List[str]) -> List[str]:
+         """Sort models based on prefix_order config.
+diff --git a/e2e/REPORT.md b/e2e/REPORT.md
+new file mode 100644
+index 0000000..ec499a6
+--- /dev/null
++++ b/e2e/REPORT.md
+@@ -0,0 +1,402 @@
++# End-to-end validation report — selector generation + Airflow
++
++**Scope:** selector generation, Airflow DAG generation, live Airflow import + execution,
++bounded warehouse materialization · **Out of scope:** dbt Cloud `generate-jobs` (generated,
++never synced or run)
++
++The validation ran against a large real-world dbt project (**2740 models, 143 seeds,
++13 snapshots, 727 sources, 74 hand-written selectors**) on Snowflake. That project is not part
++of this repo and is not named here; the harness in `e2e/` is parameterised so the same matrix
++runs against any dbt project. Where a number below is project-specific it is labelled as
++"the test project".
++
++---
++
++## 1. Executive summary
++
++Selector generation and the Airflow path **now work end to end** — but only after fixing
++**four defects that each made a documented config option produce unusable output**. Three of
++the four were total failures, not degradations: they broke every selector or every DAG in the
++file, not just the affected one.
++
++| | Verdict |
++|---|---|
++| **Selector generation** | **PASS — after 3 fixes.** Was FAIL: `exclude_tags`/`exclude_paths`/`exclude_models`, `full_refresh_exclude_*`, and `indirect_selection` each produced a `selectors.yml` that **dbt refuses to parse**. |
++| **Airflow orchestration** | **PASS — after 2 fixes.** Was FAIL on Airflow 3 (100% of DAGs failed import) and FAIL whenever `output_dir` was set (`generate-dags` could not find its input). |
++
++Evidence: **306 unit tests** pass (up from 275 collected / 3 failing before), selector-matrix
++and DAG-matrix assertions all green, every generated selector file accepted by real dbt,
++**9/9 DAG variants loaded into real Airflow with zero import errors** (on both 2.10.5 and
++3.2.2), and **8/8 bounded DAG runs** materializing **7/7 expected relations** in the warehouse.
++
++The headline risk: before these fixes, a team enabling exclusions or non-eager indirect
++selection got a `selectors.yml` that bricked **every** dbt invocation in the project, and a
++team on Airflow 3 got **zero** working DAGs. Both fail loudly and immediately, so neither is a
++silent-corruption risk.
++
++---
++
++## 2. Findings
++
++Severity: **P0** = produces unusable output; **P1** = wrong results or broken command;
++**P2** = maintainability / ergonomics.
++
++### P0-1 · Airflow 3: every generated DAG fails to import · **FIXED**
++
++`airflow_dag_generator.py` emitted `DAG(schedule_interval=...)`, removed in Airflow 3.0.
++
++```
++TypeError: DAG.__init__() got an unexpected keyword argument 'schedule_interval'
++```
++
++Measured on Airflow 3.2.2 against a 155-DAG variant: **0 DAGs loaded, 155 import errors.** Two
++further Airflow-3 breakages in the same template: `default_args["sla"]` (task SLAs removed in
++3.0) and the deprecated `airflow.operators.bash` import.
++
++This was **already failing this repo's own test suite** — 3 tests in `TestAirflowDAGRendering`
++were red whenever Airflow 3 was the installed version.
++
++**Fix:** added `airflow.airflow_version: 2|3` (default `2`). For `3` the generator emits
++`schedule=`, imports `airflow.providers.standard.operators.bash`, and omits `sla`. Verified
++**byte-identical v2 output across 10 scenarios** so existing users see zero churn. The 3 red
++tests now target whichever Airflow is installed and pass on both 2.10.5 and 3.2.2.
++
++### P0-2 · Any exclusion config makes dbt reject the whole selectors.yml · **FIXED**
++
++Maestro wrote `exclude:` as a **dict**; dbt requires a **list**.
++
++```
++Runtime Error
++  Could not read selector file data: Invalid value for key "exclude". Expected a list.
++```
++
++Triggered by `exclude_tags`, `exclude_paths`, `exclude_models`, and all three
++`full_refresh_exclude_*`. The failure is file-wide: **every** selector becomes unusable,
++including untouched hand-written ones.
++
++Empirically determined correct forms (node counts from the test project):
++
++| Form | dbt |
++|---|---|
++| `exclude: {union: [...]}` — what maestro emitted | **REJECTED** |
++| `exclude: [{method…}, …]` | accepted — 4657 nodes (union semantics) |
++| `exclude: [{intersection: [...]}]` | accepted — 4972 nodes (intersection semantics) |
++
++The differing counts confirm `exclusion_mode` is meaningful: a dbt `exclude` list is implicitly
++a union, so intersection semantics require the nested wrapper.
++
++**Fix:** `fqn_selector._create_exclusion` emits a flat list for `union`, and a single nested
++`{"intersection": [...]}` entry for `intersection` (skipping the wrapper for a single
++criterion, where AND-of-one is itself). `_generate_full_refresh_selector` likewise emits a list.
++
++### P0-3 · `indirect_selection` makes dbt reject the whole selectors.yml · **FIXED**
++
++Written as a root-level `default: {indirect_selection: cautious}`:
++
++```
++Could not parse selector file data:
++  indirect_selection: cautious
++Valid root-level selector definitions: union, intersection, string, dictionary.
++```
++
++`default` is dbt's **boolean** "use this selector when none is specified" flag, and real
++projects use it (the test project sets it to a Jinja expression on one selector). Maestro
++overloaded the same key with a dict on every auto selector, so any `indirect_selection` other
++than `eager` bricked the file. **`indirect_selection` had zero test coverage**, which is why
++this shipped.
++
++**Fix:** new `SelectorOrchestrator._apply_indirect_selection` sets `indirect_selection` on each
++selector **method inside `definition`** (dbt's documented location), leaving `exclude` blocks
++alone. Verified with `dbt parse`. 7 new tests added.
++
++### P1-4 · `output_dir` silently breaks `generate-dags` and `generate-jobs` · **FIXED**
++
++`generate` writes to `output_dir/selectors_output_file`, but both downstream commands opened
++the bare filename relative to **cwd**:
++
++```
++✗ Error: [Errno 2] No such file or directory: 'selectors.yml'
++```
++
++Any project setting `output_dir` gets 0 DAGs unless run from that directory. **Fix:** shared
++`cli._resolve_output_path` resolves against `output_dir`, honours absolute paths, and treats an
++explicit `--selectors`/`--output` flag as verbatim.
++
++### P1-5 · Resolver ignored `exclude` entries listed beside their siblings · **FIXED**
++
++A bare `- exclude:` inside a `union` list applies to the whole union, but `resolve_selector`
++handed it to `_resolve_item`, which subtracted it from an **empty local set** — a silent no-op.
++Since this is how dbt, maestro, and hand-written selectors all express exclusions,
++manual-selector coverage was **over-reported**, wrongly excluding models from auto-generation.
++
++Impact on the test project: baseline generation went **387 → 388 selectors**; computed coverage
++1193 → 1192 models. `_resolve_exclusions` now also accepts both list and legacy dict shapes, so
++a stale file keeps resolving identically.
++
++### P1-6 · `ModelResolver` only understands `fqn` and `path` · **NOT FIXED (reported)**
++
++**28 of the test project's 74** hand-written selectors resolve to **0 models** because they use
++`tag:`, `config.materialized:`, `source_status:`, `state:` etc. Consequences:
++
++- their models are **not** excluded from auto-generation → double coverage;
++- `selector_types.count_fqn_models` under-counts them → `min_models_per_dag` mis-partitions.
++
++Cross-check: `dbt ls --selector <name>` resolved 2 models for a selector where maestro's
++resolver reported 0 and warned about 2 "nonexistent" models — resolver and dbt disagree on the
++same file.
++
++**Recommended:** resolve `tag` and `config.*` from the manifest (both already available in
++`ManifestParser`), and until then emit a **warning** when a manual selector resolves to 0
++models — currently silent, so the miscount is invisible.
++
++### P2-7 · Three dead duplicate methods · **REMOVED**
++
++`_create_exclusion`, `_create_freshness_selector`, `_should_create_freshness` existed in
++**both** `selector_orchestrator.py` and `selectors/fqn_selector.py`. Only the `fqn_selector`
++copies are reachable, and the two had already diverged (`_create_freshness_selector` takes
++`(base_name)` in one and `(base_name, models)` in the other). The orchestrator's
++`_create_exclusion` still emitted the P0-2 broken shape — a live trap for anyone fixing the
++wrong copy. Removed the 3 unreachable methods.
++
++### P2-8 · No way to configure the dbt executable · **NOT FIXED (reported)**
++
++Generated `bash_command`s hardcode a bare `dbt`, so an Airflow worker without dbt on `PATH`
++fails, and a host where a different dbt distribution comes first on `PATH` silently runs the
++wrong engine (hit during this validation: a preview build of dbt shadowed dbt-core).
++**Recommended:** add `airflow.dbt_executable_path` (default `dbt`). `scripts/maestro_airflow_up.sh`
++works around it by putting the chosen dbt's directory first on `PATH`.
++
++### P2-9 · Freshness whitelist silently matches nothing · **NOT FIXED (reported)**
++
++`freshness_selector_names` is matched against **auto-generated** selector names. Naming
++*manual* selectors produces **zero** freshness selectors with no warning — it cost a full
++config cycle to notice. **Recommended:** warn when a whitelist entry matches no generated
++selector.
++
++### P2-10 · Manual DAGs consume staggered slots · behavioral, reported
++
++`dag_index` advances for every DAG, but manual DAGs take `manual_schedule_interval` instead of
++their slot, so the staggered sequence has gaps (`06:00, 06:07, 09:23, …`). Not a correctness
++bug — every auto cron sits on the configured grid with **no collisions** — but the cadence is
++not the contiguous ramp the config implies.
++
++### P2-11 · Pre-existing lint failure · fixed incidentally
++
++`tests/test_selector_commands.py` failed `black --check` before any of this work, so the lint
++workflow was already red. Reformatted — the only change in the patch not tied to a finding.
++
++### Operational note · `dbt_target` must match the project's schema-naming contract
++
++Many dbt projects switch schema naming on `target.name` (a `generate_schema_name` macro keyed
++to `dev`/`ci` is a common pattern, with a fall-through `else` that returns the bare production
++schema name). During this validation a custom target name hit that `else` branch and wrote 7
++relations into shared, production-named schemas of the **dev** database instead of the
++developer's personal schemas. Nothing pre-existing was overwritten and all 7 were dropped, but
++the placement was invisible to a schema-prefix check.
++
++Because maestro is what injects `--target` into generated commands, this is worth documenting:
++**use a target name the project actually expects.** `scripts/maestro_airflow_up.sh` calls this
++out in its `--target` help text.
++
++---
++
++## 3. What was tested
++
++### 3a. Selector generation — 9 configs
++
++Templates in `e2e/configs/`, driven by `e2e/run_selector_matrix.sh`, asserted by
++`e2e/assert_selectors.py`.
++
++| Config | Exercises | Result |
++|---|---|---|
++| `01-baseline` | defaults, manual preservation, overlap detection | PASS · 74 manual + 314 auto = 388 selectors; 496 overlap warnings surfaced |
++| `02-special` | seeds + snapshots by `path`, full-refresh selector with all 3 exclusion kinds, orphan combining | PASS · **exposed P0-2** |
++| `03-special-fqn` | seeds/snapshots via `fqn` method | PASS · one combined selector each |
++| `04-exclusions` | `exclude_tags`/`paths`/`models`, `exclusion_mode: union` | PASS after P0-2 fix · flat exclude list |
++| `05-exclusions-intersection` | `exclusion_mode: intersection` | PASS after P0-2 fix · nested `intersection` entry |
++| `06-prefix-format` | custom `selector_prefix`, `reformat_manual_selectors: false`, `indirect_selection: cautious`, `prefix_order` | PASS after P0-3 fix · manual blocks verbatim |
++| `07-freshness-removal` | `include_freshness_selectors: false` after `02` | PASS · all auto freshness removed |
++| `08-freshness-all` | empty whitelist ⇒ all | PASS · one freshness selector per auto selector (79/79) |
++| `09-freshness-whitelist` | whitelist + blacklist | PASS · blacklist takes priority |
++
++Also verified: `maestro init` output round-trips through `Config.from_yaml`; `maestro info`
++reports the right model count; selector names unique in every config; all hand-written
++selectors preserved in every config.
++
++**dbt acceptance** (`dbt ls --selector`, read-only): every generated file accepted post-fix.
++
++### 3b. Airflow DAG generation — 9 configs
++
++Driven by `e2e/run_dag_matrix.sh`, asserted by `e2e/assert_dags.py`.
++
++| Config | Exercises | Result |
++|---|---|---|
++| `10-af-simple` | `simple` mode, one DAG per selector, runtime flags | PASS · every command carries `--project-dir/--profiles-dir/--target/--threads` |
++| `11-af-staggered` | `staggered`, increments, `cron_days_of_week`, SLAs, `execution_order` | PASS · crons on the grid, no collisions; seeds/snapshots before models |
++| `12-af-none` | `orchestration_mode: none` | PASS · all `schedule_interval=None`, no SLA |
++| `13-af-combined-failfast` | `min_models_per_dag: 5`, `continue_on_failure: false` | PASS · combined DAG = 68 tasks / **67 chain links** |
++| `14-af-combined-continue` | `continue_on_failure: true` | PASS · same 68 tasks / **0 chain links** |
++| `15-af-commands` | `default_command: run_test` + manual overrides | PASS · auto gets `run >> test` and **ignores** its override; manual overrides honoured; seeds/snapshots keep their verbs |
++| `16-af-fullrefresh` | auto full-refresh + all 4 `custom_schedules` shapes + seeds full-refresh | PASS · one DAG per schedule, each with its own cron and correct `--full-refresh` command |
++| `17-af-legacy` | legacy `orchestration_mode: dependency` | PASS · normalized to `simple` |
++| `18-af-v3` | `airflow_version: 3` | PASS · `schedule=`, provider import, no `sla` |
++
++Selector names that are not valid Python identifiers (hyphens, dots) render valid variable
++names via `_safe_var`. Every generated file byte-compiles.
++
++**Idempotency** (`e2e/assert_idempotency.py`) — over a dirty dags dir: stale auto DAG deleted,
++legacy single-DAG file deleted, hand-written DAG **byte-identical and retained**. Two further
++regenerations byte-stable with nothing removed. Regenerating from 155 selectors down to 2
++removed exactly 153 and still preserved the hand-written file.
++
++### 3c. Live Airflow import validation — 9/9 variants, 0 errors
++
++`e2e/validate_airflow_imports.sh` loads each variant into a real `DagBag`.
++
++| Variant | Airflow | Files | DAGs | Errors |
++|---|---|---|---|---|
++| 10, 11, 12, 15, 17 | 2.10.5 | 155 | 155 | 0 |
++| 13, 14 (combined) | 2.10.5 | 88 | 88 | 0 |
++| 16 (full-refresh) | 2.10.5 | 161 | 161 | 0 |
++| 18 (`airflow_version: 3`) | 3.2.2 | 155 | 155 | 0 |
++| **10 on Airflow 3 — the defect** | 3.2.2 | 155 | **0** | **155** |
++
++`continue_on_failure` confirmed through Airflow's own parsed graph, not just generated text:
++
++| Variant | Tasks | Edges | Roots | Leaves |
++|---|---|---|---|---|
++| fail-fast | 68 | 67 | 1 | 1 |
++| continue | 68 | **0** | 68 | 68 |
++
++So fail-fast marks all downstream `upstream_failed`; with `continue_on_failure` no sibling can
++be skipped. (The skip behaviour is Airflow's; what maestro controls is whether the edge exists.)
++
++### 3d. Bounded execution — 8/8 runs, 7/7 relations
++
++Run via `airflow dags test` on Airflow 2.10.5, invoking real dbt against a dev warehouse.
++Every command verb got a success case:
++
++| Command | Tasks | dbt result |
++|---|---|---|
++| `dbt seed --selector …` | 1 OK | PASS=4 ERROR=0 · 100 rows inserted |
++| `dbt snapshot --selector …` | 1 OK | PASS=4 ERROR=0 |
++| `dbt run` **then** `dbt test` (run_test) | **2 OK** | PASS=5 ERROR=0 |
++| `dbt build --selector …` | 1 OK | PASS=11 ERROR=0 |
++| `dbt run --selector …` | 1 OK | PASS=5 ERROR=0 |
++| `dbt test --selector …` | 1 OK | — |
++| `dbt build --full-refresh --selector …` | 1 OK | PASS=5 ERROR=0 |
++| `dbt seed --full-refresh --selector …` | 1 OK | PASS=4 ERROR=0 |
++
++7 relations created and verified in `INFORMATION_SCHEMA` (1 seed, 1 snapshot, 2 views,
++3 tables; row counts 17 – 10 489). Selectors resolving to 1000+ nodes were validated by
++`dbt ls` only and never built.
++
++Four earlier runs failed for **environmental** reasons, not maestro: two selectors referenced
++upstream schemas that do not exist in that dev account (`Schema '…' does not exist or not
++authorized`), a `test`-only selector inherently presumes its models already exist, and a
++full-refresh of one of those same models. In each case maestro produced the correct selector
++and command and Airflow executed the task — the models themselves failed. This is the
++"configured correctly" vs "actually executed successfully" distinction.
++
++---
++
++## 4. Recommended fixes, ranked
++
++**Shipped**
++
++1. `airflow.airflow_version: 2|3` — Airflow 3 support (P0-1).
++2. `exclude` emitted as a list, with nested `intersection` for that mode (P0-2).
++3. `indirect_selection` on definition methods, not root-level `default` (P0-3).
++4. `cli._resolve_output_path` so `generate-jobs`/`generate-dags` honour `output_dir` (P1-4).
++5. Resolver handles union-sibling `exclude` and both exclude shapes (P1-5).
++6. Removed 3 dead duplicate methods (P2-7).
++7. +31 tests, including the first coverage of `indirect_selection` and exclude shape.
++8. `scripts/maestro_airflow_up.sh` — one-command local Airflow for any dbt project.
++
++**Recommended next**
++
++9. **Extend `ModelResolver` to `tag` and `config.*`** (P1-6) — highest remaining value.
++   Interim: warn when a manual selector resolves to 0 models.
++10. **`airflow.dbt_executable_path`** (P2-8) — removes a silent dependency on worker `PATH`.
++11. **Warn on no-op freshness whitelist entries** (P2-9).
++12. **Normalize `\`→`/` in path handling; escalate unmatched paths from info to warning** —
++    the test project had a Windows-separator path that silently matched nothing.
++13. **Document the `dbt_target` / `generate_schema_name` contract** (§2 operational note).
++14. Consider defaulting `airflow_version` to `3` in a future major — `schedule=` alone works on
++    Airflow 2.4+ through 3.x.
++
++---
++
++## 5. Verdict
++
++| Criterion | Result |
++|---|---|
++| Unit tests | **306 pass** (was 275 collected / **3 failing**) |
++| Selector configs generated & asserted | **9/9** |
++| Generated selectors accepted by real dbt | **all** |
++| Airflow configs generated & asserted | **9/9** |
++| Idempotency | all assertions pass |
++| DAG import validation | **9/9 variants, 0 errors** (Airflow 2.10.5 and 3.2.2) |
++| Command verbs executed successfully | **8/8** |
++| Relations materialized | **7/7** |
++| Test project's working tree | unchanged (`selectors.yml` restored from baseline) |
++| Lint | black clean, flake8 clean |
++
++### **Selector generation: PASS** · **Airflow: PASS**
++
++Both only after the fixes above. Before them, both paths **FAIL** for any project that enables
++exclusions, sets `indirect_selection`, sets `output_dir`, or runs Airflow 3.
++
++**Residual risk:** P1-6 (resolver blind to `tag`/`config.*`) is unfixed and silently skews
++coverage analysis on real projects.
++
++---
++
++## 6. Running this yourself
++
++The fastest way to see maestro working is the launcher, which needs only a dbt project:
++
++```bash
++./scripts/maestro_airflow_up.sh up --project-dir /path/to/your/dbt/project
++# -> generates selectors + DAGs, installs Airflow, serves http://localhost:8080
++./scripts/maestro_airflow_up.sh down
++```
++
++To run the full validation matrix:
++
++```bash
++export DBT_PROJECT_DIR=/path/to/your/dbt/project
++export DBT_PROFILES_DIR=~/.dbt
++export DBT_TARGET=dev                       # a target your project expects
++export MAESTRO_E2E_WORKDIR=/tmp/maestro-e2e
++
++# 0. manifest (no warehouse writes)
++dbt parse --project-dir "$DBT_PROJECT_DIR" --profiles-dir "$DBT_PROFILES_DIR" \
++          --target "$DBT_TARGET" --target-path "$MAESTRO_E2E_WORKDIR/target"
++
++# 1. render the config templates for your paths
++./e2e/render_configs.sh
++
++# 2. selector generation
++./e2e/run_selector_matrix.sh
++python  e2e/assert_selectors.py
++./e2e/validate_with_dbt.sh
++
++# 3. DAG generation
++./e2e/run_dag_matrix.sh
++python  e2e/assert_dags.py
++python  e2e/assert_idempotency.py
++
++# 4. load them into a real Airflow
++./e2e/validate_airflow_imports.sh
++```
++
++Notes:
++
++- The matrix writes `selectors.yml` into your project (dbt only reads it from the project root).
++  The first run captures your original file as a baseline and restores it at the end.
++- Several templates reference deliberately generic tags/paths/models/selectors
++  (`example_tag_a`, `your_manual_selector_a`, …). Edit the rendered configs to use real names
++  from your project if you want those paths to select anything.
++- Bounded warehouse execution was project-specific and is not scripted here; use the launcher
++  and trigger a small selector from the UI instead.
+diff --git a/e2e/assert_dags.py b/e2e/assert_dags.py
+new file mode 100644
+index 0000000..15492cf
+--- /dev/null
++++ b/e2e/assert_dags.py
+@@ -0,0 +1,264 @@
++"""Assert the Airflow DAG-generation matrix produced what each config promised.
++
++Portable across dbt projects: expectations are relative (counts compared between
++variants, structure inspected) rather than hardcoded to one project's selectors.
++
++Reads the rendered configs to find each variant's dags_dir.
++
++Env:
++  MAESTRO_E2E_RENDERED  dir of rendered configs   [$MAESTRO_E2E_WORKDIR/configs]
++  MAESTRO_E2E_WORKDIR   scratch dir
++"""
++
++import os
++import re
++import sys
++
++from dbt_job_maestro.config import Config
++
++WORKDIR = os.environ.get("MAESTRO_E2E_WORKDIR", os.environ.get("MAESTRO_E2E_SCRATCH", ""))
++RENDERED = os.environ.get("MAESTRO_E2E_RENDERED", os.path.join(WORKDIR, "configs"))
++
++results = []
++
++
++def check(label, condition, detail=""):
++    results.append((bool(condition), label, detail))
++    print(f"  [{'PASS' if condition else 'FAIL'}] {label}" + (f"  -- {detail}" if detail else ""))
++
++
++def cfg_of(name):
++    path = os.path.join(RENDERED, f"{name}.yml")
++    return Config.from_yaml(path) if os.path.exists(path) else None
++
++
++def read_all(name):
++    c = cfg_of(name)
++    if not c:
++        return None
++    d = c.airflow.dags_dir
++    if not os.path.isdir(d):
++        return None
++    return {f: open(os.path.join(d, f)).read()
++            for f in sorted(os.listdir(d)) if f.endswith(".py")}
++
++
++def schedules(sources):
++    out = {}
++    for name, src in sources.items():
++        m = re.search(r"^\s+schedule(?:_interval)?=(.+),$", src, re.M)
++        out[name] = m.group(1) if m else None
++    return out
++
++
++def commands(sources):
++    return [m for v in sources.values() for m in re.findall(r'bash_command="([^"]+)"', v)]
++
++
++def cron_minutes(expr):
++    p = expr.strip('"').split()
++    return int(p[1]) * 60 + int(p[0])
++
++
++SIMPLE = read_all("10-af-simple")
++if SIMPLE is None:
++    print(f"no generated DAGs found (rendered configs: {RENDERED}) - "
++          "run e2e/render_configs.sh then e2e/run_dag_matrix.sh first")
++    sys.exit(2)
++
++print("\n=== 10-af-simple: one DAG per selector, runtime flags ===")
++c10 = cfg_of("10-af-simple")
++cmds = commands(SIMPLE)
++check("produced DAG files", len(SIMPLE) > 0, f"{len(SIMPLE)} files")
++check("every file carries the generated marker",
++      all("# Auto-generated by dbt-job-maestro" in v for v in SIMPLE.values()))
++check("every DAG has exactly one dag_id",
++      all(len(re.findall(r'dag_id="', v)) == 1 for v in SIMPLE.values()))
++check("every command passes --project-dir", all("--project-dir " in c for c in cmds))
++check("every command passes --profiles-dir", all("--profiles-dir " in c for c in cmds))
++check(f"every command passes --target {c10.airflow.dbt_target}",
++      all(f"--target {c10.airflow.dbt_target}" in c for c in cmds))
++check(f"every command passes --threads {c10.airflow.dbt_threads}",
++      all(f"--threads {c10.airflow.dbt_threads}" in c for c in cmds))
++check("all schedules are the configured cron",
++      set(schedules(SIMPLE).values()) == {f'"{c10.airflow.schedule_interval}"'},
++      str(set(schedules(SIMPLE).values()))[:70])
++check("seeds selector uses `dbt seed`", any(c.startswith("dbt seed ") for c in cmds))
++check("snapshots selector uses `dbt snapshot`", any(c.startswith("dbt snapshot ") for c in cmds))
++check("model selectors use `dbt build`", any(c.startswith("dbt build ") for c in cmds))
++check("v2 emits schedule_interval kwarg", all("schedule_interval=" in v for v in SIMPLE.values()))
++check("v2 uses the legacy BashOperator import",
++      all("from airflow.operators.bash import BashOperator" in v for v in SIMPLE.values()))
++check("all files are valid Python",
++      all(compile(v, k, "exec") or True for k, v in SIMPLE.items()))
++
++STAG = read_all("11-af-staggered")
++if STAG:
++    print("\n=== 11-af-staggered: offsets, day-of-week, SLA, execution_order ===")
++    c11 = cfg_of("11-af-staggered")
++    sch = schedules(STAG)
++    manual_cron = f'"{c11.airflow.manual_schedule_interval}"'
++    auto_crons = sorted({v for v in sch.values() if v and v != manual_cron})
++    inc, start = c11.airflow.cron_increment_minutes, c11.airflow.start_hour * 60 + c11.airflow.start_minute
++    check("staggered crons are not all identical", len(auto_crons) > 1, f"{len(auto_crons)} distinct")
++    if c11.airflow.cron_days_of_week:
++        day_map = {"SUN": "0", "MON": "1", "TUE": "2", "WED": "3", "THU": "4", "FRI": "5", "SAT": "6"}
++        want = ",".join(day_map[d.upper()] for d in c11.airflow.cron_days_of_week)
++        check(f"crons carry the configured days of week ({want})",
++              all(c.strip('"').endswith(want) for c in auto_crons), auto_crons[:2])
++    mins = sorted(cron_minutes(c) for c in auto_crons)
++    check(f"every staggered cron sits on the {inc}-minute grid from the start time",
++          all((m - start) % inc == 0 for m in mins),
++          f"offenders={[m for m in mins if (m - start) % inc][:3]}")
++    check("no two auto DAGs share a staggered slot", len(mins) == len(set(mins)))
++    if c11.airflow.manual_schedule_interval:
++        check("manual selectors use manual_schedule_interval", manual_cron in sch.values())
++        mf = [k for k, v in sch.items() if v == manual_cron]
++        if c11.airflow.manual_sla_minutes > 0:
++            check(f"manual DAGs get manual_sla_minutes={c11.airflow.manual_sla_minutes}",
++                  all(f'"sla": timedelta(minutes={c11.airflow.manual_sla_minutes})' in STAG[k]
++                      for k in mf), f"{len(mf)} manual DAGs")
++        af = [k for k, v in sch.items() if v != manual_cron]
++        if c11.airflow.sla_minutes > 0:
++            check(f"auto DAGs get sla_minutes={c11.airflow.sla_minutes}",
++                  all(f'"sla": timedelta(minutes={c11.airflow.sla_minutes})' in STAG[k] for k in af))
++    if c11.airflow.execution_order[:1] == ["seeds"]:
++        seed_dags = [k for k in STAG if k.endswith("_seeds.py")]
++        model_dags = [k for k, v in sch.items()
++                      if v != manual_cron and k not in seed_dags
++                      and not k.endswith("_snapshots.py")]
++        if seed_dags and model_dags:
++            check("execution_order schedules seeds before models",
++                  max(cron_minutes(sch[k]) for k in seed_dags)
++                  < max(cron_minutes(sch[k]) for k in model_dags))
++
++NONE = read_all("12-af-none")
++if NONE:
++    print("\n=== 12-af-none: no schedule ===")
++    check("every DAG has schedule_interval=None", set(schedules(NONE).values()) == {"None"})
++    check("no SLA emitted when sla_minutes=0", not any('"sla"' in v for v in NONE.values()))
++
++FF, CO = read_all("13-af-combined-failfast"), read_all("14-af-combined-continue")
++if FF and CO:
++    print("\n=== 13/14: combined small selectors, fail-fast vs continue ===")
++    cname = next((f for f in FF if f.endswith("combined_small_selectors.py")), None)
++    check("13 produced a combined DAG", cname is not None)
++    check("14 produced a combined DAG",
++          any(f.endswith("combined_small_selectors.py") for f in CO))
++    check("combining reduced the DAG count vs one-per-selector",
++          len(FF) < len(SIMPLE), f"{len(FF)} vs {len(SIMPLE)}")
++    if cname:
++        d13, d14 = (re.findall(r"^\s+(\w+) >> (\w+)$", FF[cname], re.M),
++                    re.findall(r"^\s+(\w+) >> (\w+)$", CO[cname], re.M))
++        t13, t14 = (re.findall(r'task_id="([^"]+)"', FF[cname]),
++                    re.findall(r'task_id="([^"]+)"', CO[cname]))
++        check("fail-fast chains task groups with >>", len(d13) > 0, f"{len(d13)} chain links")
++        check("continue_on_failure leaves groups independent (no >>)", len(d14) == 0,
++              f"{len(d14)} chain links")
++        check("both combined DAGs contain the same tasks", t13 == t14,
++              f"{len(t13)} vs {len(t14)}")
++    check("seeds/snapshots are never combined",
++          any(f.endswith("_seeds.py") for f in FF)
++          and any(f.endswith("_snapshots.py") for f in FF))
++
++CMD = read_all("15-af-commands")
++if CMD:
++    print("\n=== 15-af-commands: run_test + per-selector overrides ===")
++    c15 = cfg_of("15-af-commands")
++    prefix = c15.airflow.selector_prefix + "_"
++    auto_files = {k: v for k, v in CMD.items()
++                  if not k.endswith(("_seeds.py", "_snapshots.py"))
++                  and re.search(r'dag_id="[^"]*' + re.escape(prefix), v)}
++    check("default_command=run_test emits two tasks on auto selectors",
++          any(len(re.findall(r'task_id="', v)) == 2 for v in auto_files.values()))
++    check("run_test wires run >> test",
++          any(re.search(r"run_\w+ >> test_\w+", v) for v in auto_files.values()))
++    check("auto selectors use `dbt run` (the run half of run_test)",
++          any("dbt run --selector" in v for v in auto_files.values()))
++    check("auto selectors IGNORE selector_commands overrides",
++          all("dbt build --selector" not in v for v in auto_files.values()),
++          "auto must use default_command uniformly")
++    seeds = next((v for k, v in CMD.items() if k.endswith("_seeds.py")), "")
++    snaps = next((v for k, v in CMD.items() if k.endswith("_snapshots.py")), "")
++    check("seeds keep `dbt seed` despite default_command=run_test",
++          "dbt seed --selector" in seeds and "dbt run " not in seeds)
++    check("snapshots keep `dbt snapshot` despite default_command=run_test",
++          "dbt snapshot --selector" in snaps)
++
++FR = read_all("16-af-fullrefresh")
++if FR:
++    print("\n=== 16-af-fullrefresh: auto + custom shapes + seeds ===")
++    c16 = cfg_of("16-af-fullrefresh")
++    pre = c16.airflow.dag_id_prefix
++    sch = schedules(FR)
++    check("extra full-refresh DAGs beyond the per-selector set",
++          len(FR) > len(SIMPLE), f"{len(FR)} vs {len(SIMPLE)}")
++    if c16.airflow.full_refresh.enabled:
++        f = f"{pre}_full_refresh_incremental.py"
++        check(f"{f} exists", f in FR)
++        if f in FR:
++            check("auto full-refresh uses build --full-refresh --selector",
++                  "dbt build --full-refresh --selector" in FR[f])
++            check("auto full-refresh has its own cron",
++                  sch.get(f) == f'"{c16.airflow.full_refresh.cron_schedule}"')
++    shape_expect = {"selector": "--full-refresh --selector", "tags": "--full-refresh --select tag:",
++                    "paths": "--full-refresh --select path:", "models": "--full-refresh --select "}
++    for sched in c16.airflow.full_refresh.custom_schedules:
++        f = f"{pre}_full_refresh_{sched.name}.py"
++        check(f"{f} exists", f in FR)
++        if f in FR:
++            kind = ("selector" if sched.selector else "tags" if sched.tags
++                    else "paths" if sched.paths else "models")
++            check(f"{f}: command matches its {kind} shape", shape_expect[kind] in FR[f])
++            check(f"{f}: own cron {sched.cron_schedule}",
++                  sch.get(f) == f'"{sched.cron_schedule}"')
++    if c16.airflow.seeds_full_refresh.enabled:
++        f = f"{pre}_seeds_full_refresh.py"
++        check(f"{f} exists", f in FR)
++        if f in FR:
++            check("seeds full-refresh uses seed --full-refresh",
++                  "dbt seed --full-refresh --selector" in FR[f])
++
++LEG = read_all("17-af-legacy")
++if LEG:
++    print("\n=== 17-af-legacy: back-compat normalization ===")
++    c17 = cfg_of("17-af-legacy")
++    check("legacy orchestration_mode normalized to 'simple'",
++          c17.airflow.orchestration_mode == "simple", c17.airflow.orchestration_mode)
++    check("legacy mode still produces scheduled DAGs",
++          set(schedules(LEG).values()) == {f'"{c17.airflow.schedule_interval}"'})
++
++V3 = read_all("18-af-v3")
++if V3:
++    print("\n=== 18-af-v3: Airflow 3 targeting ===")
++    c18 = cfg_of("18-af-v3")
++    check("config requests airflow_version 3", c18.airflow.airflow_version == 3)
++    check("v3 uses schedule= not schedule_interval=",
++          all("schedule_interval=" not in v for v in V3.values())
++          and all(re.search(r"^\s+schedule=", v, re.M) for v in V3.values()))
++    check("v3 uses the provider BashOperator import",
++          all("from airflow.providers.standard.operators.bash import BashOperator" in v
++              for v in V3.values()))
++    check("v3 omits sla (removed in Airflow 3.0)",
++          not any('"sla"' in v for v in V3.values()),
++          f"sla_minutes={c18.airflow.sla_minutes}")
++
++print("\n=== selector names that are not valid Python identifiers ===")
++odd = {k: v for k, v in SIMPLE.items()
++       if not re.sub(r"\.py$", "", k).replace("-", "_").replace(".", "_").isidentifier()
++       or "-" in k or "." in k[:-3]}
++if odd:
++    for k, v in list(odd.items())[:5]:
++        assigns = re.findall(r"^\s+(\S+) = BashOperator\($", v, re.M)
++        check(f"{k}: python variable names are valid identifiers",
++              all(a.isidentifier() for a in assigns), str(assigns[:2]))
++else:
++    print("  (none in this project - nothing to check)")
++
++failed = [r for r in results if not r[0]]
++print(f"\n{'='*70}\nRESULT: {len(results)-len(failed)}/{len(results)} assertions passed")
++if failed:
++    print("FAILED:")
++    for _, label, detail in failed:
++        print(f"  - {label}  {detail}")
++sys.exit(1 if failed else 0)
+diff --git a/e2e/assert_idempotency.py b/e2e/assert_idempotency.py
+new file mode 100644
+index 0000000..5fa48ba
+--- /dev/null
++++ b/e2e/assert_idempotency.py
+@@ -0,0 +1,103 @@
++"""Prove DAG regeneration is idempotent and safe (WS3).
++
++Seeds a dags dir with three kinds of pre-existing file and regenerates:
++  a) a stale auto-generated DAG no longer backed by any selector -> deleted
++  b) a legacy single-DAG file from an older maestro -> deleted
++  c) a hand-written DAG -> left completely untouched
++Then regenerates twice more to confirm byte-stable output.
++"""
++
++import os
++import shutil
++import sys
++import tempfile
++
++import yaml
++
++from dbt_job_maestro.config import Config
++from dbt_job_maestro.airflow_dag_generator import AirflowDAGGenerator
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++SCRATCH = os.environ["MAESTRO_E2E_SCRATCH"]
++results = []
++
++
++def check(label, condition, detail=""):
++    results.append((bool(condition), label, detail))
++    print(f"  [{'PASS' if condition else 'FAIL'}] {label}" + (f"  -- {detail}" if detail else ""))
++
++
++cfg = Config.from_yaml(os.path.join(REPO, "e2e", "configs", "12-af-none.yml"))
++selectors = yaml.safe_load(
++    open(os.path.join(REPO, "e2e", "artifacts", "selectors_02-special.yml"))
++)["selectors"]
++
++workdir = tempfile.mkdtemp(prefix="maestro-idem-", dir=os.path.join(SCRATCH, "dags"))
++gen = AirflowDAGGenerator(cfg.airflow)
++
++STALE = "dbt_maestro_a_selector_that_no_longer_exists.py"
++LEGACY = "dbt_maestro_dag.py"
++HANDWRITTEN = "my_own_pipeline.py"
++HAND_BODY = (
++    '"""My hand-written DAG. Maestro must never touch this."""\n'
++    "from airflow import DAG\n"
++    "# no maestro marker anywhere in here\n"
++    "SENTINEL = 'do-not-delete'\n"
++)
++
++with open(os.path.join(workdir, STALE), "w") as f:
++    f.write("# Auto-generated by dbt-job-maestro - DO NOT EDIT\n# stale\n")
++with open(os.path.join(workdir, LEGACY), "w") as f:
++    f.write('"""\nAuto-generated by dbt-job-maestro.\n"""\n# legacy single-DAG layout\n')
++with open(os.path.join(workdir, HANDWRITTEN), "w") as f:
++    f.write(HAND_BODY)
++
++print("\n=== first regeneration over a dirty dags dir ===")
++dags = gen.generate_dags(selectors)
++written, removed = gen.write_dags(dags, workdir)
++check("stale auto-generated DAG was removed", STALE in removed, f"removed={len(removed)}")
++check("legacy dbt_maestro_dag.py was removed", LEGACY in removed)
++check("hand-written DAG was NOT removed", HANDWRITTEN not in removed)
++check("hand-written DAG content is byte-identical",
++      open(os.path.join(workdir, HANDWRITTEN)).read() == HAND_BODY)
++check("hand-written DAG still on disk", os.path.exists(os.path.join(workdir, HANDWRITTEN)))
++check("wrote one file per generated DAG", len(written) == len(dags), f"{len(written)}/{len(dags)}")
++
++on_disk = {f for f in os.listdir(workdir) if f.endswith(".py")}
++check("dags dir now holds exactly the generated set plus the hand-written file",
++      on_disk == set(dags) | {HANDWRITTEN},
++      f"unexpected={sorted(on_disk - set(dags) - {HANDWRITTEN})[:3]}")
++
++print("\n=== repeat regeneration is byte-stable ===")
++snapshot = {f: open(os.path.join(workdir, f)).read() for f in on_disk}
++for run in (2, 3):
++    dags2 = gen.generate_dags(selectors)
++    written2, removed2 = gen.write_dags(dags2, workdir)
++    after = {f: open(os.path.join(workdir, f)).read()
++             for f in os.listdir(workdir) if f.endswith(".py")}
++    check(f"run {run}: nothing removed", not removed2, f"removed={removed2[:3]}")
++    check(f"run {run}: output byte-identical to run 1", after == snapshot,
++          f"changed={[k for k in after if snapshot.get(k) != after[k]][:3]}")
++
++print("\n=== changing the selector set removes only the orphaned DAGs ===")
++subset = [s for s in selectors if s["name"] in {"maestro_seeds", "maestro_snapshots"}]
++dags3 = gen.generate_dags(subset)
++written3, removed3 = gen.write_dags(dags3, workdir)
++check("regenerating with 2 selectors removes the rest",
++      len(removed3) == len(snapshot) - len(dags3) - 1,
++      f"removed={len(removed3)} was={len(snapshot)} now={len(dags3)}")
++check("hand-written DAG survived the purge",
++      os.path.exists(os.path.join(workdir, HANDWRITTEN))
++      and open(os.path.join(workdir, HANDWRITTEN)).read() == HAND_BODY)
++check("only the 2 generated DAGs plus hand-written remain",
++      {f for f in os.listdir(workdir) if f.endswith(".py")} == set(dags3) | {HANDWRITTEN})
++
++shutil.rmtree(workdir, ignore_errors=True)
++
++failed = [r for r in results if not r[0]]
++print(f"\n{'='*70}\nIDEMPOTENCY RESULT: {len(results)-len(failed)}/{len(results)} assertions passed")
++if failed:
++    print("FAILED:")
++    for _, label, detail in failed:
++        print(f"  - {label}  {detail}")
++sys.exit(1 if failed else 0)
+diff --git a/e2e/assert_selectors.py b/e2e/assert_selectors.py
+new file mode 100644
+index 0000000..7b21442
+--- /dev/null
++++ b/e2e/assert_selectors.py
+@@ -0,0 +1,280 @@
++"""Assert the selector-generation matrix produced what each config promised.
++
++Portable across dbt projects: every expectation is derived from the artifacts and
++the baseline selectors file rather than hardcoded counts, so this works on any
++project rather than the one it was first written against.
++
++Reads the files written by run_selector_matrix.sh into $MAESTRO_E2E_ARTIFACTS.
++
++Env:
++  MAESTRO_E2E_ARTIFACTS   dir holding selectors_<label>.yml   [e2e/artifacts]
++  BASELINE_SELECTORS      the project's original selectors.yml (optional; when
++                          set, manual-selector preservation is checked against it)
++  MAESTRO_E2E_MANIFEST    manifest.json (optional; enables model-count checks)
++"""
++
++import json
++import os
++import sys
++
++import yaml
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++ART = os.environ.get("MAESTRO_E2E_ARTIFACTS", os.path.join(REPO, "e2e", "artifacts"))
++BASELINE = os.environ.get("BASELINE_SELECTORS", "")
++MANIFEST = os.environ.get("MAESTRO_E2E_MANIFEST", "")
++
++results = []
++
++
++def check(label, condition, detail=""):
++    results.append((bool(condition), label, detail))
++    print(f"  [{'PASS' if condition else 'FAIL'}] {label}" + (f"  -- {detail}" if detail else ""))
++
++
++def load(label):
++    path = os.path.join(ART, f"selectors_{label}.yml")
++    if not os.path.exists(path):
++        return None
++    with open(path) as f:
++        return (yaml.safe_load(f) or {}).get("selectors", []) or []
++
++
++def names(sels):
++    return [s["name"] for s in sels]
++
++
++def by_name(sels, name):
++    return next((s for s in sels if s["name"] == name), None)
++
++
++def methods_of(sel):
++    """Method dicts inside a selector's positive (union/intersection) clauses."""
++    found = []
++
++    def walk(node):
++        if isinstance(node, dict):
++            if "method" in node:
++                found.append(node)
++            for key in ("union", "intersection"):
++                for item in node.get(key, []) or []:
++                    walk(item)
++        elif isinstance(node, list):
++            for item in node:
++                walk(item)
++
++    walk(sel.get("definition", {}))
++    return found
++
++
++def pairs_of(sel):
++    return [(m.get("method"), m.get("value")) for m in methods_of(sel)]
++
++
++def exclude_values(sel):
++    found = []
++
++    def walk(node):
++        if isinstance(node, dict):
++            if "exclude" in node:
++                found.append(node["exclude"])
++            for key in ("union", "intersection"):
++                for item in node.get(key, []) or []:
++                    walk(item)
++        elif isinstance(node, list):
++            for item in node:
++                walk(item)
++
++    walk(sel.get("definition", {}))
++    return found
++
++
++def exclude_shapes(sels):
++    """dbt requires a list under `exclude`. Classify what was emitted."""
++    shapes = set()
++    for sel in sels:
++        for value in exclude_values(sel):
++            if isinstance(value, dict):
++                shapes.add("dict")
++            elif isinstance(value, list):
++                if any(isinstance(v, dict) and "intersection" in v for v in value):
++                    shapes.add("nested-int")
++                else:
++                    shapes.add("flat-list")
++    return shapes
++
++
++def auto(sels, prefix="maestro_"):
++    return [s for s in sels if s["name"].startswith(prefix)]
++
++
++def manual(sels, prefix="maestro_"):
++    return [
++        s for s in sels
++        if not s["name"].startswith(prefix) and not s["name"].startswith("freshness_")
++    ]
++
++
++BASELINE_NAMES = set()
++MANUAL_NAMES = set()
++if BASELINE and os.path.exists(BASELINE):
++    BASELINE_NAMES = set(names((yaml.safe_load(open(BASELINE)) or {}).get("selectors", []) or []))
++    # A baseline captured from a project that already ran maestro contains
++    # auto-generated names too. Those are legitimately dropped when a config does
++    # not generate them, so only genuinely hand-written selectors are expected to
++    # survive every run.
++    MANUAL_NAMES = {
++        n for n in BASELINE_NAMES
++        if not n.startswith("maestro_") and not n.startswith("freshness_")
++    }
++
++MODEL_NAMES = set()
++if MANIFEST and os.path.exists(MANIFEST):
++    _m = json.load(open(MANIFEST))
++    MODEL_NAMES = {
++        v["name"] for v in _m.get("nodes", {}).values() if v.get("resource_type") == "model"
++    }
++
++BASE = load("01-baseline")
++if BASE is None:
++    print("no artifacts found - run e2e/run_selector_matrix.sh first")
++    sys.exit(2)
++
++print("\n=== 01-baseline: defaults, manual preservation ===")
++check("produced selectors", len(BASE) > 0, f"{len(BASE)} selectors")
++check("auto-generated selectors exist", len(auto(BASE)) > 0, f"{len(auto(BASE))} auto")
++check("no duplicate selector names", len(names(BASE)) == len(set(names(BASE))))
++check("every auto selector has a definition", all(s.get("definition") for s in auto(BASE)))
++check("every auto selector selects something",
++      all(methods_of(s) for s in auto(BASE)),
++      f"{sum(1 for s in auto(BASE) if not methods_of(s))} empty")
++if MANUAL_NAMES:
++    check("all baseline manual selectors preserved", MANUAL_NAMES <= set(names(BASE)),
++          f"missing={sorted(MANUAL_NAMES - set(names(BASE)))[:3]}")
++if MODEL_NAMES:
++    referenced = {v for s in auto(BASE) for m, v in pairs_of(s) if m == "fqn"}
++    check("auto selectors reference only real models",
++          referenced <= MODEL_NAMES | {"*"},
++          f"unknown={sorted(referenced - MODEL_NAMES - {'*'})[:3]}")
++
++SPECIAL = load("02-special")
++if SPECIAL:
++    print("\n=== 02-special: seeds / snapshots / full-refresh / orphans ===")
++    seeds = by_name(SPECIAL, "maestro_seeds")
++    snaps = by_name(SPECIAL, "maestro_snapshots")
++    fr = by_name(SPECIAL, "maestro_full_refresh_incremental")
++    orph = by_name(SPECIAL, "maestro_orphan_models")
++    check("maestro_seeds exists", seeds is not None)
++    check("maestro_seeds selects by path", seeds and any(m == "path" for m, _ in pairs_of(seeds)))
++    check("maestro_snapshots exists", snaps is not None)
++    check("maestro_snapshots selects by path", snaps and any(m == "path" for m, _ in pairs_of(snaps)))
++    check("maestro_full_refresh_incremental exists", fr is not None)
++    check("full-refresh intersects fqn:* with config.materialized:incremental",
++          fr and ("fqn", "*") in pairs_of(fr)
++          and ("config.materialized", "incremental") in pairs_of(fr))
++    check("maestro_orphan_models exists (combine_single_model_selectors)", orph is not None)
++    if orph:
++        n = len([1 for m, _ in pairs_of(orph) if m == "fqn"])
++        check("orphan selector bundles more than one model", n > 1, f"{n} fqn entries")
++    check("combining orphans yields fewer selectors than the baseline",
++          len(SPECIAL) < len(BASE), f"{len(SPECIAL)} vs baseline {len(BASE)}")
++
++FQN = load("03-special-fqn")
++if FQN:
++    print("\n=== 03-special-fqn: seeds/snapshots via fqn method ===")
++    s3 = by_name(FQN, "maestro_seeds")
++    n3 = by_name(FQN, "maestro_snapshots")
++    check("seeds selector uses fqn entries, not path",
++          s3 and pairs_of(s3) and all(m == "fqn" for m, _ in pairs_of(s3)))
++    check("snapshots selector uses fqn entries, not path",
++          n3 and pairs_of(n3) and all(m == "fqn" for m, _ in pairs_of(n3)))
++    check("exactly one combined seeds selector",
++          len([x for x in names(FQN) if x == "maestro_seeds"]) == 1)
++
++EX_U, EX_I = load("04-exclusions"), load("05-exclusions-intersection")
++if EX_U and EX_I:
++    print("\n=== 04 vs 05: exclusion_mode union vs intersection ===")
++    su, si = exclude_shapes(auto(EX_U)), exclude_shapes(auto(EX_I))
++    check("exclusions were emitted at all", su or si, f"union={su} intersection={si}")
++    check("union mode emits a flat exclude list", su == {"flat-list"}, f"shapes={su}")
++    check("intersection mode nests criteria under one intersection entry",
++          si == {"nested-int"}, f"shapes={si}")
++    check("no exclude block is a dict (dbt requires a list)", "dict" not in su | si)
++
++PFX = load("06-prefix-format")
++if PFX:
++    print("\n=== 06-prefix-format: custom prefix, raw manual, indirect_selection ===")
++    orch = [n for n in names(PFX) if n.startswith("orch_")]
++    check("auto selectors use the custom prefix orch_", len(orch) > 0, f"{len(orch)} orch_")
++    # Under a custom prefix, any pre-existing maestro_* selector is a MANUAL
++    # selector and must be preserved - so the only maestro_* names allowed are
++    # ones that were already in the baseline.
++    leaked = [n for n in names(PFX) if n.startswith("maestro_") and n not in BASELINE_NAMES]
++    check("no NEW default-prefix selectors were generated under a custom prefix",
++          not leaked, f"leaked={leaked[:3]}")
++    auto_pfx = auto(PFX, "orch_")
++    with_is = [s for s in auto_pfx
++               if methods_of(s) and all(m.get("indirect_selection") == "cautious"
++                                        for m in methods_of(s))]
++    check("indirect_selection set on every method of every auto selector",
++          auto_pfx and len(with_is) == len(auto_pfx), f"{len(with_is)}/{len(auto_pfx)}")
++    check("indirect_selection NOT injected into manual selectors",
++          not [s for s in manual(PFX, "orch_")
++               if any("indirect_selection" in m for m in methods_of(s))])
++    check("indirect_selection never emitted as a root-level 'default' dict "
++          "(dbt rejects the whole file)",
++          not [s["name"] for s in PFX if isinstance(s.get("default"), dict)])
++    if MANUAL_NAMES:
++        raw = open(os.path.join(ART, "selectors_06-prefix-format.yml")).read()
++        sample = sorted(MANUAL_NAMES)[:5]
++        check("reformat_manual_selectors=false keeps manual text verbatim",
++              all(f"- name: {n}\n" in raw for n in sample), f"checked {sample}")
++
++NOFRESH, ALLFRESH, WLFRESH = (load("07-freshness-removal"), load("08-freshness-all"),
++                              load("09-freshness-whitelist"))
++if NOFRESH:
++    print("\n=== 07 / 08 / 09: freshness lifecycle ===")
++    check("07 removes all auto freshness selectors",
++          not [n for n in names(NOFRESH) if n.startswith("freshness_")])
++if ALLFRESH:
++    f8 = [n for n in names(ALLFRESH) if n.startswith("freshness_")]
++    a8 = auto(ALLFRESH)
++    check("08 empty whitelist gives every auto selector a freshness variant",
++          len(f8) == len(a8), f"freshness={len(f8)} auto={len(a8)}")
++    check("08 freshness names mirror their base selector",
++          all(n[len("freshness_"):] in set(names(ALLFRESH)) for n in f8[:20]))
++if WLFRESH:
++    f9 = sorted(n for n in names(WLFRESH) if n.startswith("freshness_"))
++    check("09 whitelist minus blacklist yields fewer than 'all'",
++          not ALLFRESH or len(f9) < len([n for n in names(ALLFRESH)
++                                        if n.startswith("freshness_")]),
++          f"{len(f9)} freshness selectors: {f9[:3]}")
++    if f9:
++        fsel = by_name(WLFRESH, f9[0])
++        base_name = f9[0][len("freshness_"):]
++        check("freshness definition intersects its selector with source_status:fresher",
++              fsel and ("source_status", "fresher") in pairs_of(fsel)
++              and ("selector", base_name) in pairs_of(fsel))
++
++print("\n=== cross-config invariants ===")
++for label in ["01-baseline", "02-special", "03-special-fqn", "04-exclusions",
++              "05-exclusions-intersection", "06-prefix-format", "07-freshness-removal",
++              "08-freshness-all", "09-freshness-whitelist"]:
++    sels = load(label)
++    if not sels:
++        continue
++    dupes = [n for n in set(names(sels)) if names(sels).count(n) > 1]
++    check(f"{label}: unique selector names", not dupes, f"dupes={dupes[:3]}")
++    check(f"{label}: no exclude block is a dict", "dict" not in exclude_shapes(sels))
++    if MANUAL_NAMES and label != "06-prefix-format":
++        check(f"{label}: baseline manual selectors preserved",
++              MANUAL_NAMES <= set(names(sels)),
++              f"missing={sorted(MANUAL_NAMES - set(names(sels)))[:3]}")
++
++failed = [r for r in results if not r[0]]
++print(f"\n{'='*70}\nRESULT: {len(results)-len(failed)}/{len(results)} assertions passed")
++if failed:
++    print("FAILED:")
++    for _, label, detail in failed:
++        print(f"  - {label}  {detail}")
++sys.exit(1 if failed else 0)
+diff --git a/e2e/configs/01-baseline.yml.tmpl b/e2e/configs/01-baseline.yml.tmpl
+new file mode 100644
+index 0000000..9da7d0f
+--- /dev/null
++++ b/e2e/configs/01-baseline.yml.tmpl
+@@ -0,0 +1,9 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  group_by_dependencies: true
++  selector_prefix: maestro
++  warn_on_manual_overlaps: true
+diff --git a/e2e/configs/02-special.yml.tmpl b/e2e/configs/02-special.yml.tmpl
+new file mode 100644
+index 0000000..456fda4
+--- /dev/null
++++ b/e2e/configs/02-special.yml.tmpl
+@@ -0,0 +1,22 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  single_model_selector_name: orphan_models
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++  include_full_refresh_selector: true
++  full_refresh_exclude_tags: [deprecated]
++  full_refresh_exclude_paths: ['models/staging/legacy']
++  full_refresh_exclude_models: [example_incremental_model]
++  include_freshness_selectors: true
++  freshness_selector_names: [maestro_example_component_a]
++  exclude_freshness_selector_names: [maestro_example_component_b]
+diff --git a/e2e/configs/03-special-fqn.yml.tmpl b/e2e/configs/03-special-fqn.yml.tmpl
+new file mode 100644
+index 0000000..3e8dcdf
+--- /dev/null
++++ b/e2e/configs/03-special-fqn.yml.tmpl
+@@ -0,0 +1,12 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: fqn
++  include_snapshots_selectors: true
++  snapshots_selector_method: fqn
+diff --git a/e2e/configs/04-exclusions.yml.tmpl b/e2e/configs/04-exclusions.yml.tmpl
+new file mode 100644
+index 0000000..8fce852
+--- /dev/null
++++ b/e2e/configs/04-exclusions.yml.tmpl
+@@ -0,0 +1,12 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  exclusion_mode: union
++  exclude_tags: [deprecated]
++  exclude_paths: ['models/staging/legacy']
++  exclude_models: [example_model_a, example_model_b]
+diff --git a/e2e/configs/05-exclusions-intersection.yml.tmpl b/e2e/configs/05-exclusions-intersection.yml.tmpl
+new file mode 100644
+index 0000000..818e63e
+--- /dev/null
++++ b/e2e/configs/05-exclusions-intersection.yml.tmpl
+@@ -0,0 +1,12 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  exclusion_mode: intersection
++  exclude_tags: [deprecated]
++  exclude_paths: ['models/staging/legacy']
++  exclude_models: [example_model_a, example_model_b]
+diff --git a/e2e/configs/06-prefix-format.yml.tmpl b/e2e/configs/06-prefix-format.yml.tmpl
+new file mode 100644
+index 0000000..f4173d9
+--- /dev/null
++++ b/e2e/configs/06-prefix-format.yml.tmpl
+@@ -0,0 +1,14 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: orch
++  combine_single_model_selectors: true
++  reformat_manual_selectors: false
++  indirect_selection: cautious
++  prefix_order: [stg, int, fct, dim]
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
+diff --git a/e2e/configs/07-freshness-removal.yml.tmpl b/e2e/configs/07-freshness-removal.yml.tmpl
+new file mode 100644
+index 0000000..247159c
+--- /dev/null
++++ b/e2e/configs/07-freshness-removal.yml.tmpl
+@@ -0,0 +1,9 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_freshness_selectors: false
+diff --git a/e2e/configs/08-freshness-all.yml.tmpl b/e2e/configs/08-freshness-all.yml.tmpl
+new file mode 100644
+index 0000000..cef0dce
+--- /dev/null
++++ b/e2e/configs/08-freshness-all.yml.tmpl
+@@ -0,0 +1,11 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_freshness_selectors: true
++  freshness_selector_names: []
++  exclude_freshness_selector_names: []
+diff --git a/e2e/configs/09-freshness-whitelist.yml.tmpl b/e2e/configs/09-freshness-whitelist.yml.tmpl
+new file mode 100644
+index 0000000..1721826
+--- /dev/null
++++ b/e2e/configs/09-freshness-whitelist.yml.tmpl
+@@ -0,0 +1,15 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_freshness_selectors: true
++  freshness_selector_names:
++    - maestro_example_component_a
++    - maestro_example_component_b
++    - maestro_example_component_c
++  exclude_freshness_selector_names:
++    - maestro_example_component_c
+diff --git a/e2e/configs/10-af-simple.yml.tmpl b/e2e/configs/10-af-simple.yml.tmpl
+new file mode 100644
+index 0000000..3582c70
+--- /dev/null
++++ b/e2e/configs/10-af-simple.yml.tmpl
+@@ -0,0 +1,25 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/10-simple
++  orchestration_mode: simple
++  schedule_interval: "0 6 * * *"
++  min_models_per_dag: 1
++  default_command: build
+diff --git a/e2e/configs/11-af-staggered.yml.tmpl b/e2e/configs/11-af-staggered.yml.tmpl
+new file mode 100644
+index 0000000..e5edd55
+--- /dev/null
++++ b/e2e/configs/11-af-staggered.yml.tmpl
+@@ -0,0 +1,30 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/11-staggered
++  orchestration_mode: staggered
++  start_hour: 6
++  start_minute: 0
++  cron_increment_minutes: 7
++  cron_days_of_week: [MON, WED, FRI]
++  sla_minutes: 90
++  manual_sla_minutes: 30
++  manual_schedule_interval: "0 3 * * *"
++  execution_order: [seeds, snapshots, models]
+diff --git a/e2e/configs/12-af-none.yml.tmpl b/e2e/configs/12-af-none.yml.tmpl
+new file mode 100644
+index 0000000..9fb150c
+--- /dev/null
++++ b/e2e/configs/12-af-none.yml.tmpl
+@@ -0,0 +1,22 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/12-none
++  orchestration_mode: none
+diff --git a/e2e/configs/13-af-combined-failfast.yml.tmpl b/e2e/configs/13-af-combined-failfast.yml.tmpl
+new file mode 100644
+index 0000000..3094340
+--- /dev/null
++++ b/e2e/configs/13-af-combined-failfast.yml.tmpl
+@@ -0,0 +1,24 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/13-combined-failfast
++  orchestration_mode: none
++  min_models_per_dag: 5
++  continue_on_failure: false
+diff --git a/e2e/configs/14-af-combined-continue.yml.tmpl b/e2e/configs/14-af-combined-continue.yml.tmpl
+new file mode 100644
+index 0000000..9d920a6
+--- /dev/null
++++ b/e2e/configs/14-af-combined-continue.yml.tmpl
+@@ -0,0 +1,24 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/14-combined-continue
++  orchestration_mode: none
++  min_models_per_dag: 5
++  continue_on_failure: true
+diff --git a/e2e/configs/15-af-commands.yml.tmpl b/e2e/configs/15-af-commands.yml.tmpl
+new file mode 100644
+index 0000000..068e8b5
+--- /dev/null
++++ b/e2e/configs/15-af-commands.yml.tmpl
+@@ -0,0 +1,28 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/15-commands
++  orchestration_mode: none
++  default_command: run_test
++  selector_commands:
++    your_manual_selector_a: test
++    your_manual_selector_b: run
++    your_manual_selector_c: build
++    maestro_orphan_models: test
+diff --git a/e2e/configs/16-af-fullrefresh.yml.tmpl b/e2e/configs/16-af-fullrefresh.yml.tmpl
+new file mode 100644
+index 0000000..7bd27b1
+--- /dev/null
++++ b/e2e/configs/16-af-fullrefresh.yml.tmpl
+@@ -0,0 +1,41 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/16-fullrefresh
++  orchestration_mode: none
++  full_refresh:
++    enabled: true
++    cron_schedule: "0 0 * * 0"
++    custom_schedules:
++      - name: by_selector
++        cron_schedule: "0 1 * * 0"
++        selector: maestro_orphan_models
++      - name: by_tags
++        cron_schedule: "0 2 * * 0"
++        tags: [example_tag_a, example_tag_b]
++      - name: by_paths
++        cron_schedule: "0 3 * * 0"
++        paths: ['models/marts']
++      - name: by_models
++        cron_schedule: "0 4 * * 0"
++        models: [example_incremental_model]
++  seeds_full_refresh:
++    enabled: true
++    cron_schedule: "0 5 * * 0"
+diff --git a/e2e/configs/17-af-legacy.yml.tmpl b/e2e/configs/17-af-legacy.yml.tmpl
+new file mode 100644
+index 0000000..af830eb
+--- /dev/null
++++ b/e2e/configs/17-af-legacy.yml.tmpl
+@@ -0,0 +1,22 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/17-legacy
++  orchestration_mode: dependency
+diff --git a/e2e/configs/18-af-v3.yml.tmpl b/e2e/configs/18-af-v3.yml.tmpl
+new file mode 100644
+index 0000000..b958862
+--- /dev/null
++++ b/e2e/configs/18-af-v3.yml.tmpl
+@@ -0,0 +1,24 @@
++manifest_path: __MANIFEST__
++output_dir: __PROJECT_DIR__
++selectors_output_file: selectors.yml
++jobs_output_file: __WORKDIR__/jobs.yml
++
++selector:
++  selector_prefix: maestro
++  combine_single_model_selectors: true
++  include_seeds_selectors: true
++  seeds_selector_method: path
++  seeds_path: seeds
++  include_snapshots_selectors: true
++  snapshots_selector_method: path
++  snapshots_path: snapshots
++
++airflow:
++  dbt_project_dir: __PROJECT_DIR__
++  dbt_profiles_dir: __PROFILES_DIR__
++  dbt_target: __TARGET__
++  dbt_threads: 4
++  dags_dir: __WORKDIR__/dags/18-v3
++  orchestration_mode: none
++  airflow_version: 3
++  sla_minutes: 90
+diff --git a/e2e/render_configs.sh b/e2e/render_configs.sh
+new file mode 100755
+index 0000000..39421b0
+--- /dev/null
++++ b/e2e/render_configs.sh
+@@ -0,0 +1,51 @@
++#!/usr/bin/env bash
++# Render e2e/configs/*.yml.tmpl into runnable configs for YOUR dbt project.
++#
++# The templates carry placeholders instead of paths so the matrix is portable:
++#   __MANIFEST__      path to target/manifest.json
++#   __PROJECT_DIR__   your dbt project root (selectors.yml is written here)
++#   __PROFILES_DIR__  directory containing profiles.yml
++#   __WORKDIR__       scratch dir for generated DAGs and jobs.yml
++#   __TARGET__        dbt target name
++#
++# Usage:
++#   DBT_PROJECT_DIR=/path/to/project \
++#   DBT_PROFILES_DIR=~/.dbt \
++#   MAESTRO_E2E_WORKDIR=/tmp/maestro-e2e \
++#   DBT_TARGET=dev \
++#     ./e2e/render_configs.sh
++#
++# Some templates reference example tags/paths/models/selectors (exclude_tags,
++# full_refresh custom_schedules, selector_commands, freshness whitelists). Those
++# are deliberately generic - edit the rendered configs to match real names in
++# your project if you want those paths to select anything.
++set -uo pipefail
++
++HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++PROJECT_DIR="${DBT_PROJECT_DIR:?set DBT_PROJECT_DIR}"
++PROFILES_DIR="${DBT_PROFILES_DIR:-$HOME/.dbt}"
++WORKDIR="${MAESTRO_E2E_WORKDIR:-${MAESTRO_E2E_SCRATCH:-$PWD/.maestro-e2e}}"
++TARGET="${DBT_TARGET:-dev}"
++MANIFEST="${MAESTRO_E2E_MANIFEST:-$WORKDIR/target/manifest.json}"
++OUT="${MAESTRO_E2E_RENDERED:-$WORKDIR/configs}"
++
++mkdir -p "$OUT"
++n=0
++for tmpl in "$HERE"/configs/*.yml.tmpl; do
++  name="$(basename "$tmpl" .tmpl)"
++  sed -e "s|__MANIFEST__|$MANIFEST|g" \
++      -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
++      -e "s|__PROFILES_DIR__|$PROFILES_DIR|g" \
++      -e "s|__WORKDIR__|$WORKDIR|g" \
++      -e "s|__TARGET__|$TARGET|g" \
++      "$tmpl" > "$OUT/$name"
++  n=$((n+1))
++done
++
++echo "rendered $n configs -> $OUT"
++echo "  project  : $PROJECT_DIR"
++echo "  profiles : $PROFILES_DIR"
++echo "  workdir  : $WORKDIR"
++echo "  target   : $TARGET"
++echo "  manifest : $MANIFEST"
++[[ -f "$MANIFEST" ]] || echo "  NOTE: no manifest yet - run 'dbt parse --target-path $WORKDIR/target' first"
+diff --git a/e2e/run_dag_matrix.sh b/e2e/run_dag_matrix.sh
+new file mode 100755
+index 0000000..b123139
+--- /dev/null
++++ b/e2e/run_dag_matrix.sh
+@@ -0,0 +1,56 @@
++#!/usr/bin/env bash
++# Drive the Airflow DAG-generation matrix.
++#
++# Each config carries both a `selector:` and an `airflow:` block, so this runs the
++# real two-step flow: generate selectors, then generate DAGs from them. Every
++# generated file is byte-compiled before Airflow ever sees it.
++#
++# Prereqs: ./e2e/render_configs.sh, and a manifest (dbt parse).
++#
++# Env: same as run_selector_matrix.sh
++set -uo pipefail
++
++REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++PROJECT="${DBT_PROJECT_DIR:?set DBT_PROJECT_DIR}"
++WORKDIR="${MAESTRO_E2E_WORKDIR:-${MAESTRO_E2E_SCRATCH:-$PWD/.maestro-e2e}}"
++RENDERED="${MAESTRO_E2E_RENDERED:-$WORKDIR/configs}"
++ART="${MAESTRO_E2E_ARTIFACTS:-$REPO/e2e/artifacts}"
++MAESTRO="${MAESTRO_BIN:-$(command -v maestro || echo "$REPO/.venv/bin/maestro")}"
++PY="${PYTHON_BIN:-$(command -v python3)}"
++
++mkdir -p "$ART" "$WORKDIR"
++[[ -x "$MAESTRO" ]] || { echo "maestro not found (set MAESTRO_BIN)"; exit 1; }
++[[ -d "$RENDERED" ]] || { echo "no rendered configs at $RENDERED - run e2e/render_configs.sh"; exit 1; }
++
++BASELINE="${BASELINE_SELECTORS:-$WORKDIR/baseline-selectors.yml}"
++if [[ ! -f "$BASELINE" ]]; then
++  if [[ -f "$PROJECT/selectors.yml" ]]; then cp "$PROJECT/selectors.yml" "$BASELINE"
++  else printf 'selectors: []\n' > "$BASELINE"; fi
++fi
++
++CONFIGS=(10-af-simple 11-af-staggered 12-af-none 13-af-combined-failfast
++         14-af-combined-continue 15-af-commands 16-af-fullrefresh 17-af-legacy 18-af-v3)
++
++printf "%-28s %-10s %-8s %s\n" CONFIG SELECTORS DAGS COMPILE
++printf '%.0s-' {1..60}; echo
++
++for cfg in "${CONFIGS[@]}"; do
++  [[ -f "$RENDERED/$cfg.yml" ]] || { printf "%-28s %s\n" "$cfg" "(missing)"; continue; }
++  cp "$BASELINE" "$PROJECT/selectors.yml"
++
++  "$MAESTRO" generate --config "$RENDERED/$cfg.yml" > "$ART/$cfg.gen.log" 2>&1
++  nsel=$(grep -c "^  - name:" "$PROJECT/selectors.yml" 2>/dev/null || echo 0)
++
++  "$MAESTRO" generate-dags --config "$RENDERED/$cfg.yml" > "$ART/$cfg.dags.log" 2>&1
++  dagdir=$("$PY" -c "
++from dbt_job_maestro.config import Config
++print(Config.from_yaml('$RENDERED/$cfg.yml').airflow.dags_dir)" 2>/dev/null)
++  ndag=$(find "$dagdir" -maxdepth 1 -name '*.py' 2>/dev/null | wc -l | tr -d ' ')
++
++  if "$PY" -m compileall -q "$dagdir" >/dev/null 2>&1; then compile=OK; else compile=SYNTAX_ERROR; fi
++  printf "%-28s %-10s %-8s %s\n" "$cfg" "$nsel" "$ndag" "$compile"
++done
++
++cp "$BASELINE" "$PROJECT/selectors.yml"
++echo
++echo "project selectors.yml restored from $BASELINE"
+diff --git a/e2e/run_selector_matrix.sh b/e2e/run_selector_matrix.sh
+new file mode 100755
+index 0000000..626ef32
+--- /dev/null
++++ b/e2e/run_selector_matrix.sh
+@@ -0,0 +1,76 @@
++#!/usr/bin/env bash
++# Drive the selector-generation matrix.
++#
++# Each config starts from a pristine copy of the project's baseline selectors.yml
++# so manual-selector preservation is exercised from a known state. 07 is the
++# exception: it runs immediately after 02 *without* a reset, proving that
++# auto-generated freshness selectors are removed when the flag is turned off.
++#
++# Prereqs:
++#   ./e2e/render_configs.sh          (renders configs for your project)
++#   a manifest at $MAESTRO_E2E_WORKDIR/target/manifest.json (dbt parse)
++#
++# Env:
++#   DBT_PROJECT_DIR       required - selectors.yml is written here
++#   MAESTRO_E2E_WORKDIR   scratch dir                    [./.maestro-e2e]
++#   MAESTRO_E2E_RENDERED  rendered configs               [$WORKDIR/configs]
++#   MAESTRO_E2E_ARTIFACTS where to archive output        [e2e/artifacts]
++#   BASELINE_SELECTORS    pristine selectors.yml to reset from
++#                         [<project>/selectors.yml captured on first run]
++#   MAESTRO_BIN           maestro executable             [maestro, then .venv]
++set -uo pipefail
++
++REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++PROJECT="${DBT_PROJECT_DIR:?set DBT_PROJECT_DIR}"
++WORKDIR="${MAESTRO_E2E_WORKDIR:-${MAESTRO_E2E_SCRATCH:-$PWD/.maestro-e2e}}"
++RENDERED="${MAESTRO_E2E_RENDERED:-$WORKDIR/configs}"
++ART="${MAESTRO_E2E_ARTIFACTS:-$REPO/e2e/artifacts}"
++MAESTRO="${MAESTRO_BIN:-$(command -v maestro || echo "$REPO/.venv/bin/maestro")}"
++
++mkdir -p "$ART" "$WORKDIR"
++[[ -x "$MAESTRO" ]] || { echo "maestro not found (set MAESTRO_BIN)"; exit 1; }
++[[ -d "$RENDERED" ]] || { echo "no rendered configs at $RENDERED - run e2e/render_configs.sh"; exit 1; }
++
++# Capture the project's original selectors.yml once, so resets are reproducible
++# and the project file can always be restored.
++BASELINE="${BASELINE_SELECTORS:-$WORKDIR/baseline-selectors.yml}"
++if [[ ! -f "$BASELINE" ]]; then
++  if [[ -f "$PROJECT/selectors.yml" ]]; then
++    cp "$PROJECT/selectors.yml" "$BASELINE"
++    echo "captured baseline selectors.yml -> $BASELINE"
++  else
++    printf 'selectors: []\n' > "$BASELINE"
++    echo "no existing selectors.yml; using an empty baseline"
++  fi
++fi
++
++reset_selectors() { cp "$BASELINE" "$PROJECT/selectors.yml"; }
++
++run_config() {
++  local cfg="$1" label="$2" reset="${3:-yes}"
++  [[ ! -f "$RENDERED/$cfg" ]] && { echo "skip $label (no $cfg)"; return 0; }
++  [[ "$reset" == "yes" ]] && reset_selectors
++  printf '%.0s=' {1..62}; echo
++  echo "CONFIG: $label   (reset=$reset)"
++  printf '%.0s=' {1..62}; echo
++  "$MAESTRO" generate --config "$RENDERED/$cfg" > "$ART/$label.log" 2>&1
++  local rc=$?
++  cp "$PROJECT/selectors.yml" "$ART/selectors_$label.yml" 2>/dev/null
++  echo "exit=$rc  selectors=$(grep -c '^  - name:' "$PROJECT/selectors.yml" 2>/dev/null || echo '?')"
++  grep -E "^(Generated|Writing|Found)" "$ART/$label.log" | tail -3
++  echo
++}
++
++run_config 01-baseline.yml                01-baseline
++run_config 02-special.yml                 02-special
++run_config 07-freshness-removal.yml       07-freshness-removal no
++run_config 03-special-fqn.yml             03-special-fqn
++run_config 04-exclusions.yml              04-exclusions
++run_config 05-exclusions-intersection.yml 05-exclusions-intersection
++run_config 06-prefix-format.yml           06-prefix-format
++run_config 08-freshness-all.yml           08-freshness-all
++run_config 09-freshness-whitelist.yml     09-freshness-whitelist
++
++reset_selectors
++echo "project selectors.yml restored from $BASELINE"
++echo "artifacts: $ART"
+diff --git a/e2e/validate_airflow_imports.sh b/e2e/validate_airflow_imports.sh
+new file mode 100755
+index 0000000..658b127
+--- /dev/null
++++ b/e2e/validate_airflow_imports.sh
+@@ -0,0 +1,100 @@
++#!/usr/bin/env bash
++# Load every generated DAG variant into a real Airflow DagBag.
++#
++# Variants targeting Airflow 2 (airflow_version: 2) are loaded with AIRFLOW2_PYTHON;
++# the airflow_version: 3 variant is loaded with AIRFLOW3_PYTHON. A variant passes
++# only with ZERO import errors and a DAG count matching the generated file count.
++#
++# The quickest way to get an Airflow 2 interpreter is the launcher, which builds one:
++#   ./scripts/maestro_airflow_up.sh up --project-dir <p> --airflow-version 2.10.5
++#   export AIRFLOW2_PYTHON=<workdir>/airflow-venv/bin/python
++#
++# Env:
++#   MAESTRO_E2E_RENDERED  rendered configs dir      [$MAESTRO_E2E_WORKDIR/configs]
++#   AIRFLOW2_PYTHON       python with Airflow 2.x   [required for variants 10-17]
++#   AIRFLOW3_PYTHON       python with Airflow 3.x   [optional, for variant 18]
++set -uo pipefail
++
++REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++WORKDIR="${MAESTRO_E2E_WORKDIR:-${MAESTRO_E2E_SCRATCH:-$PWD/.maestro-e2e}}"
++RENDERED="${MAESTRO_E2E_RENDERED:-$WORKDIR/configs}"
++AF2_PY="${AIRFLOW2_PYTHON:-}"
++AF3_PY="${AIRFLOW3_PYTHON:-}"
++CFG_PY="${PYTHON_BIN:-$(command -v python3)}"
++
++export AIRFLOW_HOME="${AIRFLOW_HOME:-$WORKDIR/airflow_home}"
++export AIRFLOW__CORE__LOAD_EXAMPLES=False
++mkdir -p "$AIRFLOW_HOME"
++
++[[ -d "$RENDERED" ]] || { echo "no rendered configs at $RENDERED - run e2e/render_configs.sh"; exit 1; }
++[[ -n "$AF2_PY" || -n "$AF3_PY" ]] || { echo "set AIRFLOW2_PYTHON and/or AIRFLOW3_PYTHON"; exit 1; }
++
++probe() {  # $1=python  $2=dags_dir
++  "$1" - "$2" <<'PY'
++import sys, warnings
++warnings.filterwarnings("ignore")
++import airflow
++from airflow.models import DagBag
++bag = DagBag(dag_folder=sys.argv[1], include_examples=False)
++print(f"AIRFLOW={airflow.__version__}")
++print(f"DAGS={len(bag.dags)}")
++print(f"ERRORS={len(bag.import_errors)}")
++for path, err in list(bag.import_errors.items())[:3]:
++    print(f"ERR {path.split('/')[-1]}: {err.strip().splitlines()[-1]}")
++PY
++}
++
++dags_dir_of() {
++  "$CFG_PY" -c "
++from dbt_job_maestro.config import Config
++print(Config.from_yaml('$RENDERED/$1.yml').airflow.dags_dir)" 2>/dev/null
++}
++version_of() {
++  "$CFG_PY" -c "
++from dbt_job_maestro.config import Config
++print(Config.from_yaml('$RENDERED/$1.yml').airflow.airflow_version)" 2>/dev/null
++}
++
++printf "%-28s %-9s %-7s %-7s %-7s %s\n" VARIANT AIRFLOW FILES DAGS ERRORS STATUS
++printf '%.0s-' {1..80}; echo
++
++fails=0
++for cfg in 10-af-simple 11-af-staggered 12-af-none 13-af-combined-failfast \
++           14-af-combined-continue 15-af-commands 16-af-fullrefresh 17-af-legacy 18-af-v3; do
++  [[ -f "$RENDERED/$cfg.yml" ]] || continue
++  dagdir="$(dags_dir_of "$cfg")"
++  [[ -d "$dagdir" ]] || { printf "%-28s %s\n" "$cfg" "(no DAGs - run run_dag_matrix.sh)"; continue; }
++  files=$(find "$dagdir" -maxdepth 1 -name '*.py' | wc -l | tr -d ' ')
++
++  want="$(version_of "$cfg")"
++  if [[ "$want" == "3" ]]; then py="$AF3_PY"; else py="$AF2_PY"; fi
++  if [[ -z "$py" ]]; then
++    printf "%-28s %s\n" "$cfg" "(skipped - no Airflow $want interpreter configured)"; continue
++  fi
++
++  out=$(probe "$py" "$dagdir" 2>/dev/null)
++  av=$(sed -n 's/^AIRFLOW=//p' <<<"$out")
++  dags=$(sed -n 's/^DAGS=//p' <<<"$out")
++  errs=$(sed -n 's/^ERRORS=//p' <<<"$out")
++
++  if [[ "$errs" == "0" && "$dags" == "$files" ]]; then status=OK
++  else status=FAIL; fails=$((fails+1)); fi
++  printf "%-28s %-9s %-7s %-7s %-7s %s\n" "$cfg" "$av" "$files" "$dags" "$errs" "$status"
++  grep '^ERR ' <<<"$out" | sed 's/^/      /'
++done
++
++# Demonstrate the defect the airflow_version option exists to fix: Airflow-2 output
++# loaded by Airflow 3 produces an import error for every single DAG.
++if [[ -n "$AF3_PY" && -f "$RENDERED/10-af-simple.yml" ]]; then
++  d10="$(dags_dir_of 10-af-simple)"
++  if [[ -d "$d10" ]]; then
++    echo
++    echo "--- cross-check: airflow_version:2 output loaded by Airflow 3 ---"
++    probe "$AF3_PY" "$d10" 2>/dev/null | grep -E "^AIRFLOW|^DAGS|^ERRORS|^ERR " | head -5
++  fi
++fi
++
++echo
++if [[ $fails -eq 0 ]]; then echo "import validation: all variants loaded cleanly"
++else echo "import validation: $fails variant(s) FAILED"; fi
++exit $fails
+diff --git a/e2e/validate_with_dbt.sh b/e2e/validate_with_dbt.sh
+new file mode 100755
+index 0000000..178ad3e
+--- /dev/null
++++ b/e2e/validate_with_dbt.sh
+@@ -0,0 +1,87 @@
++#!/usr/bin/env bash
++# Prove every generated selectors.yml is accepted AND resolvable by real dbt.
++#
++# `dbt ls --selector X` parses selectors.yml and resolves the selector against
++# the manifest. It does not connect to the warehouse and materializes nothing, so
++# this is a read-only check. An invalid selectors.yml fails the whole invocation,
++# which is how the exclude-shape and indirect_selection defects were caught.
++#
++# Selector names are discovered from each generated file, so this is portable.
++#
++# Env:
++#   DBT_PROJECT_DIR       required
++#   DBT_PROFILES_DIR      [~/.dbt]
++#   DBT_TARGET            [dev]
++#   DBT_BIN               [dbt]
++#   MAESTRO_E2E_WORKDIR   [./.maestro-e2e]
++#   MAESTRO_E2E_ARTIFACTS [e2e/artifacts]
++#   SAMPLE_PER_CONFIG     how many selectors to resolve per config [3]
++set -uo pipefail
++
++REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++PROJECT="${DBT_PROJECT_DIR:?set DBT_PROJECT_DIR}"
++PROFILES="${DBT_PROFILES_DIR:-$HOME/.dbt}"
++TARGET="${DBT_TARGET:-dev}"
++DBT="${DBT_BIN:-dbt}"
++WORKDIR="${MAESTRO_E2E_WORKDIR:-${MAESTRO_E2E_SCRATCH:-$PWD/.maestro-e2e}}"
++ART="${MAESTRO_E2E_ARTIFACTS:-$REPO/e2e/artifacts}"
++SAMPLE="${SAMPLE_PER_CONFIG:-3}"
++PY="${PYTHON_BIN:-$(command -v python3)}"
++
++BASELINE="${BASELINE_SELECTORS:-$WORKDIR/baseline-selectors.yml}"
++
++dbt_ls() {
++  "$DBT" ls --project-dir "$PROJECT" --profiles-dir "$PROFILES" --target "$TARGET" \
++    --target-path "$WORKDIR/target" --log-path "$WORKDIR/logs" \
++    --selector "$1" --output name 2>&1
++}
++
++# Prefer the special selectors (they exercise path/intersection shapes), then
++# fill up to SAMPLE with the first auto-generated ones.
++pick_selectors() {
++  "$PY" - "$1" "$SAMPLE" <<'PY'
++import sys, yaml
++sels = (yaml.safe_load(open(sys.argv[1])) or {}).get("selectors", []) or []
++names = [s["name"] for s in sels]
++want, seen = [], set()
++for n in names:
++    if n.endswith(("_seeds", "_snapshots", "_full_refresh_incremental", "_orphan_models")):
++        want.append(n); seen.add(n)
++for n in names:
++    if len(want) >= int(sys.argv[2]) + len(seen): break
++    if n not in seen and not n.startswith("freshness_"):
++        want.append(n)
++print("\n".join(want))
++PY
++}
++
++fails=0; total=0
++printf "%-30s %-52s %-8s %s\n" CONFIG SELECTOR NODES STATUS
++printf '%.0s-' {1..104}; echo
++for f in "$ART"/selectors_*.yml; do
++  [[ -f "$f" ]] || continue
++  label="$(basename "$f" .yml)"; label="${label#selectors_}"
++  cp "$f" "$PROJECT/selectors.yml"
++  while IFS= read -r sel; do
++    [[ -n "$sel" ]] || continue
++    total=$((total+1))
++    out="$(dbt_ls "$sel")"
++    if grep -qE "Could not parse selector|Could not read selector|Encountered an error|Runtime Error|Compilation Error" <<<"$out"; then
++      printf "%-30s %-52s %-8s %s\n" "$label" "$sel" "-" "PARSE/RESOLVE ERROR"
++      grep -E "Could not (parse|read)|Runtime Error|Invalid value|Valid root-level" <<<"$out" \
++        | head -2 | sed 's/^/      /'
++      fails=$((fails+1))
++    else
++      nodes="$(grep -cE '^[a-zA-Z0-9_.]+$' <<<"$out")"
++      printf "%-30s %-52s %-8s %s\n" "$label" "$sel" "$nodes" \
++        "$([[ "$nodes" -eq 0 ]] && echo 'OK but 0 nodes' || echo OK)"
++    fi
++  done < <(pick_selectors "$f")
++done
++
++echo
++[[ -f "$BASELINE" ]] && cp "$BASELINE" "$PROJECT/selectors.yml" \
++  && echo "project selectors.yml restored from $BASELINE"
++if [[ $fails -eq 0 ]]; then echo "dbt validation: all $total selector resolutions accepted"
++else echo "dbt validation: $fails/$total FAILED"; fi
++exit $fails
+diff --git a/scripts/maestro_airflow_up.sh b/scripts/maestro_airflow_up.sh
+new file mode 100755
+index 0000000..9dc2017
+--- /dev/null
++++ b/scripts/maestro_airflow_up.sh
+@@ -0,0 +1,558 @@
++#!/usr/bin/env bash
++#
++# maestro_airflow_up.sh - spin up a local Airflow serving maestro-generated DAGs.
++#
++# Point it at any dbt project and it will:
++#   1. produce a manifest (dbt parse) if one is missing
++#   2. generate selectors.yml and one DAG file per selector (maestro)
++#   3. install an isolated Airflow into a throwaway venv
++#   4. start Airflow standalone and wait until the DAGs are actually registered
++#
++# Nothing is scheduled: DAGs are generated with orchestration_mode=none and are
++# created paused, so you trigger what you want from the UI. Only your dbt
++# project's selectors.yml is written to (dbt requires it at the project root) and
++# any existing one is backed up first.
++#
++# ---------------------------------------------------------------------------
++# QUICK START
++#   ./scripts/maestro_airflow_up.sh up --project-dir /path/to/your/dbt/project
++#   ./scripts/maestro_airflow_up.sh status
++#   ./scripts/maestro_airflow_up.sh down
++# ---------------------------------------------------------------------------
++
++set -uo pipefail
++
++# ===========================================================================
++# VARIABLES YOU NEED TO SET
++# Every one can be given as an environment variable or a --flag (see --help).
++# ===========================================================================
++
++# --- REQUIRED --------------------------------------------------------------
++# Absolute path to the dbt project you want to orchestrate. Must contain
++# dbt_project.yml. There is no default: this is the one thing only you know.
++DBT_PROJECT_DIR="${DBT_PROJECT_DIR:-}"
++
++# --- USUALLY WORTH SETTING -------------------------------------------------
++# Directory holding profiles.yml (the dir, not the file).
++DBT_PROFILES_DIR="${DBT_PROFILES_DIR:-$HOME/.dbt}"
++# dbt target to run as. IMPORTANT: some projects switch schema naming on
++# target.name (a custom_schema macro keyed to 'dev'/'ci' is a common pattern),
++# so a made-up target name can silently redirect writes to the wrong schemas.
++# Use a target your project actually expects.
++DBT_TARGET="${DBT_TARGET:-dev}"
++# Threads passed to dbt via --threads.
++DBT_THREADS="${DBT_THREADS:-4}"
++# Port for the Airflow web UI.
++PORT="${PORT:-8080}"
++
++# --- USUALLY FINE AS-IS ----------------------------------------------------
++# dbt executable. Set this if you have more than one dbt on PATH (e.g. dbt-core
++# in a venv alongside a global dbt); the generated DAGs shell out to a bare
++# `dbt`, so whatever resolves first is what actually runs.
++DBT_BIN="${DBT_BIN:-dbt}"
++# maestro executable. Defaults to `maestro` on PATH, then this repo's venv.
++MAESTRO_BIN="${MAESTRO_BIN:-}"
++# Airflow version to install into the throwaway venv. 2.x and 3.x both work -
++# the script detects the major version and generates matching DAG syntax.
++AIRFLOW_VERSION="${AIRFLOW_VERSION:-2.10.5}"
++# Python for the Airflow venv. Airflow 2.10 supports <=3.12; Airflow 3 supports 3.12+.
++PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
++# Where all generated state lives (venv, DAGs, AIRFLOW_HOME, logs, config).
++WORKDIR="${WORKDIR:-$PWD/.maestro-airflow}"
++# Use your own maestro config instead of the one this script generates.
++# When set, the script does not override its selector/airflow settings.
++MAESTRO_CONFIG="${MAESTRO_CONFIG:-}"
++
++# --- GENERATED-CONFIG TUNING (ignored when MAESTRO_CONFIG is set) ----------
++SELECTOR_PREFIX="${SELECTOR_PREFIX:-maestro}"
++DEFAULT_COMMAND="${DEFAULT_COMMAND:-build}"      # build | run | test | run_test
++MIN_MODELS_PER_DAG="${MIN_MODELS_PER_DAG:-1}"    # >1 combines tiny selectors into one DAG
++COMBINE_ORPHANS="${COMBINE_ORPHANS:-true}"       # bundle single-model components
++INCLUDE_SEEDS="${INCLUDE_SEEDS:-true}"
++INCLUDE_SNAPSHOTS="${INCLUDE_SNAPSHOTS:-true}"
++CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-false}"
++# 'none' keeps every DAG manual-trigger only. Use simple/staggered to see crons.
++ORCHESTRATION_MODE="${ORCHESTRATION_MODE:-none}"
++
++# ===========================================================================
++
++RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; BLD=$'\033[1m'; RST=$'\033[0m'
++say()  { printf "%s\n" "$*"; }
++info() { printf "%s==>%s %s\n" "$BLD" "$RST" "$*"; }
++ok()   { printf "%s  ok%s   %s\n" "$GRN" "$RST" "$*"; }
++warn() { printf "%s  warn%s %s\n" "$YLW" "$RST" "$*"; }
++die()  { printf "%s  fail%s %s\n" "$RED" "$RST" "$*" >&2; exit 1; }
++
++usage() {
++  cat <<EOF
++${BLD}maestro_airflow_up.sh${RST} - local Airflow serving maestro-generated DAGs
++
++USAGE
++  $(basename "$0") <command> [options]
++
++COMMANDS
++  up        generate selectors + DAGs, install Airflow, start it (default)
++  prepare   everything except starting Airflow (for use with a supervisor)
++  serve     run Airflow in the FOREGROUND (pair with prepare; for Tilt/systemd)
++  regen     regenerate selectors + DAGs only; a running Airflow picks them up
++  status    show whether Airflow is up, DAG counts, import errors, URL
++  logs      tail the Airflow log
++  down      stop Airflow (leaves generated files in place)
++  clean     stop Airflow and delete WORKDIR entirely
++
++OPTIONS (each maps to the env var of the same name)
++  --project-dir PATH      DBT_PROJECT_DIR   (required)
++  --profiles-dir PATH     DBT_PROFILES_DIR  [$DBT_PROFILES_DIR]
++  --target NAME           DBT_TARGET        [$DBT_TARGET]
++  --threads N             DBT_THREADS       [$DBT_THREADS]
++  --port N                PORT              [$PORT]
++  --dbt-bin PATH          DBT_BIN           [$DBT_BIN]
++  --maestro-bin PATH      MAESTRO_BIN       [auto-detect]
++  --airflow-version V     AIRFLOW_VERSION   [$AIRFLOW_VERSION]
++  --python-version V      PYTHON_VERSION    [$PYTHON_VERSION]
++  --workdir PATH          WORKDIR           [$WORKDIR]
++  --config PATH           MAESTRO_CONFIG    [generated]
++  --default-command CMD   DEFAULT_COMMAND   [$DEFAULT_COMMAND]
++  --min-models-per-dag N  MIN_MODELS_PER_DAG[$MIN_MODELS_PER_DAG]
++  --orchestration MODE    ORCHESTRATION_MODE[$ORCHESTRATION_MODE]
++  --selector-prefix P     SELECTOR_PREFIX   [$SELECTOR_PREFIX]
++  --continue-on-failure   CONTINUE_ON_FAILURE=true
++  --parse                 force a dbt parse even if a manifest exists
++  -h, --help              this help
++
++EXAMPLES
++  # simplest
++  $(basename "$0") up --project-dir ~/code/my_dbt_project
++
++  # a dbt-core in a venv, custom profiles dir, Airflow 3, port 8081
++  $(basename "$0") up \\
++      --project-dir ~/code/my_dbt_project \\
++      --dbt-bin ~/code/my_dbt_project/.venv/bin/dbt \\
++      --profiles-dir ~/code/my_dbt_project/.dbt \\
++      --airflow-version 3.0.2 --python-version 3.12 --port 8081
++
++  # see the combined-small-selectors DAG and cron staggering
++  $(basename "$0") up --project-dir ~/p --min-models-per-dag 5 --orchestration staggered
++
++NOTES
++  * Writes <project>/selectors.yml (dbt only reads it from the project root).
++    Any existing file is backed up to selectors.yml.bak-<timestamp>.
++  * Everything else lands in WORKDIR and is safe to delete.
++  * Generated DAGs invoke a bare \`dbt\`; the script puts DBT_BIN's directory
++    first on PATH for the Airflow processes so the right dbt is used.
++EOF
++}
++
++# ---------------------------------------------------------------- arg parsing
++CMD="up"; FORCE_PARSE=0
++[[ $# -gt 0 && "$1" != -* ]] && { CMD="$1"; shift; }
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --project-dir)        DBT_PROJECT_DIR="$2"; shift 2;;
++    --profiles-dir)       DBT_PROFILES_DIR="$2"; shift 2;;
++    --target)             DBT_TARGET="$2"; shift 2;;
++    --threads)            DBT_THREADS="$2"; shift 2;;
++    --port)               PORT="$2"; shift 2;;
++    --dbt-bin)            DBT_BIN="$2"; shift 2;;
++    --maestro-bin)        MAESTRO_BIN="$2"; shift 2;;
++    --airflow-version)    AIRFLOW_VERSION="$2"; shift 2;;
++    --python-version)     PYTHON_VERSION="$2"; shift 2;;
++    --workdir)            WORKDIR="$2"; shift 2;;
++    --config)             MAESTRO_CONFIG="$2"; shift 2;;
++    --default-command)    DEFAULT_COMMAND="$2"; shift 2;;
++    --min-models-per-dag) MIN_MODELS_PER_DAG="$2"; shift 2;;
++    --orchestration)      ORCHESTRATION_MODE="$2"; shift 2;;
++    --selector-prefix)    SELECTOR_PREFIX="$2"; shift 2;;
++    --continue-on-failure) CONTINUE_ON_FAILURE=true; shift;;
++    --parse)              FORCE_PARSE=1; shift;;
++    -h|--help)            usage; exit 0;;
++    *) die "unknown option: $1  (try --help)";;
++  esac
++done
++
++REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++mkdir -p "$WORKDIR" 2>/dev/null || die "cannot create WORKDIR: $WORKDIR"
++WORKDIR="$(cd "$WORKDIR" && pwd)"
++AF_HOME="$WORKDIR/airflow_home"
++AF_VENV="$WORKDIR/airflow-venv"
++DAGS_DIR="$WORKDIR/dags"
++GEN_CONFIG="$WORKDIR/maestro-config.generated.yml"
++PIDFILE="$WORKDIR/airflow.pid"
++LOGFILE="$WORKDIR/airflow.log"
++
++af_env() {
++  export AIRFLOW_HOME="$AF_HOME"
++  export AIRFLOW__CORE__DAGS_FOLDER="$DAGS_DIR"
++  export AIRFLOW__CORE__LOAD_EXAMPLES=False
++  export AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
++  export AIRFLOW__WEBSERVER__WEB_SERVER_PORT="$PORT"
++  # `airflow standalone` re-invokes a bare `airflow` for its subprocesses, and
++  # the generated DAGs shell out to a bare `dbt`. Both must resolve.
++  local dbt_dir; dbt_dir="$(dirname "$(command -v "$DBT_BIN" 2>/dev/null || echo /nonexistent)")"
++  export PATH="$AF_VENV/bin:$dbt_dir:$PATH"
++}
++
++af_python() { echo "$AF_VENV/bin/python"; }
++af_bin()    { echo "$AF_VENV/bin/airflow"; }
++
++airflow_major() {
++  "$(af_python)" -c "import airflow,sys;sys.stdout.write(airflow.__version__.split('.')[0])" 2>/dev/null || echo ""
++}
++
++http_code() {
++  # curl already prints 000 on a failed connection and exits non-zero, so an
++  # `|| echo 000` fallback would concatenate and produce "000000".
++  local code
++  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$PORT$1" 2>/dev/null)"
++  printf "%s" "${code:-000}"
++}
++
++# ------------------------------------------------------------------ preflight
++resolve_maestro() {
++  if [[ -n "$MAESTRO_BIN" ]]; then echo "$MAESTRO_BIN"; return; fi
++  if command -v maestro >/dev/null 2>&1; then command -v maestro; return; fi
++  if [[ -x "$REPO_ROOT/.venv/bin/maestro" ]]; then echo "$REPO_ROOT/.venv/bin/maestro"; return; fi
++  echo ""
++}
++
++preflight() {
++  info "Preflight"
++  [[ -n "$DBT_PROJECT_DIR" ]] || die "DBT_PROJECT_DIR is required (--project-dir /path/to/dbt/project)"
++  [[ -d "$DBT_PROJECT_DIR" ]] || die "project dir does not exist: $DBT_PROJECT_DIR"
++  DBT_PROJECT_DIR="$(cd "$DBT_PROJECT_DIR" && pwd)"
++  [[ -f "$DBT_PROJECT_DIR/dbt_project.yml" ]] || die "no dbt_project.yml in $DBT_PROJECT_DIR"
++  ok "dbt project: $DBT_PROJECT_DIR"
++
++  [[ -d "$DBT_PROFILES_DIR" ]] || die "profiles dir does not exist: $DBT_PROFILES_DIR"
++  DBT_PROFILES_DIR="$(cd "$DBT_PROFILES_DIR" && pwd)"
++  [[ -f "$DBT_PROFILES_DIR/profiles.yml" ]] || warn "no profiles.yml in $DBT_PROFILES_DIR"
++  ok "profiles dir: $DBT_PROFILES_DIR"
++
++  command -v "$DBT_BIN" >/dev/null 2>&1 || die "dbt not found: $DBT_BIN (set --dbt-bin)"
++  ok "dbt: $(command -v "$DBT_BIN")  [$("$DBT_BIN" --version 2>&1 | sed -n 's/.*installed: *//p' | head -1)]"
++
++  MAESTRO="$(resolve_maestro)"
++  [[ -n "$MAESTRO" ]] || die "maestro not found. pip install -e . in this repo, or set --maestro-bin"
++  ok "maestro: $MAESTRO"
++
++  if [[ "${preflight_skip_port:-0}" != "1" ]]; then
++    if [[ "$(http_code /health)" != "000" ]]; then
++      die "something is already listening on port $PORT - use --port, or run '$(basename "$0") down'"
++    fi
++    ok "port $PORT is free"
++  fi
++}
++
++# ------------------------------------------------------------------- manifest
++ensure_manifest() {
++  local manifest="$WORKDIR/target/manifest.json"
++  if [[ -f "$manifest" && $FORCE_PARSE -eq 0 ]]; then
++    ok "reusing manifest: $manifest"; MANIFEST="$manifest"; return
++  fi
++  info "Producing a manifest (dbt parse - no warehouse writes)"
++  mkdir -p "$WORKDIR/target" "$WORKDIR/logs"
++  if ! "$DBT_BIN" parse \
++        --project-dir "$DBT_PROJECT_DIR" --profiles-dir "$DBT_PROFILES_DIR" \
++        --target "$DBT_TARGET" --target-path "$WORKDIR/target" \
++        --log-path "$WORKDIR/logs" > "$WORKDIR/dbt-parse.log" 2>&1; then
++    tail -25 "$WORKDIR/dbt-parse.log" >&2
++    die "dbt parse failed - see $WORKDIR/dbt-parse.log"
++  fi
++  [[ -f "$manifest" ]] || die "dbt parse produced no manifest at $manifest"
++  MANIFEST="$manifest"
++  ok "manifest: $(du -h "$manifest" | cut -f1)"
++}
++
++# --------------------------------------------------------------------- config
++write_config() {
++  if [[ -n "$MAESTRO_CONFIG" ]]; then
++    [[ -f "$MAESTRO_CONFIG" ]] || die "config not found: $MAESTRO_CONFIG"
++    CONFIG="$MAESTRO_CONFIG"; ok "using your config: $CONFIG"; return
++  fi
++
++  # Match generated DAG syntax to the Airflow that will actually load it.
++  local major; major="$(airflow_major)"; [[ -n "$major" ]] || major=2
++  info "Writing maestro config (airflow_version: $major)"
++
++  cat > "$GEN_CONFIG" <<EOF
++# Generated by scripts/maestro_airflow_up.sh - safe to edit and re-run with
++#   $(basename "$0") regen --config $GEN_CONFIG
++manifest_path: $MANIFEST
++output_dir: $DBT_PROJECT_DIR
++selectors_output_file: selectors.yml
++jobs_output_file: $WORKDIR/jobs.yml
++
++selector:
++  selector_prefix: $SELECTOR_PREFIX
++  combine_single_model_selectors: $COMBINE_ORPHANS
++  include_seeds_selectors: $INCLUDE_SEEDS
++  include_snapshots_selectors: $INCLUDE_SNAPSHOTS
++  seeds_selector_method: path
++  snapshots_selector_method: path
++
++airflow:
++  airflow_version: $major
++  dags_dir: $DAGS_DIR
++  dbt_project_dir: $DBT_PROJECT_DIR
++  dbt_profiles_dir: $DBT_PROFILES_DIR
++  dbt_target: $DBT_TARGET
++  dbt_threads: $DBT_THREADS
++  orchestration_mode: $ORCHESTRATION_MODE
++  default_command: $DEFAULT_COMMAND
++  min_models_per_dag: $MIN_MODELS_PER_DAG
++  continue_on_failure: $CONTINUE_ON_FAILURE
++EOF
++  CONFIG="$GEN_CONFIG"
++  ok "config: $CONFIG"
++}
++
++# ------------------------------------------------------------------- generate
++generate() {
++  local sel="$DBT_PROJECT_DIR/selectors.yml"
++  if [[ -f "$sel" ]]; then
++    local bak="$sel.bak-$(date +%Y%m%d-%H%M%S)"
++    cp "$sel" "$bak"
++    warn "backed up existing selectors.yml -> $(basename "$bak")"
++  fi
++
++  info "maestro generate  (selectors.yml)"
++  "$MAESTRO" generate --config "$CONFIG" > "$WORKDIR/maestro-generate.log" 2>&1 \
++    || { tail -25 "$WORKDIR/maestro-generate.log" >&2; die "maestro generate failed"; }
++  ok "$(grep -c '^  - name:' "$sel" 2>/dev/null || echo '?') selectors in $sel"
++
++  info "maestro generate-dags"
++  mkdir -p "$DAGS_DIR"
++  "$MAESTRO" generate-dags --config "$CONFIG" > "$WORKDIR/maestro-dags.log" 2>&1 \
++    || { tail -25 "$WORKDIR/maestro-dags.log" >&2; die "maestro generate-dags failed"; }
++  local n; n=$(find "$DAGS_DIR" -maxdepth 1 -name '*.py' | wc -l | tr -d ' ')
++  [[ "$n" -gt 0 ]] || die "no DAG files were written to $DAGS_DIR"
++  ok "$n DAG files in $DAGS_DIR"
++
++  # Fail early on syntax before Airflow ever sees them.
++  if command -v python3 >/dev/null 2>&1; then
++    python3 -m compileall -q "$DAGS_DIR" >/dev/null 2>&1 \
++      && ok "all DAG files compile" || warn "some DAG files failed to byte-compile"
++  fi
++}
++
++# -------------------------------------------------------------------- install
++install_airflow() {
++  if [[ -x "$(af_bin)" ]]; then
++    ok "airflow venv exists: $(af_bin) ($("$(af_bin)" version 2>/dev/null | tail -1))"
++    return
++  fi
++  info "Creating Airflow venv (apache-airflow==$AIRFLOW_VERSION on Python $PYTHON_VERSION)"
++  if command -v uv >/dev/null 2>&1; then
++    UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$WORKDIR/uv-python}" \
++      uv venv --python "$PYTHON_VERSION" "$AF_VENV" >/dev/null 2>&1 \
++      || die "uv venv failed for Python $PYTHON_VERSION"
++    UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$WORKDIR/uv-python}" \
++      uv pip install --python "$(af_python)" "apache-airflow==$AIRFLOW_VERSION" \
++      --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-$AIRFLOW_VERSION/constraints-$PYTHON_VERSION.txt" \
++      > "$WORKDIR/airflow-install.log" 2>&1 \
++      || { tail -20 "$WORKDIR/airflow-install.log" >&2; die "airflow install failed"; }
++  else
++    local py="python$PYTHON_VERSION"
++    command -v "$py" >/dev/null 2>&1 || die "$py not found and uv unavailable - install uv or Python $PYTHON_VERSION"
++    "$py" -m venv "$AF_VENV" || die "venv creation failed"
++    "$(af_python)" -m pip install -q --upgrade pip >/dev/null 2>&1
++    "$(af_python)" -m pip install "apache-airflow==$AIRFLOW_VERSION" \
++      --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-$AIRFLOW_VERSION/constraints-$PYTHON_VERSION.txt" \
++      > "$WORKDIR/airflow-install.log" 2>&1 \
++      || { tail -20 "$WORKDIR/airflow-install.log" >&2; die "airflow install failed"; }
++  fi
++  ok "installed Airflow $("$(af_bin)" version 2>/dev/null | tail -1)"
++}
++
++init_db() {
++  info "Initialising Airflow metadata DB"
++  mkdir -p "$AF_HOME"
++  local out
++  out=$("$(af_bin)" db migrate 2>&1) || { echo "$out" | tail -15 >&2; die "airflow db migrate failed"; }
++  ok "metadata DB ready"
++}
++
++# ---------------------------------------------------------------------- serve
++start_airflow() {
++  info "Starting Airflow standalone on port $PORT"
++  nohup "$(af_bin)" standalone > "$LOGFILE" 2>&1 &
++  echo $! > "$PIDFILE"
++
++  local waited=0
++  printf "  waiting for the web server "
++  while [[ $waited -lt 180 ]]; do
++    if [[ "$(http_code /health)" == "200" ]]; then printf " up\n"; break; fi
++    printf "."; sleep 5; waited=$((waited+5))
++  done
++  [[ "$(http_code /health)" == "200" ]] || {
++    printf "\n"; tail -30 "$LOGFILE" >&2; die "web server did not come up - see $LOGFILE"; }
++
++  # The UI is reachable before the scheduler has serialized the DAGs into the
++  # metadata DB. Until it has, DAGs cannot be triggered or unpaused, so wait.
++  local expected; expected=$(find "$DAGS_DIR" -maxdepth 1 -name '*.py' | wc -l | tr -d ' ')
++  printf "  waiting for the scheduler to register %s DAGs " "$expected"
++  waited=0
++  while [[ $waited -lt 300 ]]; do
++    local n; n=$(dag_count)
++    [[ "$n" -ge "$expected" ]] && { printf " %s registered\n" "$n"; break; }
++    printf "."; sleep 5; waited=$((waited+5))
++  done
++  printf "\n"
++}
++
++dag_count() {
++  local n
++  n="$("$(af_python)" - "$AF_HOME/airflow.db" <<'PY' 2>/dev/null
++import sqlite3, sys
++try:
++    c = sqlite3.connect(sys.argv[1])
++    print(c.execute("select count(*) from dag").fetchone()[0])
++except Exception:
++    print(0)
++PY
++)"
++  printf "%s" "${n:-0}"
++}
++
++import_error_count() {
++  # grep -c prints 0 AND exits 1 when there are no matches, so a `|| echo 0`
++  # fallback would emit a second value.
++  local n
++  n="$("$(af_bin)" dags list-import-errors 2>/dev/null | grep -c '\.py' || true)"
++  printf "%s" "${n:-0}"
++}
++
++report_ready() {
++  local pw="(see $AF_HOME/standalone_admin_password.txt)"
++  [[ -f "$AF_HOME/standalone_admin_password.txt" ]] && pw="$(cat "$AF_HOME/standalone_admin_password.txt")"
++  local errs; errs="$(import_error_count)"
++  cat <<EOF
++
++${GRN}${BLD}Airflow is up.${RST}
++
++  URL         ${BLD}http://localhost:$PORT${RST}
++  username    admin
++  password    $pw
++
++  DAGs        $(dag_count) registered   (import errors: $errs)
++  dags dir    $DAGS_DIR
++  selectors   $DBT_PROJECT_DIR/selectors.yml
++  config      $CONFIG
++  log         $LOGFILE
++
++Every DAG is paused and unscheduled - nothing runs until you trigger it.
++To run one:  UI > pick a DAG > unpause > "Trigger DAG"
++       or:   AIRFLOW_HOME=$AF_HOME $(af_bin) dags trigger <dag_id>
++
++Stop it with: $(basename "$0") down --workdir $WORKDIR
++EOF
++}
++
++cmd_up() {
++  preflight
++  install_airflow
++  ensure_manifest
++  write_config
++  generate
++  init_db
++  af_env
++  start_airflow
++  report_ready
++}
++
++# `prepare` + `serve` split `up` for process supervisors (Tilt, systemd, docker
++# entrypoints). Those tools expect to own the long-running process: `up`
++# backgrounds Airflow and returns, so a supervisor that reaps the command's
++# process group on exit kills Airflow with it.
++cmd_prepare() {
++  preflight_skip_port=1 preflight
++  install_airflow
++  ensure_manifest
++  write_config
++  generate
++  init_db
++  ok "prepared - start Airflow in the foreground with: $(basename "$0") serve"
++}
++
++cmd_serve() {
++  [[ -n "$DBT_PROJECT_DIR" ]] || die "DBT_PROJECT_DIR is required"
++  [[ -x "$(af_bin)" ]] || die "no Airflow venv at $AF_VENV - run '$(basename "$0") prepare' first"
++  af_env
++  info "Starting Airflow standalone in the FOREGROUND on port $PORT"
++  say "  UI will be at http://localhost:$PORT (user admin; password in"
++  say "  $AF_HOME/standalone_admin_password.txt once created)"
++  exec "$(af_bin)" standalone
++}
++
++cmd_regen() {
++  [[ -n "$DBT_PROJECT_DIR" ]] || die "DBT_PROJECT_DIR is required"
++  DBT_PROJECT_DIR="$(cd "$DBT_PROJECT_DIR" && pwd)"
++  MAESTRO="$(resolve_maestro)"; [[ -n "$MAESTRO" ]] || die "maestro not found"
++  af_env
++  ensure_manifest
++  write_config
++  generate
++  ok "regenerated - a running scheduler will pick the changes up within ~30s"
++}
++
++cmd_status() {
++  af_env
++  local code; code="$(http_code /health)"
++  say "workdir : $WORKDIR"
++  say "url     : http://localhost:$PORT  (health HTTP $code)"
++  if [[ "$code" == "200" ]]; then
++    say "state   : ${GRN}running${RST}"
++    say "dags    : $(dag_count) registered"
++    if [[ -x "$(af_bin)" ]]; then
++      say "errors  : $(import_error_count) import errors"
++    fi
++  else
++    say "state   : ${YLW}not running${RST}"
++  fi
++  [[ -f "$DAGS_DIR/../dags" ]] || say "dags dir: $DAGS_DIR ($(find "$DAGS_DIR" -maxdepth 1 -name '*.py' 2>/dev/null | wc -l | tr -d ' ') files)"
++}
++
++cmd_down() {
++  info "Stopping Airflow"
++  local stopped=0
++  # Everything below is scoped to THIS workdir's venv path. A bare
++  # `pkill -f "airflow standalone"` would also kill unrelated Airflow instances
++  # on other ports, including other people's.
++  if [[ -f "$PIDFILE" ]]; then
++    local pid; pid="$(cat "$PIDFILE" 2>/dev/null || true)"
++    if [[ -n "${pid:-}" ]]; then
++      pkill -TERM -P "$pid" 2>/dev/null && stopped=1   # standalone's children
++      kill -TERM "$pid" 2>/dev/null && stopped=1
++    fi
++    rm -f "$PIDFILE"
++  fi
++  # scheduler / webserver / triggerer all execute from this venv
++  pkill -f "^${AF_VENV}/bin/" 2>/dev/null && stopped=1
++  pkill -f "${AF_VENV}/bin/airflow" 2>/dev/null && stopped=1
++  sleep 3
++
++  if [[ "$(http_code /health)" == "000" ]]; then
++    ok "stopped"
++  else
++    warn "port $PORT is still answering - a gunicorn worker may have outlived its parent."
++    warn "processes still running from this workdir:"
++    pgrep -fl "$AF_VENV" 2>/dev/null | sed 's/^/    /' || true
++    warn "if needed: pkill -f '$AF_VENV'"
++  fi
++  [[ $stopped -eq 1 ]] || warn "nothing looked like it was running for workdir $WORKDIR"
++}
++
++cmd_clean() { cmd_down; info "Removing $WORKDIR"; rm -rf "$WORKDIR"; ok "removed"; }
++cmd_logs()  { [[ -f "$LOGFILE" ]] || die "no log at $LOGFILE"; tail -f "$LOGFILE"; }
++
++case "$CMD" in
++  up)      cmd_up;;
++  prepare) cmd_prepare;;
++  serve)   cmd_serve;;
++  regen)  cmd_regen;;
++  status) cmd_status;;
++  down)   cmd_down;;
++  clean)  cmd_clean;;
++  logs)   cmd_logs;;
++  *)      usage; die "unknown command: $CMD";;
++esac
+diff --git a/tests/test_airflow_dag_generator.py b/tests/test_airflow_dag_generator.py
+index 7da7271..af117ee 100644
+--- a/tests/test_airflow_dag_generator.py
++++ b/tests/test_airflow_dag_generator.py
+@@ -20,6 +20,21 @@ def _airflow_available() -> bool:
+         return False
+
+
++def _installed_airflow_major() -> int:
++    """Return the major version of the installed Airflow, defaulting to 2.
++
++    The rendering tests below load generated DAGs into a real DagBag, so they
++    must generate for whichever Airflow is actually installed - Airflow 3
++    rejects ``schedule_interval`` outright.
++    """
++    try:
++        import airflow
++
++        return int(airflow.__version__.split(".")[0])
++    except Exception:
++        return 2
++
++
+ # ---------------------------------------------------------------------------
+ # Fixtures
+ # ---------------------------------------------------------------------------
+@@ -613,26 +628,41 @@ class TestAirflowConfigFromYaml:
+
+ @pytest.mark.skipif(not _airflow_available(), reason="apache-airflow not installed")
+ class TestAirflowDAGRendering:
+-    def test_dags_load_without_import_errors(self, gen, sample_selectors, tmp_path):
++    """Load generated DAGs into a real DagBag.
++
++    Each test targets the installed Airflow major version, so the suite passes
++    on both 2.x and 3.x rather than only on whichever one happens to be pinned.
++    """
++
++    @pytest.fixture
++    def live_cfg(self, default_cfg):
++        default_cfg.airflow_version = _installed_airflow_major()
++        return default_cfg
++
++    @pytest.fixture
++    def live_gen(self, live_cfg):
++        return AirflowDAGGenerator(live_cfg)
++
++    def test_dags_load_without_import_errors(self, live_gen, sample_selectors, tmp_path):
+         from airflow.models import DagBag
+
+-        gen.write_dags(gen.generate_dags(sample_selectors), str(tmp_path))
++        live_gen.write_dags(live_gen.generate_dags(sample_selectors), str(tmp_path))
+         dagbag = DagBag(dag_folder=str(tmp_path), include_examples=False)
+         assert not dagbag.import_errors, f"DAG import errors: {dagbag.import_errors}"
+
+-    def test_each_selector_registered_as_dag(self, gen, sample_selectors, tmp_path):
++    def test_each_selector_registered_as_dag(self, live_gen, sample_selectors, tmp_path):
+         from airflow.models import DagBag
+
+-        gen.write_dags(gen.generate_dags(sample_selectors), str(tmp_path))
++        live_gen.write_dags(live_gen.generate_dags(sample_selectors), str(tmp_path))
+         dagbag = DagBag(dag_folder=str(tmp_path), include_examples=False)
+         assert "dbt_maestro_maestro_staging" in dagbag.dags
+         assert "dbt_maestro_maestro_marts" in dagbag.dags
+
+-    def test_combined_dag_wires_chain(self, default_cfg, tmp_path):
++    def test_combined_dag_wires_chain(self, live_cfg, tmp_path):
+         from airflow.models import DagBag
+
+-        default_cfg.min_models_per_dag = 2
+-        gen = AirflowDAGGenerator(default_cfg)
++        live_cfg.min_models_per_dag = 2
++        gen = AirflowDAGGenerator(live_cfg)
+         sels = [
+             {"name": "maestro_s1", "definition": {"union": [{"method": "fqn", "value": "a"}]}},
+             {"name": "maestro_s2", "definition": {"union": [{"method": "fqn", "value": "b"}]}},
+@@ -642,3 +672,100 @@ class TestAirflowDAGRendering:
+         dag = dagbag.dags["dbt_maestro_combined_small_selectors"]
+         downstream = dag.get_task("run_maestro_s2")
+         assert "run_maestro_s1" in {t.task_id for t in downstream.upstream_list}
++
++
++# ---------------------------------------------------------------------------
++# Airflow major-version targeting (airflow_version)
++# ---------------------------------------------------------------------------
++
++
++class TestAirflowVersionTargeting:
++    """Airflow 3 removed schedule_interval and task SLAs, and moved BashOperator.
++
++    Version 2 output must stay byte-identical to pre-option behaviour so existing
++    generated files don't churn.
++    """
++
++    def _render(self, default_cfg, version, **overrides):
++        default_cfg.airflow_version = version
++        for key, value in overrides.items():
++            setattr(default_cfg, key, value)
++        gen = AirflowDAGGenerator(default_cfg)
++        dags = gen.generate_dags(
++            [{"name": "maestro_s1", "definition": {"union": [{"method": "fqn", "value": "a"}]}}]
++        )
++        return next(iter(dags.values()))
++
++    def test_default_is_version_2(self):
++        assert AirflowConfig().airflow_version == 2
++
++    def test_v2_uses_schedule_interval_kwarg(self, default_cfg):
++        source = self._render(default_cfg, 2)
++        assert "schedule_interval=" in source
++        assert "\n    schedule=" not in source
++
++    def test_v3_uses_schedule_kwarg(self, default_cfg):
++        source = self._render(default_cfg, 3)
++        assert "    schedule=" in source
++        assert "schedule_interval=" not in source
++
++    def test_v2_uses_legacy_bash_import(self, default_cfg):
++        source = self._render(default_cfg, 2)
++        assert "from airflow.operators.bash import BashOperator" in source
++
++    def test_v3_uses_provider_bash_import(self, default_cfg):
++        source = self._render(default_cfg, 3)
++        assert "from airflow.providers.standard.operators.bash import BashOperator" in source
++        assert "from airflow.operators.bash import BashOperator" not in source
++
++    def test_v2_emits_sla(self, default_cfg):
++        source = self._render(default_cfg, 2, sla_minutes=120)
++        assert '"sla": timedelta(minutes=120)' in source
++
++    def test_v3_omits_sla(self, default_cfg):
++        source = self._render(default_cfg, 3, sla_minutes=120)
++        assert '"sla"' not in source
++
++    def test_v3_none_schedule_still_renders(self, default_cfg):
++        source = self._render(default_cfg, 3, orchestration_mode="none")
++        assert "    schedule=None," in source
++
++    @pytest.mark.parametrize("version", [1, 4, 0])
++    def test_invalid_version_rejected(self, default_cfg, version):
++        default_cfg.airflow_version = version
++        with pytest.raises(ValueError, match="airflow_version"):
++            default_cfg.validate()
++
++    def test_valid_versions_accepted(self, default_cfg):
++        for version in (2, 3):
++            default_cfg.airflow_version = version
++            default_cfg.validate()
++
++    def test_from_yaml_parses_version(self, tmp_path):
++        from dbt_job_maestro.config import Config
++
++        config_file = tmp_path / "cfg.yml"
++        config_file.write_text("airflow:\n  airflow_version: 3\n")
++        assert Config.from_yaml(str(config_file)).airflow.airflow_version == 3
++
++    def test_from_yaml_defaults_to_2(self, tmp_path):
++        from dbt_job_maestro.config import Config
++
++        config_file = tmp_path / "cfg.yml"
++        config_file.write_text("airflow:\n  dag_id_prefix: dbt_maestro\n")
++        assert Config.from_yaml(str(config_file)).airflow.airflow_version == 2
++
++    def test_from_yaml_rejects_invalid_version(self, tmp_path):
++        from dbt_job_maestro.config import Config
++
++        config_file = tmp_path / "cfg.yml"
++        config_file.write_text("airflow:\n  airflow_version: 4\n")
++        with pytest.raises(ValueError, match="airflow_version"):
++            Config.from_yaml(str(config_file))
++
++    def test_to_yaml_documents_version(self, tmp_path):
++        from dbt_job_maestro.config import Config
++
++        output = tmp_path / "maestro.yml"
++        Config().to_yaml(str(output))
++        assert "airflow_version:" in output.read_text()
+diff --git a/tests/test_path_exclusion.py b/tests/test_path_exclusion.py
+index ff2c8e8..b5a0488 100644
+--- a/tests/test_path_exclusion.py
++++ b/tests/test_path_exclusion.py
+@@ -421,9 +421,15 @@ class TestTagExclusion:
+             assert (
+                 len(exclude_items) > 0
+             ), f"Selector '{selector['name']}' missing tag exclusion in definition"
+-            # Verify exclude contains tag method entries
+-            exclude_union = exclude_items[0]["exclude"]["union"]
+-            tag_excludes = [e for e in exclude_union if e.get("method") == "tag"]
++            # dbt requires the value of "exclude" to be a list, not a
++            # {union: [...]} dict - a dict makes dbt reject the whole file with
++            # 'Invalid value for key "exclude". Expected a list.'
++            exclude_value = exclude_items[0]["exclude"]
++            assert isinstance(exclude_value, list), (
++                f"Selector '{selector['name']}' emitted a "
++                f"{type(exclude_value).__name__} under 'exclude'; dbt requires a list"
++            )
++            tag_excludes = [e for e in exclude_value if e.get("method") == "tag"]
+             assert len(tag_excludes) == 2
+             excluded_tags = {e["value"] for e in tag_excludes}
+             assert "legacy" in excluded_tags
+@@ -481,6 +487,117 @@ class TestExclusionEdgeCases:
+         assert "stg_legacy_data" in all_fqn_values
+
+
++class TestExcludeClauseShape:
++    """dbt requires the value of ``exclude`` to be a list of selector definitions.
++
++    Emitting ``exclude: {union: [...]}`` makes dbt reject the entire
++    selectors.yml with 'Invalid value for key "exclude". Expected a list.',
++    which breaks every selector in the file - not just the one with exclusions.
++    """
++
++    def _exclude_values(self, selectors, prefix="maestro_"):
++        out = []
++        for selector in selectors:
++            if not selector["name"].startswith(prefix):
++                continue
++            for item in selector.get("definition", {}).get("union", []) or []:
++                if isinstance(item, dict) and "exclude" in item:
++                    out.append(item["exclude"])
++        return out
++
++    def test_union_mode_emits_flat_list(self, parser, graph):
++        config = SelectorConfig(
++            exclude_tags=["legacy"], exclude_paths=["models/temp"], exclusion_mode="union"
++        )
++        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
++        values = self._exclude_values(selectors)
++        assert values
++        for value in values:
++            assert isinstance(value, list)
++            assert all("method" in entry for entry in value)
++            assert {e["method"] for e in value} == {"tag", "path"}
++
++    def test_intersection_mode_wraps_in_nested_intersection(self, parser, graph):
++        config = SelectorConfig(
++            exclude_tags=["legacy"], exclude_paths=["models/temp"], exclusion_mode="intersection"
++        )
++        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
++        values = self._exclude_values(selectors)
++        assert values
++        for value in values:
++            assert isinstance(value, list)
++            assert len(value) == 1
++            assert "intersection" in value[0]
++            assert {e["method"] for e in value[0]["intersection"]} == {"tag", "path"}
++
++    def test_single_criterion_intersection_stays_flat(self, parser, graph):
++        """One criterion needs no intersection wrapper - AND of one thing is itself."""
++        config = SelectorConfig(exclude_tags=["legacy"], exclusion_mode="intersection")
++        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
++        values = self._exclude_values(selectors)
++        assert values
++        for value in values:
++            assert isinstance(value, list)
++            assert value == [{"method": "tag", "value": "legacy"}]
++
++    def test_full_refresh_exclusions_are_a_list(self, parser, graph):
++        config = SelectorConfig(
++            include_full_refresh_selector=True,
++            full_refresh_exclude_tags=["legacy"],
++            full_refresh_exclude_paths=["models/temp"],
++            full_refresh_exclude_models=["temp_debug"],
++        )
++        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
++        fr = next(s for s in selectors if s["name"].endswith("_full_refresh_incremental"))
++        excludes = [item["exclude"] for item in fr["definition"]["union"] if "exclude" in item]
++        assert excludes
++        for value in excludes:
++            assert isinstance(value, list)
++            assert {e["method"] for e in value} == {"tag", "path", "fqn"}
++
++    def test_no_exclude_clause_when_nothing_configured(self, parser, graph):
++        selectors = SelectorOrchestrator(parser, graph, SelectorConfig()).generate_selectors()
++        assert not self._exclude_values(selectors)
++
++
++class TestLegacyExcludeShapeStillResolves:
++    """A stale selectors.yml may still carry the old {union: [...]} dict.
++
++    The resolver must keep subtracting those models so upgrading maestro does not
++    silently change which models are considered covered by manual selectors.
++    """
++
++    def test_dict_shape_exclusions_are_resolved(self, parser, graph):
++        from dbt_job_maestro.model_resolver import ModelResolver
++
++        resolver = ModelResolver(parser, graph)
++        legacy = {
++            "name": "legacy_manual",
++            "definition": {
++                "union": [
++                    {"method": "path", "value": "models/staging"},
++                    {"exclude": {"union": [{"method": "fqn", "value": "stg_users"}]}},
++                ]
++            },
++        }
++        assert "stg_users" not in resolver.resolve_selector(legacy).models
++
++    def test_list_shape_exclusions_are_resolved(self, parser, graph):
++        from dbt_job_maestro.model_resolver import ModelResolver
++
++        resolver = ModelResolver(parser, graph)
++        current = {
++            "name": "current_manual",
++            "definition": {
++                "union": [
++                    {"method": "path", "value": "models/staging"},
++                    {"exclude": [{"method": "fqn", "value": "stg_users"}]},
++                ]
++            },
++        }
++        assert "stg_users" not in resolver.resolve_selector(current).models
++
++
+ # Cleanup fixture
+ @pytest.fixture(autouse=True)
+ def cleanup(temp_manifest):
+diff --git a/tests/test_selector_commands.py b/tests/test_selector_commands.py
+index 57f573d..e4a7fad 100644
+--- a/tests/test_selector_commands.py
++++ b/tests/test_selector_commands.py
+@@ -17,7 +17,6 @@ from dbt_job_maestro.dbt_commands import (
+ from dbt_job_maestro.airflow_dag_generator import AirflowDAGGenerator
+ from dbt_job_maestro.job_generator import JobGenerator
+
+-
+ # ---------------------------------------------------------------------------
+ # dbt_commands helper
+ # ---------------------------------------------------------------------------
+diff --git a/tests/test_selector_system.py b/tests/test_selector_system.py
+index 7a7509b..b4c2739 100644
+--- a/tests/test_selector_system.py
++++ b/tests/test_selector_system.py
+@@ -1309,6 +1309,120 @@ class TestFreshnessSelectors:
+             os.chdir(original_dir)
+
+
++class TestIndirectSelection:
++    """Test the indirect_selection config option.
++
++    dbt accepts ``indirect_selection`` only on an individual selector *method*
++    inside ``definition``. Emitting it as a root-level key (previously under
++    ``default``) makes dbt reject the entire selectors.yml with "Could not parse
++    selector file data", breaking every selector in the file.
++    """
++
++    def _methods(self, definition):
++        """Collect method dicts from a definition tree."""
++        found = []
++
++        def walk(node):
++            if isinstance(node, dict):
++                if "method" in node:
++                    found.append(node)
++                for key in ("union", "intersection"):
++                    for item in node.get(key, []) or []:
++                        walk(item)
++            elif isinstance(node, list):
++                for item in node:
++                    walk(item)
++
++        walk(definition)
++        return found
++
++    def test_eager_adds_nothing(self, mock_parser, mock_graph):
++        config = SelectorConfig(indirect_selection="eager")
++        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
++        for selector in selectors:
++            assert "default" not in selector
++            for method in self._methods(selector.get("definition", {})):
++                assert "indirect_selection" not in method
++
++    def test_non_eager_is_set_on_methods(self, mock_parser, mock_graph):
++        config = SelectorConfig(indirect_selection="cautious")
++        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
++        auto = [s for s in selectors if s["name"].startswith("maestro_")]
++        assert auto, "expected auto-generated selectors"
++        for selector in auto:
++            methods = self._methods(selector.get("definition", {}))
++            assert methods, f"{selector['name']} has no methods"
++            for method in methods:
++                assert method["indirect_selection"] == "cautious"
++
++    def test_never_written_as_root_level_default(self, mock_parser, mock_graph):
++        """Regression: root-level default made dbt reject the whole file."""
++        config = SelectorConfig(indirect_selection="buildable")
++        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
++        for selector in selectors:
++            assert not isinstance(selector.get("default"), dict), (
++                f"{selector['name']} emitted a dict under 'default'; dbt reserves that key "
++                "for the boolean default-selector flag"
++            )
++            assert "indirect_selection" not in selector
++
++    def test_exclude_blocks_are_untouched(self, mock_parser, mock_graph):
++        # The shared mock_graph doesn't stub tag lookups; exclusions need it.
++        mock_graph.get_models_with_tags.return_value = {"model_a"}
++        config = SelectorConfig(
++            indirect_selection="cautious",
++            exclude_tags=["staging"],
++        )
++        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
++
++        def excluded_methods(node, inside_exclude=False):
++            out = []
++            if isinstance(node, dict):
++                if "method" in node and inside_exclude:
++                    out.append(node)
++                if "exclude" in node:
++                    out += excluded_methods(node["exclude"], True)
++                for key in ("union", "intersection"):
++                    for item in node.get(key, []) or []:
++                        out += excluded_methods(item, inside_exclude)
++            elif isinstance(node, list):
++                for item in node:
++                    out += excluded_methods(item, inside_exclude)
++            return out
++
++        for selector in selectors:
++            for method in excluded_methods(selector.get("definition", {})):
++                assert "indirect_selection" not in method
++
++    @pytest.mark.parametrize("mode", ["cautious", "buildable", "empty"])
++    def test_all_non_eager_modes_supported(self, mock_parser, mock_graph, mode):
++        config = SelectorConfig(indirect_selection=mode)
++        selectors = SelectorOrchestrator(mock_parser, mock_graph, config).generate_selectors()
++        auto = [s for s in selectors if s["name"].startswith("maestro_")]
++        methods = [m for s in auto for m in self._methods(s.get("definition", {}))]
++        assert methods
++        assert all(m["indirect_selection"] == mode for m in methods)
++
++    def test_manual_selectors_not_modified(self, mock_parser, mock_graph, tmp_path):
++        selectors_file = tmp_path / "selectors.yml"
++        selectors_file.write_text(
++            "selectors:\n"
++            "  - name: my_manual\n"
++            "    definition:\n"
++            "      union:\n"
++            "        - method: fqn\n"
++            "          value: model_a\n"
++        )
++        config = SelectorConfig(indirect_selection="cautious")
++        orchestrator = SelectorOrchestrator(
++            mock_parser, mock_graph, config, existing_selectors_path=str(selectors_file)
++        )
++        selectors = orchestrator.generate_selectors()
++        manual = next(s for s in selectors if s["name"] == "my_manual")
++        for method in self._methods(manual["definition"]):
++            assert "indirect_selection" not in method
++
++
+ class TestReformatManualSelectors:
+     """Test the reformat_manual_selectors config option."""
