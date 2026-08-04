@@ -17,7 +17,6 @@ from dbt_job_maestro.dbt_commands import (
 from dbt_job_maestro.airflow_dag_generator import AirflowDAGGenerator
 from dbt_job_maestro.job_generator import JobGenerator
 
-
 # ---------------------------------------------------------------------------
 # dbt_commands helper
 # ---------------------------------------------------------------------------

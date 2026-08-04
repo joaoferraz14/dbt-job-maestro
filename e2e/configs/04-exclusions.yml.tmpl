@@ -1,0 +1,12 @@
+manifest_path: __MANIFEST__
+output_dir: __PROJECT_DIR__
+selectors_output_file: selectors.yml
+jobs_output_file: __WORKDIR__/jobs.yml
+
+selector:
+  selector_prefix: maestro
+  combine_single_model_selectors: true
+  exclusion_mode: union
+  exclude_tags: [deprecated]
+  exclude_paths: ['models/staging/legacy']
+  exclude_models: [example_model_a, example_model_b]

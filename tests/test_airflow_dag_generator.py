@@ -20,6 +20,21 @@ def _airflow_available() -> bool:
         return False
 
 
+def _installed_airflow_major() -> int:
+    """Return the major version of the installed Airflow, defaulting to 2.
+
+    The rendering tests below load generated DAGs into a real DagBag, so they
+    must generate for whichever Airflow is actually installed - Airflow 3
+    rejects ``schedule_interval`` outright.
+    """
+    try:
+        import airflow
+
+        return int(airflow.__version__.split(".")[0])
+    except Exception:
+        return 2
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -613,26 +628,41 @@ class TestAirflowConfigFromYaml:
 
 @pytest.mark.skipif(not _airflow_available(), reason="apache-airflow not installed")
 class TestAirflowDAGRendering:
-    def test_dags_load_without_import_errors(self, gen, sample_selectors, tmp_path):
+    """Load generated DAGs into a real DagBag.
+
+    Each test targets the installed Airflow major version, so the suite passes
+    on both 2.x and 3.x rather than only on whichever one happens to be pinned.
+    """
+
+    @pytest.fixture
+    def live_cfg(self, default_cfg):
+        default_cfg.airflow_version = _installed_airflow_major()
+        return default_cfg
+
+    @pytest.fixture
+    def live_gen(self, live_cfg):
+        return AirflowDAGGenerator(live_cfg)
+
+    def test_dags_load_without_import_errors(self, live_gen, sample_selectors, tmp_path):
         from airflow.models import DagBag
 
-        gen.write_dags(gen.generate_dags(sample_selectors), str(tmp_path))
+        live_gen.write_dags(live_gen.generate_dags(sample_selectors), str(tmp_path))
         dagbag = DagBag(dag_folder=str(tmp_path), include_examples=False)
         assert not dagbag.import_errors, f"DAG import errors: {dagbag.import_errors}"
 
-    def test_each_selector_registered_as_dag(self, gen, sample_selectors, tmp_path):
+    def test_each_selector_registered_as_dag(self, live_gen, sample_selectors, tmp_path):
         from airflow.models import DagBag
 
-        gen.write_dags(gen.generate_dags(sample_selectors), str(tmp_path))
+        live_gen.write_dags(live_gen.generate_dags(sample_selectors), str(tmp_path))
         dagbag = DagBag(dag_folder=str(tmp_path), include_examples=False)
         assert "dbt_maestro_maestro_staging" in dagbag.dags
         assert "dbt_maestro_maestro_marts" in dagbag.dags
 
-    def test_combined_dag_wires_chain(self, default_cfg, tmp_path):
+    def test_combined_dag_wires_chain(self, live_cfg, tmp_path):
         from airflow.models import DagBag
 
-        default_cfg.min_models_per_dag = 2
-        gen = AirflowDAGGenerator(default_cfg)
+        live_cfg.min_models_per_dag = 2
+        gen = AirflowDAGGenerator(live_cfg)
         sels = [
             {"name": "maestro_s1", "definition": {"union": [{"method": "fqn", "value": "a"}]}},
             {"name": "maestro_s2", "definition": {"union": [{"method": "fqn", "value": "b"}]}},
@@ -642,3 +672,100 @@ class TestAirflowDAGRendering:
         dag = dagbag.dags["dbt_maestro_combined_small_selectors"]
         downstream = dag.get_task("run_maestro_s2")
         assert "run_maestro_s1" in {t.task_id for t in downstream.upstream_list}
+
+
+# ---------------------------------------------------------------------------
+# Airflow major-version targeting (airflow_version)
+# ---------------------------------------------------------------------------
+
+
+class TestAirflowVersionTargeting:
+    """Airflow 3 removed schedule_interval and task SLAs, and moved BashOperator.
+
+    Version 2 output must stay byte-identical to pre-option behaviour so existing
+    generated files don't churn.
+    """
+
+    def _render(self, default_cfg, version, **overrides):
+        default_cfg.airflow_version = version
+        for key, value in overrides.items():
+            setattr(default_cfg, key, value)
+        gen = AirflowDAGGenerator(default_cfg)
+        dags = gen.generate_dags(
+            [{"name": "maestro_s1", "definition": {"union": [{"method": "fqn", "value": "a"}]}}]
+        )
+        return next(iter(dags.values()))
+
+    def test_default_is_version_2(self):
+        assert AirflowConfig().airflow_version == 2
+
+    def test_v2_uses_schedule_interval_kwarg(self, default_cfg):
+        source = self._render(default_cfg, 2)
+        assert "schedule_interval=" in source
+        assert "\n    schedule=" not in source
+
+    def test_v3_uses_schedule_kwarg(self, default_cfg):
+        source = self._render(default_cfg, 3)
+        assert "    schedule=" in source
+        assert "schedule_interval=" not in source
+
+    def test_v2_uses_legacy_bash_import(self, default_cfg):
+        source = self._render(default_cfg, 2)
+        assert "from airflow.operators.bash import BashOperator" in source
+
+    def test_v3_uses_provider_bash_import(self, default_cfg):
+        source = self._render(default_cfg, 3)
+        assert "from airflow.providers.standard.operators.bash import BashOperator" in source
+        assert "from airflow.operators.bash import BashOperator" not in source
+
+    def test_v2_emits_sla(self, default_cfg):
+        source = self._render(default_cfg, 2, sla_minutes=120)
+        assert '"sla": timedelta(minutes=120)' in source
+
+    def test_v3_omits_sla(self, default_cfg):
+        source = self._render(default_cfg, 3, sla_minutes=120)
+        assert '"sla"' not in source
+
+    def test_v3_none_schedule_still_renders(self, default_cfg):
+        source = self._render(default_cfg, 3, orchestration_mode="none")
+        assert "    schedule=None," in source
+
+    @pytest.mark.parametrize("version", [1, 4, 0])
+    def test_invalid_version_rejected(self, default_cfg, version):
+        default_cfg.airflow_version = version
+        with pytest.raises(ValueError, match="airflow_version"):
+            default_cfg.validate()
+
+    def test_valid_versions_accepted(self, default_cfg):
+        for version in (2, 3):
+            default_cfg.airflow_version = version
+            default_cfg.validate()
+
+    def test_from_yaml_parses_version(self, tmp_path):
+        from dbt_job_maestro.config import Config
+
+        config_file = tmp_path / "cfg.yml"
+        config_file.write_text("airflow:\n  airflow_version: 3\n")
+        assert Config.from_yaml(str(config_file)).airflow.airflow_version == 3
+
+    def test_from_yaml_defaults_to_2(self, tmp_path):
+        from dbt_job_maestro.config import Config
+
+        config_file = tmp_path / "cfg.yml"
+        config_file.write_text("airflow:\n  dag_id_prefix: dbt_maestro\n")
+        assert Config.from_yaml(str(config_file)).airflow.airflow_version == 2
+
+    def test_from_yaml_rejects_invalid_version(self, tmp_path):
+        from dbt_job_maestro.config import Config
+
+        config_file = tmp_path / "cfg.yml"
+        config_file.write_text("airflow:\n  airflow_version: 4\n")
+        with pytest.raises(ValueError, match="airflow_version"):
+            Config.from_yaml(str(config_file))
+
+    def test_to_yaml_documents_version(self, tmp_path):
+        from dbt_job_maestro.config import Config
+
+        output = tmp_path / "maestro.yml"
+        Config().to_yaml(str(output))
+        assert "airflow_version:" in output.read_text()

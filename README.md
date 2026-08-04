@@ -22,6 +22,9 @@ Pick whichever orchestrator your team uses - the selector generation is identica
 - [Manual Selector Preservation](#manual-selector-preservation)
 - [Job Generation & Orchestration](#job-generation--orchestration)
 - [Airflow DAG Generation](#airflow-dag-generation)
+  - [Seeing the lineage](#seeing-the-lineage)
+  - [Try it locally in one command](#try-it-locally-in-one-command)
+  - [Local development with Tilt](#local-development-with-tilt)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
 
@@ -94,6 +97,10 @@ maestro generate-dags --config maestro-config.yml
 ```
 
 > Use **5a** if you orchestrate with dbt Cloud, or **5b** if you orchestrate with Airflow. Both consume the same `selectors.yml`.
+
+To see the DAGs actually running before you deploy anything, skip straight to
+[Local development with Tilt](#local-development-with-tilt) — one command brings up a throwaway
+Airflow with your generated DAGs already loaded.
 
 ---
 
@@ -554,6 +561,10 @@ job:
 airflow:
   dag_id_prefix: dbt_maestro          # DAG = "{dag_id_prefix}_{selector_name}"
   dags_dir: ""                        # Output dir for DAG files (empty = output_dir)
+  airflow_version: 2                  # 2 or 3 - MUST match your Airflow major version.
+                                      # 3 emits schedule=, the provider BashOperator
+                                      # import, and no task SLA. Wrong value = every
+                                      # DAG fails to import.
 
   # Schedules & SLA
   schedule_interval: "0 6 * * *"      # Cron for auto-generated (maestro_*) DAGs
@@ -603,6 +614,12 @@ airflow:
   # (manual/seeds/snapshots/full-refresh DAGs are never combined). 1 = disable.
   min_models_per_dag: 1
   execution_order: []                 # 'seeds','snapshots','models' creation order
+
+  # Visual-only lineage nodes inside each DAG (see "Seeing the lineage" below).
+  # Requires a readable manifest_path. Off by default: DAGs are byte-identical
+  # to previous versions unless you turn this on.
+  lineage_tasks: false
+  lineage_max_models: 50              # skip lineage above this size. 0 = no cap
 
   # Full-refresh DAGs (each its own DAG with its own cron)
   full_refresh:
@@ -803,6 +820,204 @@ maestro generate-dags --config maestro-config.yml
 
 This writes a `dbt_maestro_<selector>.py` file per selector into `dags_dir` (or `output_dir`). Point that directory at your Airflow `dags/` folder, or copy the files in.
 
+### Airflow 2 vs Airflow 3
+
+Airflow 3.0 made three breaking changes that affect generated DAGs, so tell maestro which major version you run:
+
+```yaml
+airflow:
+  airflow_version: 2   # or 3
+```
+
+| | `airflow_version: 2` (default) | `airflow_version: 3` |
+|---|---|---|
+| schedule kwarg | `DAG(schedule_interval=...)` | `DAG(schedule=...)` |
+| BashOperator import | `airflow.operators.bash` | `airflow.providers.standard.operators.bash` |
+| task SLA | `default_args["sla"]` emitted | omitted (SLAs removed in 3.0) |
+
+Leaving it at `2` keeps output byte-identical to previous versions. **If your Airflow is 3.x and you leave this at `2`, every DAG fails to import** with:
+
+```
+TypeError: DAG.__init__() got an unexpected keyword argument 'schedule_interval'
+```
+
+### Try it locally in one command
+
+`scripts/maestro_airflow_up.sh` points at any dbt project, generates selectors and DAGs, installs an isolated Airflow, and serves the UI. It detects your Airflow major version and sets `airflow_version` for you.
+
+```bash
+./scripts/maestro_airflow_up.sh up --project-dir /path/to/your/dbt/project
+# -> http://localhost:8080  (credentials printed)
+
+./scripts/maestro_airflow_up.sh status
+./scripts/maestro_airflow_up.sh regen --project-dir /path/to/your/dbt/project
+./scripts/maestro_airflow_up.sh down
+```
+
+Every DAG is generated unscheduled and created paused, so nothing runs until you trigger it. Run `--help` for all options (`--port`, `--dbt-bin`, `--profiles-dir`, `--target`, `--airflow-version`, `--min-models-per-dag`, `--orchestration`, `--dags-dir`, `--no-lineage`, …).
+
+Three things worth knowing:
+
+- **DAG files land in `--dags-dir`, which defaults to `~/Desktop/maestro-dags`** — outside this repo and outside `--workdir`, so they're easy to find and hand to a real Airflow. Override with `--dags-dir /opt/airflow/dags` or `export DAGS_DIR=…`.
+- It writes `selectors.yml` into your project, because dbt only reads it from the project root. Any existing file is backed up first.
+- Pass `--target` a target name your project actually expects. Projects that key `generate_schema_name` on `target.name` (a common `dev`/`ci` pattern) can silently write to the wrong schemas under an unrecognised target name.
+
+For a supervisor (systemd, a container entrypoint, Tilt), split the two halves so the supervisor owns the long-running process:
+
+```bash
+./scripts/maestro_airflow_up.sh prepare --project-dir /path/to/project   # install + generate + migrate
+./scripts/maestro_airflow_up.sh serve   --project-dir /path/to/project   # exec airflow standalone, foreground
+```
+
+### Local development with Tilt
+
+[Tilt](https://tilt.dev) is the nicest way to work on the generator itself: it watches your files,
+re-generates the DAGs on every save, and keeps a real Airflow running next to them. The included
+`Tiltfile` is **Kubernetes-free** — no Docker, no cluster, no registry. Every resource is a plain
+`local_resource`, so Tilt is used purely as a control panel and file-watcher over the same steps
+`scripts/maestro_airflow_up.sh` runs.
+
+#### Prerequisites
+
+```bash
+brew install tilt-dev/tap/tilt          # or see https://docs.tilt.dev/install.html
+pip install -e .                        # maestro must be importable/on PATH
+```
+
+You also need a dbt project that parses, plus a `dbt` executable. Everything else (the Airflow
+virtualenv, its metadata DB, the generated DAGs) is created for you under `.maestro-airflow/`.
+
+#### Start it
+
+```bash
+tilt up -- --project-dir /path/to/your/dbt/project
+```
+
+Note the bare `--`: everything after it is a Tiltfile flag, not a Tilt flag. Then press **SPACE**
+for the web UI, where the `airflow` resource carries a link to the Airflow UI
+(`http://localhost:8080` by default). `tilt down` stops Airflow and tears the resources down.
+
+Prefer not to retype flags? Every option also reads an environment variable, so you can keep them
+in your shell profile or a `.envrc`:
+
+```bash
+export DBT_PROJECT_DIR=~/code/my_dbt_project
+export DBT_TARGET=dev
+export PORT=8081
+tilt up
+```
+
+| Flag | Env var | Default |
+|---|---|---|
+| `--project-dir` | `DBT_PROJECT_DIR` | *(required)* |
+| `--profiles-dir` | `DBT_PROFILES_DIR` | `~/.dbt` |
+| `--target` | `DBT_TARGET` | `dev` |
+| `--dbt-bin` | `DBT_BIN` | `dbt` (from `PATH`) |
+| `--port` | `PORT` | `8080` |
+| `--airflow-version` | `AIRFLOW_VERSION` | `2.10.5` |
+| `--python-version` | `PYTHON_VERSION` | `3.12` |
+| `--workdir` | `WORKDIR` | `$PWD/.maestro-airflow` |
+| `--dags-dir` | `DAGS_DIR` | `$HOME/Desktop/maestro-dags` |
+| `--min-models-per-dag` | `MIN_MODELS_PER_DAG` | `1` |
+| `--orchestration` | `ORCHESTRATION_MODE` | `none` |
+| `--default-command` | `DEFAULT_COMMAND` | `build` |
+| `--no-lineage` | `LINEAGE_TASKS=false` | lineage **on** locally |
+| `--lineage-max N` | `LINEAGE_MAX_MODELS` | `50` |
+
+Three local defaults differ from the library defaults, deliberately:
+
+- **`--orchestration none`**, and DAGs are created paused, so nothing runs until you click Trigger.
+- **Lineage nodes are on.** Seeing which models a selector builds is the main reason to run Airflow
+  on your laptop. Turn them off with `--no-lineage`. See
+  [Seeing the lineage](#seeing-the-lineage).
+- **`--dags-dir` defaults outside the repo**, to `~/Desktop/maestro-dags`. The generated DAGs are
+  the artefact you want to open, read, and point a real Airflow at — not throwaway state buried in
+  a dot-directory. Change it with `--dags-dir ~/airflow/dags`, or `export DAGS_DIR=…`. Tilt prints
+  the resolved path on startup.
+
+> If your Desktop syncs to iCloud Drive, point `--dags-dir` somewhere unsynced — a few hundred
+> files regenerating on every save is not something you want replicated.
+
+#### The six resources
+
+| Resource | Trigger | What it does |
+|---|---|---|
+| `maestro-tests` | auto, on edits to `dbt_job_maestro/` or `tests/` | runs the unit suite |
+| `generate-dags` | auto, on edits to `dbt_job_maestro/`, your `models/`, or `dbt_project.yml` | regenerates `selectors.yml` + DAG files |
+| `airflow` | auto | `prepare` (install venv, generate, migrate) then `serve` in the foreground, with a `/health` readiness probe |
+| `airflow-status` | manual button | DAG count, import errors, URL |
+| `airflow-credentials` | manual button | prints the `admin` password |
+| `airflow-down` | manual button | stops Airflow |
+
+They're chained `maestro-tests → generate-dags → airflow`, so a failing test stops you before a
+broken generator ever writes DAGs.
+
+#### The edit-reload loop
+
+Save a file in `dbt_job_maestro/` and Tilt re-runs the tests, regenerates every DAG, and restarts
+Airflow. Airflow's scheduler then re-parses `.maestro-airflow/dags/` on its own. Useful commands
+while that's happening:
+
+```bash
+tilt logs airflow -f            # follow just the Airflow resource
+tilt trigger airflow            # force a clean restart (down → prepare → serve)
+tilt trigger generate-dags      # regenerate DAGs without restarting Airflow
+tilt up --stream                # no TUI; stream everything to the terminal (CI-friendly)
+```
+
+#### Where everything lands
+
+Two separate locations. The DAGs you care about are **not** inside the repo:
+
+```
+~/Desktop/maestro-dags/                # DAGS_DIR: the generated DAG files
+                                       # (this is Airflow's dags_folder)
+
+.maestro-airflow/                      # WORKDIR: disposable machinery
+├── airflow-venv/                      # isolated Airflow install
+├── airflow_home/                      # AIRFLOW_HOME: airflow.db, logs/, admin password
+├── target/manifest.json               # the manifest maestro generated from
+├── maestro-config.generated.yml       # the config the flags produced — safe to edit and re-run
+├── maestro-generate.log               # selector generation, incl. every warning
+└── maestro-dags.log                   # DAG generation
+```
+
+`.maestro-airflow/` is gitignored and disposable — delete it, or run `maestro_airflow_up.sh clean`,
+to start from scratch. `clean` deliberately **leaves `DAGS_DIR` alone**, so it will never delete a
+folder you chose outside the workdir.
+
+Task logs for a failed run live under
+`.maestro-airflow/airflow_home/logs/dag_id=<dag>/run_id=<run>/task_id=<task>/attempt=1.log`, which
+is usually faster to read than clicking through the UI.
+
+#### Gotchas
+
+- **`Address already in use` on 8793/8794.** `airflow standalone` hardcodes those two internal
+  ports for the scheduler and triggerer log servers, so a stale Airflow from a previous run keeps
+  them even after the web port is free. The `airflow` resource runs `down` before `prepare` for
+  exactly this reason; if it still happens, something outside Tilt is squatting — find it with
+  `lsof -nP -iTCP:8793,8794 -sTCP:LISTEN` and kill it. The UI works either way, but task logs
+  won't load.
+- **`Build Failed: build canceled`.** You re-triggered while a build was still running. Wait for
+  the current one, then trigger again.
+- **`dbt: command not found` in a task.** The DAGs shell out to whatever `--dbt-bin` you passed
+  (default: bare `dbt`, resolved from Tilt's inherited `PATH`). Pass an absolute path when your dbt
+  lives in a project virtualenv: `--dbt-bin /path/to/project/.venv/bin/dbt`.
+- **`selectors.yml` is written into your dbt project**, not into `.maestro-airflow/`, because dbt
+  only reads it from the project root. Any existing file is backed up to
+  `selectors.yml.bak-<timestamp>` first.
+- **The readiness probe uses `127.0.0.1`, not `localhost`.** Tilt's Go dialer resolves `localhost`
+  to IPv6 `[::1]` while Airflow's gunicorn binds IPv4 only. If you fork the probe, keep the
+  literal IP or it will report failure against a perfectly healthy UI.
+- **A green task is not proof of a table.** See
+  [A DAG succeeds but no tables appear](#a-dag-succeeds-but-no-tables-appear).
+- **Interactive warehouse auth will hang every task.** If your dbt profile authenticates through a
+  browser or an MFA prompt — Snowflake `authenticator: externalbrowser`, an OAuth device flow, `gcloud`
+  application-default login — it works in your terminal and blocks forever under Airflow, which has no
+  terminal to prompt from. This is the single most likely reason a locally triggered DAG sits on
+  *running* and never builds anything. See
+  [A task runs forever and never finishes](#a-task-runs-forever-and-never-finishes).
+
 ### Schedules & SLAs
 
 A single Airflow DAG has a single `schedule_interval`, so per-selector DAGs are what make per-selector schedules possible. Set `airflow.orchestration_mode` (or `--orchestration-mode`):
@@ -873,6 +1088,39 @@ with DAG(
         bash_command="dbt build --selector maestro_staging --target prod --threads 8",
     )
 ```
+
+### Seeing the lineage
+
+One DAG per selector means the Graph view is a single box, which tells you nothing about *what* the selector builds. Set `airflow.lineage_tasks: true` and each DAG also gets a `lineage` task group that draws the selector's dbt graph:
+
+```yaml
+airflow:
+  lineage_tasks: true
+  lineage_max_models: 50    # selectors bigger than this get no lineage nodes
+```
+
+```
+run_maestro_snpglobal_asd ──┬──> stg_snpglobal_asd__raw_data ─────────┐
+    (the one dbt build)     │                                        ├──> int_snpglobal_asd ──┬──> dim_year_asd
+                            └──> stg_..._all_dimension_table ────────┘                        └──> fct_snpglobal_asd
+```
+
+**Nothing about execution changes.** The selector is still built by a single `dbt build --selector`. The lineage nodes are `EmptyOperator`s: no dbt process, no warehouse work, no extra parse. Models and edges come from `manifest.json`, restricted to the models the selector actually resolves to.
+
+Each node is labelled with its materialization (`int_snpglobal_asd  (table)`), and the DAG's docs panel gets a table of every model with its target relation:
+
+| model | materialization | relation |
+|---|---|---|
+| `stg_snpglobal_asd__raw_data` | view | `ANALYTICS.stage_snpglobal_asd.STG_SNPGLOBAL_ASD__RAW_DATA` |
+| `dim_year_asd` | table | `ANALYTICS.market_data.DIM_YEAR_ASD` |
+
+Three things to be aware of:
+
+- **The nodes are not per-model status.** They all succeed together when the single dbt build finishes. Green means "the build ran", not "this model was fine". If you need true per-model state you need one dbt invocation per model, which is a different (and much slower) design.
+- **They are still task instances.** A selector with 40 models produces 40 no-op tasks. That's why `lineage_max_models` defaults to `50` — a 1000-model selector would otherwise emit 1000 of them. Selectors over the cap simply get no lineage group.
+- **A manifest is required.** `lineage_tasks: true` with an unreadable `manifest_path` prints a warning and generates the DAGs without lineage rather than failing.
+
+Task groups **render collapsed** in the Airflow UI — click the `lineage` box to expand it. A DAG that looks like one node usually isn't.
 
 ### dbt Runtime Paths
 
@@ -1001,6 +1249,83 @@ airflow:
   dbt_project_dir: /opt/airflow/dbt_project
   dbt_profiles_dir: /opt/airflow/.dbt
 ```
+
+### "Where are the generated DAG files?" / "My DAG is just one box"
+
+Two different surprises with the same cure — look at what the launcher printed on startup:
+
+```
+dags dir : /Users/you/Desktop/maestro-dags
+```
+
+DAG files go to `--dags-dir` (default `~/Desktop/maestro-dags`), **not** into `--workdir`. `maestro_airflow_up.sh status` prints the path and the file count.
+
+If the files are there but a DAG renders as a single node: **task groups render collapsed**. Click the `lineage` box to expand it. If there's no `lineage` box at all, either `lineage_tasks` is off, the selector resolves to 0 models, or it's over `lineage_max_models`. See [Seeing the lineage](#seeing-the-lineage).
+
+If you changed `--dags-dir` while Airflow was running, restart it — `AIRFLOW__CORE__DAGS_FOLDER` is read at process start (`tilt trigger airflow`, or `maestro_airflow_up.sh down && … up`). New files are otherwise only discovered every `dag_dir_list_interval` seconds (default 300).
+
+### "A task runs forever and never finishes"
+
+Almost always **interactive warehouse authentication**. Your dbt profile is configured to prompt a human — and an Airflow task has no human attached, so dbt waits indefinitely. Check the task log; it will stop dead right after `Concurrency: N threads`:
+
+```
+17:59:01  Concurrency: 4 threads (target='dev')
+Initiating login request with your identity provider. Press CTRL+C to abort and try again...
+Going to open: https://login.microsoftonline.com/...
+A browser window should have opened for you to complete the login.
+```
+
+...and then nothing, forever. The usual culprits are Snowflake's `authenticator: externalbrowser`, any OAuth device-code flow, and cloud CLI login helpers.
+
+Three consequences worth knowing:
+
+- **With `SequentialExecutor` (the local default) one stuck task blocks every other DAG.** Nothing else will run until you clear it: `airflow tasks clear <dag_id> -y`.
+- **`--threads N` means N simultaneous prompts.** Four threads opened four login attempts at once in the example above. `dbt_threads: 1` makes this far less confusing while you debug.
+- **Killing Airflow does not kill dbt.** The `dbt` child is orphaned and keeps its auth attempt open, surviving `tilt down`. Check with `pgrep -fl "bin/dbt"` and `kill -9` the leftovers.
+
+Four ways to fix it, cheapest first — options 2 and 4 usually need warehouse-admin rights, so confirm what your account policy allows:
+
+1. **Cache the SSO token.** Keeps SSO as-is and just stops the re-prompting, like a browser session. For Snowflake, add `client_store_temporary_credential: true` next to `authenticator: externalbrowser`, then authenticate once in a terminal — the token goes to your OS keychain and Airflow reuses it until it expires.
+2. **Key-pair / service-account auth.** The correct answer for anything headless. For Snowflake that's `private_key_path` (+ `private_key_passphrase` from an env var) instead of `authenticator`, with the public key registered on the user.
+3. **Pre-warm the session.** Run any dbt command in your terminal, complete the prompt, then trigger DAGs while the cached connection is valid. Fine for a demo, not for repeated use.
+4. **A programmatic access token**, e.g. `authenticator: oauth` plus `token`.
+
+Whatever you choose, the profile must work non-interactively before Airflow can be useful. A quick way to prove it:
+
+```bash
+dbt build --selector <name> --target dev --threads 1 </dev/null
+```
+
+`</dev/null` denies dbt a terminal, which is what Airflow does. If that command completes, a triggered DAG will too.
+
+### "A DAG succeeds but no tables appear"
+
+A selector that resolves to **zero** nodes is not an error: `dbt build --selector <name>` prints
+`Nothing to do. Try checking your model configs and model specification args`, exits `0`, and
+Airflow marks the task green. Nothing was materialized.
+
+This is the usual fate of a **manual** selector that outlived the models it names. Maestro warns
+about it at generation time rather than silently dropping it, so check the log first:
+
+```bash
+grep -E "no longer exist|does not match any models" .maestro-airflow/maestro-generate.log
+```
+
+```
+Path 'models/3_marts/finance/coe_semantic' does not match any models in the manifest...
+Manual selector 'acct_payable' references 1 models that no longer exist:
+    - gfs_ssas_ap_data
+```
+
+To vet any selector before you trigger its DAG — empty output means the DAG is a no-op:
+
+```bash
+dbt ls --selector <name> --resource-type model \
+  --project-dir /path/to/project --profiles-dir ~/.dbt --target dev
+```
+
+Fix the selector's `definition` in your project's `selectors.yml`. Manual selectors are preserved
+verbatim on every regeneration, so a stale one stays stale until you edit it.
 
 ### "Airflow DAGs run at the wrong time / I have too many tiny DAGs"
 

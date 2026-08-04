@@ -1,0 +1,92 @@
+dbt-job-maestro - uncommitted changes (no commit, no push)
+
+=== git status --short ===
+ M .gitignore
+ M ARCHITECTURE.md
+ M README.md
+ A Tiltfile
+ M dbt_job_maestro/airflow_dag_generator.py
+ M dbt_job_maestro/cli.py
+ M dbt_job_maestro/config.py
+ M dbt_job_maestro/model_resolver.py
+ M dbt_job_maestro/selector_orchestrator.py
+ M dbt_job_maestro/selectors/fqn_selector.py
+ A e2e/REPORT.md
+ A e2e/assert_dags.py
+ A e2e/assert_idempotency.py
+ A e2e/assert_selectors.py
+ A e2e/changes-summary.txt
+ A e2e/changes.patch
+ A e2e/configs/01-baseline.yml.tmpl
+ A e2e/configs/02-special.yml.tmpl
+ A e2e/configs/03-special-fqn.yml.tmpl
+ A e2e/configs/04-exclusions.yml.tmpl
+ A e2e/configs/05-exclusions-intersection.yml.tmpl
+ A e2e/configs/06-prefix-format.yml.tmpl
+ A e2e/configs/07-freshness-removal.yml.tmpl
+ A e2e/configs/08-freshness-all.yml.tmpl
+ A e2e/configs/09-freshness-whitelist.yml.tmpl
+ A e2e/configs/10-af-simple.yml.tmpl
+ A e2e/configs/11-af-staggered.yml.tmpl
+ A e2e/configs/12-af-none.yml.tmpl
+ A e2e/configs/13-af-combined-failfast.yml.tmpl
+ A e2e/configs/14-af-combined-continue.yml.tmpl
+ A e2e/configs/15-af-commands.yml.tmpl
+ A e2e/configs/16-af-fullrefresh.yml.tmpl
+ A e2e/configs/17-af-legacy.yml.tmpl
+ A e2e/configs/18-af-v3.yml.tmpl
+ A e2e/render_configs.sh
+ A e2e/run_dag_matrix.sh
+ A e2e/run_selector_matrix.sh
+ A e2e/validate_airflow_imports.sh
+ A e2e/validate_with_dbt.sh
+ A scripts/maestro_airflow_up.sh
+ M tests/test_airflow_dag_generator.py
+ M tests/test_path_exclusion.py
+ M tests/test_selector_commands.py
+ M tests/test_selector_system.py
+
+=== git diff --stat ===
+ .gitignore                                      |  11 +
+ ARCHITECTURE.md                                 |  51 +++
+ README.md                                       |  76 ++++
+ Tiltfile                                        | 170 ++++++++
+ dbt_job_maestro/airflow_dag_generator.py        |  16 +-
+ dbt_job_maestro/cli.py                          |  51 ++-
+ dbt_job_maestro/config.py                       |  25 +-
+ dbt_job_maestro/model_resolver.py               |  39 +-
+ dbt_job_maestro/selector_orchestrator.py        | 154 +++----
+ dbt_job_maestro/selectors/fqn_selector.py       |  19 +-
+ e2e/REPORT.md                                   | 402 +++++++++++++++++
+ e2e/assert_dags.py                              | 264 +++++++++++
+ e2e/assert_idempotency.py                       | 103 +++++
+ e2e/assert_selectors.py                         | 280 ++++++++++++
+ e2e/configs/01-baseline.yml.tmpl                |   9 +
+ e2e/configs/02-special.yml.tmpl                 |  22 +
+ e2e/configs/03-special-fqn.yml.tmpl             |  12 +
+ e2e/configs/04-exclusions.yml.tmpl              |  12 +
+ e2e/configs/05-exclusions-intersection.yml.tmpl |  12 +
+ e2e/configs/06-prefix-format.yml.tmpl           |  14 +
+ e2e/configs/07-freshness-removal.yml.tmpl       |   9 +
+ e2e/configs/08-freshness-all.yml.tmpl           |  11 +
+ e2e/configs/09-freshness-whitelist.yml.tmpl     |  15 +
+ e2e/configs/10-af-simple.yml.tmpl               |  25 ++
+ e2e/configs/11-af-staggered.yml.tmpl            |  30 ++
+ e2e/configs/12-af-none.yml.tmpl                 |  22 +
+ e2e/configs/13-af-combined-failfast.yml.tmpl    |  24 +
+ e2e/configs/14-af-combined-continue.yml.tmpl    |  24 +
+ e2e/configs/15-af-commands.yml.tmpl             |  28 ++
+ e2e/configs/16-af-fullrefresh.yml.tmpl          |  41 ++
+ e2e/configs/17-af-legacy.yml.tmpl               |  22 +
+ e2e/configs/18-af-v3.yml.tmpl                   |  24 +
+ e2e/render_configs.sh                           |  51 +++
+ e2e/run_dag_matrix.sh                           |  56 +++
+ e2e/run_selector_matrix.sh                      |  76 ++++
+ e2e/validate_airflow_imports.sh                 | 100 +++++
+ e2e/validate_with_dbt.sh                        |  87 ++++
+ scripts/maestro_airflow_up.sh                   | 558 ++++++++++++++++++++++++
+ tests/test_airflow_dag_generator.py             | 141 +++++-
+ tests/test_path_exclusion.py                    | 123 +++++-
+ tests/test_selector_commands.py                 |   1 -
+ tests/test_selector_system.py                   | 114 +++++
+ 42 files changed, 3196 insertions(+), 128 deletions(-)

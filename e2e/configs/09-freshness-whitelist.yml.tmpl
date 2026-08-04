@@ -1,0 +1,15 @@
+manifest_path: __MANIFEST__
+output_dir: __PROJECT_DIR__
+selectors_output_file: selectors.yml
+jobs_output_file: __WORKDIR__/jobs.yml
+
+selector:
+  selector_prefix: maestro
+  combine_single_model_selectors: true
+  include_freshness_selectors: true
+  freshness_selector_names:
+    - maestro_example_component_a
+    - maestro_example_component_b
+    - maestro_example_component_c
+  exclude_freshness_selector_names:
+    - maestro_example_component_c

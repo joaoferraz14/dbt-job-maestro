@@ -1,0 +1,22 @@
+manifest_path: __MANIFEST__
+output_dir: __PROJECT_DIR__
+selectors_output_file: selectors.yml
+jobs_output_file: __WORKDIR__/jobs.yml
+
+selector:
+  selector_prefix: maestro
+  combine_single_model_selectors: true
+  include_seeds_selectors: true
+  seeds_selector_method: path
+  seeds_path: seeds
+  include_snapshots_selectors: true
+  snapshots_selector_method: path
+  snapshots_path: snapshots
+
+airflow:
+  dbt_project_dir: __PROJECT_DIR__
+  dbt_profiles_dir: __PROFILES_DIR__
+  dbt_target: __TARGET__
+  dbt_threads: 4
+  dags_dir: __WORKDIR__/dags/17-legacy
+  orchestration_mode: dependency

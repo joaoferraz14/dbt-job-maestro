@@ -3,7 +3,7 @@
 import os
 import yaml
 import logging
-from typing import List, Dict, Any, Set, Tuple, Optional
+from typing import List, Dict, Any, Set, Tuple
 
 from dbt_job_maestro.selector_types import SelectorPriority
 from dbt_job_maestro.model_resolver import ModelResolver
@@ -104,13 +104,44 @@ class SelectorOrchestrator:
         if self.config.indirect_selection != "eager":
             manual_gen = self.generators[SelectorPriority.MANUAL]
             for selector in selectors:
-                if not manual_gen.is_manually_created(selector) and "default" not in selector:
-                    selector["default"] = {"indirect_selection": self.config.indirect_selection}
+                if not manual_gen.is_manually_created(selector):
+                    self._apply_indirect_selection(
+                        selector.get("definition", {}), self.config.indirect_selection
+                    )
 
         # Warn about models not covered by any selector
         self._warn_uncovered_models(selectors)
 
         return selectors
+
+    def _apply_indirect_selection(self, definition: Any, mode: str) -> None:
+        """Set ``indirect_selection`` on every selection method in a definition.
+
+        dbt accepts ``indirect_selection`` as a key on an individual selector
+        *method* inside ``definition``. It is NOT a root-level selector key: a
+        selector whose root carries ``default: {indirect_selection: ...}`` makes
+        dbt reject the whole selectors.yml with "Could not parse selector file
+        data ... Valid root-level selector definitions: union, intersection,
+        string, dictionary", which breaks every selector in the file, not just
+        that one.
+
+        Only positive selection clauses (``union`` / ``intersection``) are
+        touched; ``exclude`` blocks are left alone since indirect selection has
+        no meaning for exclusions.
+
+        Args:
+            definition: Selector definition subtree (mutated in place).
+            mode: One of eager, cautious, buildable, empty.
+        """
+        if isinstance(definition, dict):
+            if "method" in definition:
+                definition["indirect_selection"] = mode
+            for key in ("union", "intersection"):
+                for item in definition.get(key, []) or []:
+                    self._apply_indirect_selection(item, mode)
+        elif isinstance(definition, list):
+            for item in definition:
+                self._apply_indirect_selection(item, mode)
 
     def _ensure_unique_names(self, selectors: List[Dict[str, Any]]) -> None:
         """Rename any selectors that share a name so every name is unique.
@@ -343,19 +374,35 @@ class SelectorOrchestrator:
             if not isinstance(item, dict):
                 return
 
-            # Check for exclude clause
+            # Check for exclude clause. dbt requires a list here; older maestro
+            # output wrote a {union: [...]} dict, so accept both shapes.
             if "exclude" in item:
                 exclude_def = item["exclude"]
                 if isinstance(exclude_def, dict):
-                    # Handle union of exclusions
-                    for exc_item in exclude_def.get("union", []):
-                        if isinstance(exc_item, dict):
-                            method = exc_item.get("method")
-                            value = exc_item.get("value")
-                            if method == "tag" and value:
-                                excluded_tags.add(value)
-                            elif method == "path" and value:
-                                excluded_paths.add(value)
+                    exc_items = []
+                    for key in ("union", "intersection"):
+                        exc_items.extend(exclude_def.get(key, []) or [])
+                elif isinstance(exclude_def, list):
+                    exc_items = exclude_def
+                else:
+                    exc_items = []
+
+                for exc_item in exc_items:
+                    if not isinstance(exc_item, dict):
+                        continue
+                    # Unwrap a nested union/intersection (intersection mode).
+                    nested = []
+                    for key in ("union", "intersection"):
+                        nested.extend(exc_item.get(key, []) or [])
+                    for candidate in nested or [exc_item]:
+                        if not isinstance(candidate, dict):
+                            continue
+                        method = candidate.get("method")
+                        value = candidate.get("value")
+                        if method == "tag" and value:
+                            excluded_tags.add(value)
+                        elif method == "path" and value:
+                            excluded_paths.add(value)
 
             # Recursively check union items
             if "union" in item:
@@ -404,84 +451,6 @@ class SelectorOrchestrator:
         all_selectors.extend(fqn_selectors)
 
         return all_selectors
-
-    def _create_exclusion(self) -> Optional[Dict[str, Any]]:
-        """Create combined exclusion definition for tags and paths.
-
-        Combines all exclusions (tags and paths) into a single exclude block.
-        Uses 'union' mode (exclude if ANY criteria matches) or 'intersection'
-        mode (exclude only if ALL criteria match) based on config.exclusion_mode.
-
-        Returns:
-            Exclusion definition dictionary, or None if no exclusions configured
-        """
-        exclusion_items = []
-
-        # Add tag exclusions
-        if self.config.exclude_tags:
-            for tag in self.config.exclude_tags:
-                exclusion_items.append({"method": "tag", "value": tag})
-
-        # Add path exclusions
-        if self.config.exclude_paths:
-            for path in self.config.exclude_paths:
-                exclusion_items.append({"method": "path", "value": path})
-
-        if not exclusion_items:
-            return None
-
-        # Use configured exclusion mode (union or intersection)
-        mode = self.config.exclusion_mode
-        return {"exclude": {mode: exclusion_items}}
-
-    def _create_freshness_selector(self, base_name: str) -> Dict[str, Any]:
-        """Create freshness selector.
-
-        Args:
-            base_name: Base selector name
-
-        Returns:
-            Freshness selector definition dictionary
-        """
-        return {
-            "name": f"freshness_{base_name}",
-            "description": f"Freshness selector for {base_name}",
-            "definition": {
-                "union": [
-                    {
-                        "intersection": [
-                            {"method": "selector", "value": base_name},
-                            {"method": "source_status", "value": "fresher", "children": True},
-                        ]
-                    }
-                ]
-            },
-        }
-
-    def _should_create_freshness(self, selector_name: str) -> bool:
-        """Determine if a freshness selector should be created for this selector.
-
-        Logic:
-        1. If selector is in exclude_freshness_selector_names, return False
-        2. If freshness_selector_names is provided, only create for those selectors
-        3. Otherwise, use the global include_freshness_selectors flag
-
-        Args:
-            selector_name: Name of the selector to check
-
-        Returns:
-            True if freshness selector should be created, False otherwise
-        """
-        # Check exclusion list first
-        if selector_name in self.config.exclude_freshness_selector_names:
-            return False
-
-        # If include list is provided, only create for those selectors
-        if self.config.freshness_selector_names:
-            return selector_name in self.config.freshness_selector_names
-
-        # Otherwise use global flag
-        return self.config.include_freshness_selectors
 
     def _generate_seeds_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors for seed files.
@@ -735,7 +704,8 @@ class SelectorOrchestrator:
             exclusion_items.append({"method": "fqn", "value": model})
 
         if exclusion_items:
-            definition["union"].append({"exclude": {"union": exclusion_items}})
+            # dbt requires "exclude" to hold a list, not a {union: [...]} dict.
+            definition["union"].append({"exclude": exclusion_items})
 
         selector = {
             "name": f"{self.config.selector_prefix}_full_refresh_incremental",

@@ -141,3 +141,14 @@ jobs_test.yml
 jobs.yml
 *.bak
 CLAUDE.md
+
+# dbt-job-maestro e2e harness: keep configs, scripts and REPORT.md; drop bulky output
+e2e/artifacts/
+e2e/**/target/
+e2e/**/__pycache__/
+
+# local Airflow / Tilt state
+.maestro-airflow/
+.maestro-e2e/
+tilt_modules/
+.tiltbuild/

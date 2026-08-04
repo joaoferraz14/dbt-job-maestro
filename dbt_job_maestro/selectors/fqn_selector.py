@@ -312,9 +312,16 @@ class FQNSelector(BaseSelector):
     def _create_exclusion(self) -> Optional[Dict[str, Any]]:
         """Create combined exclusion definition for tags and paths.
 
-        Combines all exclusions (tags and paths) into a single exclude block.
-        Uses 'union' mode (exclude if ANY criteria matches) or 'intersection'
-        mode (exclude only if ALL criteria match) based on config.exclusion_mode.
+        dbt requires the value of ``exclude`` to be a **list** of selector
+        definitions; a dict (e.g. ``exclude: {union: [...]}``) makes dbt reject
+        the whole selectors.yml with 'Invalid value for key "exclude". Expected
+        a list.', which breaks every selector in the file.
+
+        The list itself is implicitly a union, so:
+          - union mode        -> the criteria are listed directly
+          - intersection mode -> the criteria are wrapped in a single nested
+                                 ``intersection`` entry, so a model is only
+                                 excluded when it matches ALL criteria
 
         Returns:
             Exclusion definition dictionary, or None if no exclusions configured
@@ -334,9 +341,9 @@ class FQNSelector(BaseSelector):
         if not exclusion_items:
             return None
 
-        # Use configured exclusion mode (union or intersection)
-        mode = self.config.exclusion_mode
-        return {"exclude": {mode: exclusion_items}}
+        if self.config.exclusion_mode == "intersection" and len(exclusion_items) > 1:
+            return {"exclude": [{"intersection": exclusion_items}]}
+        return {"exclude": exclusion_items}
 
     def _custom_sort(self, models: List[str]) -> List[str]:
         """Sort models based on prefix_order config.

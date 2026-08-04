@@ -1,0 +1,22 @@
+manifest_path: __MANIFEST__
+output_dir: __PROJECT_DIR__
+selectors_output_file: selectors.yml
+jobs_output_file: __WORKDIR__/jobs.yml
+
+selector:
+  selector_prefix: maestro
+  combine_single_model_selectors: true
+  single_model_selector_name: orphan_models
+  include_seeds_selectors: true
+  seeds_selector_method: path
+  seeds_path: seeds
+  include_snapshots_selectors: true
+  snapshots_selector_method: path
+  snapshots_path: snapshots
+  include_full_refresh_selector: true
+  full_refresh_exclude_tags: [deprecated]
+  full_refresh_exclude_paths: ['models/staging/legacy']
+  full_refresh_exclude_models: [example_incremental_model]
+  include_freshness_selectors: true
+  freshness_selector_names: [maestro_example_component_a]
+  exclude_freshness_selector_names: [maestro_example_component_b]
