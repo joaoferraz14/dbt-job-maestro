@@ -46,10 +46,13 @@ DBT_THREADS="${DBT_THREADS:-4}"
 PORT="${PORT:-8080}"
 
 # --- USUALLY FINE AS-IS ----------------------------------------------------
-# dbt executable. Set this if you have more than one dbt on PATH (e.g. dbt-core
-# in a venv alongside a global dbt); the generated DAGs shell out to a bare
-# `dbt`, so whatever resolves first is what actually runs.
-DBT_BIN="${DBT_BIN:-dbt}"
+# dbt executable. Left empty here so resolve_dbt (below) can prefer the dbt
+# project's own venv over whatever `dbt` happens to be first on PATH - see
+# resolve_dbt for why that matters. Set this if you still need to force a
+# specific dbt (e.g. dbt-core in a venv alongside a global dbt-fusion); the
+# generated DAGs shell out to a bare `dbt`, so whatever resolves here is what
+# actually runs.
+DBT_BIN="${DBT_BIN:-}"
 # maestro executable. Defaults to `maestro` on PATH, then this repo's venv.
 MAESTRO_BIN="${MAESTRO_BIN:-}"
 # Airflow version to install into the throwaway venv. 2.x and 3.x both work -
@@ -117,7 +120,7 @@ OPTIONS (each maps to the env var of the same name)
   --target NAME           DBT_TARGET        [$DBT_TARGET]
   --threads N             DBT_THREADS       [$DBT_THREADS]
   --port N                PORT              [$PORT]
-  --dbt-bin PATH          DBT_BIN           [$DBT_BIN]
+  --dbt-bin PATH          DBT_BIN           [auto: project .venv, else PATH]
   --maestro-bin PATH      MAESTRO_BIN       [auto-detect]
   --airflow-version V     AIRFLOW_VERSION   [$AIRFLOW_VERSION]
   --python-version V      PYTHON_VERSION    [$PYTHON_VERSION]
@@ -206,16 +209,36 @@ config_dags_dir() {
     | sed -e 's/[[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
 
+# Read the top-level output_dir out of a maestro config file. Prints "." (the
+# same default dbt_job_maestro/config.py's Config.output_dir uses) when the
+# file or key is absent, so a missing key and an explicit `output_dir: .`
+# behave identically.
+config_output_dir() {
+  local v=""
+  if [[ -f "$1" ]]; then
+    v="$(sed -n 's/^output_dir:[[:space:]]*//p' "$1" \
+      | head -1 \
+      | sed -e 's/[[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")"
+  fi
+  echo "${v:-.}"
+}
+
 # Decide where DAGs go, highest priority first:
 #   1. --dags-dir / DAGS_DIR        - an explicit instruction always wins
 #   2. airflow.dags_dir in a config - so a repo that declares a path keeps it
-#   3. DAGS_DIR_FALLBACK            - ~/Desktop/maestro-dags
+#   3. output_dir in that config    - dbt_job_maestro treats an empty/absent
+#                                      airflow.dags_dir as "use output_dir"
+#                                      (see cli.py's generate_dags), so this
+#                                      script must too, or a project like that
+#                                      gets silently redirected to (3) below.
+#   4. DAGS_DIR_FALLBACK            - ~/Desktop/maestro-dags
 #
-# Step 2 matters for `tilt up` inside a project that already has a maestro
-# config: without it the built-in default would silently relocate that project's
-# DAGs. Only dags_dir is taken from a *discovered* config - adopting the whole
-# file would also swap dbt_target and friends, which is not something to do
-# behind the user's back. Pass --config to use a config file in full.
+# Steps 2-3 matter for `tilt up` inside a project that already has a maestro
+# config: without them the built-in default would silently relocate that
+# project's DAGs. Only dags_dir/output_dir are taken from a *discovered*
+# config - adopting the whole file would also swap dbt_target and friends,
+# which is not something to do behind the user's back. Pass --config to use a
+# config file in full.
 resolve_dags_dir() {
   local src
   if [[ -n "$DAGS_DIR" ]]; then
@@ -231,12 +254,18 @@ resolve_dags_dir() {
       done
     fi
     if [[ -n "$cfg" ]]; then
-      local from_cfg; from_cfg="$(config_dags_dir "$cfg")"
+      local from_cfg via
+      from_cfg="$(config_dags_dir "$cfg")"
+      via="airflow.dags_dir"
+      if [[ -z "$from_cfg" ]]; then
+        from_cfg="$(config_output_dir "$cfg")"
+        via="output_dir"
+      fi
       if [[ -n "$from_cfg" ]]; then
-        # A relative dags_dir is relative to the config file, not to $PWD.
+        # A relative path is relative to the config file, not to $PWD.
         [[ "$from_cfg" == /* ]] || from_cfg="$(cd "$(dirname "$cfg")" && pwd)/$from_cfg"
         DAGS_DIR="$from_cfg"
-        src="airflow.dags_dir in ${found:+discovered }$cfg"
+        src="$via in ${found:+discovered }$cfg"
       fi
     fi
   fi
@@ -287,6 +316,21 @@ resolve_maestro() {
   echo ""
 }
 
+# A project's own venv (dbt-core, with the right adapter and version pins) is
+# almost always what you want to run its models with. Prefer it over a bare
+# `dbt` on PATH, which - on machines with multiple dbt installs (e.g. a global
+# dbt-fusion alongside a project-local dbt-core venv) - can silently resolve to
+# a dbt that can't even parse the project (different YAML/CLI surface).
+resolve_dbt() {
+  if [[ -n "$DBT_BIN" ]]; then echo "$DBT_BIN"; return; fi
+  local cand
+  for cand in "$DBT_PROJECT_DIR/.venv/bin/dbt" "$DBT_PROJECT_DIR/venv/bin/dbt"; do
+    [[ -x "$cand" ]] && { echo "$cand"; return; }
+  done
+  if command -v dbt >/dev/null 2>&1; then command -v dbt; return; fi
+  echo "dbt"
+}
+
 preflight() {
   info "Preflight"
   [[ -n "$DBT_PROJECT_DIR" ]] || die "DBT_PROJECT_DIR is required (--project-dir /path/to/dbt/project)"
@@ -300,6 +344,7 @@ preflight() {
   [[ -f "$DBT_PROFILES_DIR/profiles.yml" ]] || warn "no profiles.yml in $DBT_PROFILES_DIR"
   ok "profiles dir: $DBT_PROFILES_DIR"
 
+  DBT_BIN="$(resolve_dbt)"
   command -v "$DBT_BIN" >/dev/null 2>&1 || die "dbt not found: $DBT_BIN (set --dbt-bin)"
   ok "dbt: $(command -v "$DBT_BIN")  [$("$DBT_BIN" --version 2>&1 | sed -n 's/.*installed: *//p' | head -1)]"
 
@@ -396,7 +441,13 @@ generate() {
 
   info "maestro generate-dags"
   mkdir -p "$DAGS_DIR"
-  "$MAESTRO" generate-dags --config "$CONFIG" > "$WORKDIR/maestro-dags.log" 2>&1 \
+  # --dags-dir is passed explicitly (not just left to $CONFIG) so the DAGs
+  # always land exactly where resolve_dags_dir decided and where Airflow's
+  # AIRFLOW__CORE__DAGS_FOLDER is pointed - otherwise, with a user-supplied
+  # --config whose airflow.dags_dir/output_dir are relative, the CLI would
+  # resolve them against $PWD while this script resolved them against the
+  # config file's directory, and the two could silently disagree.
+  "$MAESTRO" generate-dags --config "$CONFIG" --dags-dir "$DAGS_DIR" > "$WORKDIR/maestro-dags.log" 2>&1 \
     || { tail -25 "$WORKDIR/maestro-dags.log" >&2; die "maestro generate-dags failed"; }
   local n; n=$(find "$DAGS_DIR" -maxdepth 1 -name '*.py' | wc -l | tr -d ' ')
   [[ "$n" -gt 0 ]] || die "no DAG files were written to $DAGS_DIR"
@@ -551,6 +602,7 @@ cmd_prepare() {
 cmd_serve() {
   [[ -n "$DBT_PROJECT_DIR" ]] || die "DBT_PROJECT_DIR is required"
   [[ -x "$(af_bin)" ]] || die "no Airflow venv at $AF_VENV - run '$(basename "$0") prepare' first"
+  DBT_BIN="$(resolve_dbt)"
   af_env
   info "Starting Airflow standalone in the FOREGROUND on port $PORT"
   say "  UI will be at http://localhost:$PORT (user admin; password in"
@@ -561,6 +613,7 @@ cmd_serve() {
 cmd_regen() {
   [[ -n "$DBT_PROJECT_DIR" ]] || die "DBT_PROJECT_DIR is required"
   DBT_PROJECT_DIR="$(cd "$DBT_PROJECT_DIR" && pwd)"
+  DBT_BIN="$(resolve_dbt)"
   MAESTRO="$(resolve_maestro)"; [[ -n "$MAESTRO" ]] || die "maestro not found"
   af_env
   ensure_manifest
