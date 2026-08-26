@@ -41,7 +41,15 @@ def q(value):
 PROJECT_DIR = opt('project-dir', 'DBT_PROJECT_DIR', '')
 PROFILES_DIR = opt('profiles-dir', 'DBT_PROFILES_DIR', os.getenv('HOME', '') + '/.dbt')
 TARGET = opt('target', 'DBT_TARGET', 'dev')
-DBT_BIN = opt('dbt-bin', 'DBT_BIN', 'dbt')
+# Left empty unless you actually asked for a specific dbt. An empty value
+# means "don't pass --dbt-bin at all", which lets the launcher's own
+# resolve_dbt() prefer the dbt project's own venv (its dbt-core, matching
+# adapter and version) over whatever `dbt` happens to be first on PATH -
+# see the DBT_BIN comment in scripts/maestro_airflow_up.sh. Forcing 'dbt'
+# here unconditionally used to override that, and could silently resolve to
+# an incompatible dbt (e.g. a global dbt-fusion install) that fails to even
+# parse the project.
+DBT_BIN = opt('dbt-bin', 'DBT_BIN', '')
 PORT = opt('port', 'PORT', '8080')
 AIRFLOW_VERSION = opt('airflow-version', 'AIRFLOW_VERSION', '2.10.5')
 PYTHON_VERSION = opt('python-version', 'PYTHON_VERSION', '3.12')
@@ -69,7 +77,6 @@ _args = [
     '--project-dir', q(PROJECT_DIR),
     '--profiles-dir', q(PROFILES_DIR),
     '--target', q(TARGET),
-    '--dbt-bin', q(DBT_BIN),
     '--port', q(PORT),
     '--workdir', q(WORKDIR),
     '--airflow-version', q(AIRFLOW_VERSION),
@@ -78,6 +85,9 @@ _args = [
     '--orchestration', q(ORCHESTRATION),
     '--default-command', q(DEFAULT_COMMAND),
 ]
+# Only forward --dbt-bin when it was actually set - see the DBT_BIN comment.
+if DBT_BIN:
+    _args = _args + ['--dbt-bin', q(DBT_BIN)]
 # Only forward --dags-dir when it was actually set - see the DAGS_DIR comment.
 if DAGS_DIR:
     _args = _args + ['--dags-dir', q(DAGS_DIR)]
