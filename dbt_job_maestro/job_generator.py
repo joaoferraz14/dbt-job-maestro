@@ -309,7 +309,7 @@ class JobGenerator:
 
         if self.config.orchestration_mode == "staggered":
             cron = self._generate_incremental_cron(job_index)
-        else:  # simple (default)
+        else:  # simple
             cron = self.config.cron_schedule
 
         triggers = {
@@ -508,6 +508,10 @@ class JobGenerator:
             )
             jobs[job_name] = job
 
+        if self.config.orchestration_mode == "none":
+            for job in jobs.values():
+                job["triggers"]["schedule"] = False
+                job.pop("schedule", None)
         return jobs
 
     def _create_full_refresh_job_definition(

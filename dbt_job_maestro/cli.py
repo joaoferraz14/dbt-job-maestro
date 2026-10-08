@@ -256,6 +256,25 @@ def generate(
             f"Generated {non_freshness_selectors} selectors "
             f"from {len(components)} connected components"
         )
+        coverage = generator.model_coverage
+        selected_count = len(coverage.selected)
+        excluded_count = len(coverage.fully_excluded)
+        click.echo(f"\nModels selected (unique): {selected_count}")
+        click.echo(f"Models fully excluded: {excluded_count}")
+        click.echo(
+            f"Coverage: {selected_count} selected + {excluded_count} fully excluded "
+            f"= {selected_count + excluded_count} / {coverage.total} manifest models"
+        )
+        click.echo(f"Unexplained coverage gaps: {len(coverage.unexplained)}")
+        if coverage.unsupported_methods:
+            click.echo(
+                "WARNING: Coverage is not fully verified; unsupported selector methods: "
+                + ", ".join(sorted(coverage.unsupported_methods))
+            )
+        elif coverage.unexplained:
+            click.echo("WARNING: Model coverage is incomplete.")
+        else:
+            click.echo("All manifest models accounted for.")
 
         click.echo("\n" + "=" * 60)
         click.echo("Next Steps:")
@@ -403,6 +422,30 @@ def generate_jobs(config, selectors, output, account_id, project_id, environment
 
         traceback.print_exc()
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--config",
+    "-c",
+    help="Path to configuration YAML file",
+    type=click.Path(exists=True),
+)
+@click.option(
+    "--manifest",
+    help="Path to manifest.json (overrides config for selector generation)",
+    type=click.Path(exists=True),
+)
+def build(config, manifest):
+    """Build selectors and dbt Cloud job YAML locally.
+
+    This command only writes local YAML files. It never syncs or pushes jobs
+    to dbt Cloud.
+    """
+    ctx = click.get_current_context()
+    click.echo("Building selectors and jobs locally...")
+    ctx.invoke(generate, config=config, manifest=manifest)
+    ctx.invoke(generate_jobs, config=config)
 
 
 @main.command()

@@ -246,8 +246,9 @@ class TestAirflowCommands:
         ]
         gen = AirflowDAGGenerator(_airflow_cfg(min_models_per_dag=5, continue_on_failure=True))
         src = gen.generate_dags(small)["dbt_maestro_combined_small_selectors.py"]
-        # no cross-selector dependency edge
-        assert ">>" not in src
+        # no cross-selector dependency edge (dbt_deps gating each selector is fine)
+        assert "run_maestro_a >> run_maestro_b" not in src
+        assert "run_maestro_b >> run_maestro_a" not in src
 
     def test_continue_on_failure_keeps_run_test_chain(self):
         # Within a selector, run >> test must still hold even when siblings are independent.

@@ -1,7 +1,7 @@
 """Tests for job generator."""
 
 import pytest
-from dbt_job_maestro.config import JobConfig
+from dbt_job_maestro.config import JobConfig, CustomFullRefreshSchedule
 from dbt_job_maestro.job_generator import JobGenerator
 
 
@@ -369,6 +369,27 @@ class TestSelectorFiltering:
 
 class TestFullRefreshJobs:
     """Test full refresh job generation."""
+
+    @pytest.mark.parametrize("mode", ["none", "simple", "staggered"])
+    def test_scheduling_applies_to_all_generated_jobs(self, sample_selectors, mode):
+        config = JobConfig(orchestration_mode=mode)
+        config.full_refresh.enabled = True
+        config.seeds_full_refresh.enabled = True
+        config.full_refresh.custom_schedules = [
+            CustomFullRefreshSchedule(name="custom", models=["model_a"])
+        ]
+        jobs = JobGenerator(config).generate_jobs(sample_selectors)["jobs"]
+        assert len(jobs) == 5
+        for job in jobs.values():
+            assert job["triggers"]["schedule"] is (mode != "none")
+            assert ("schedule" in job) is (mode != "none")
+
+    def test_default_has_no_schedule(self, sample_selectors):
+        config = JobConfig()
+        assert config.orchestration_mode == "none"
+        for job in JobGenerator(config).generate_jobs(sample_selectors)["jobs"].values():
+            assert job["triggers"]["schedule"] is False
+            assert "schedule" not in job
 
     def test_auto_full_refresh_when_enabled(self, base_config, sample_selectors):
         base_config.full_refresh.enabled = True

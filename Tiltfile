@@ -50,6 +50,7 @@ TARGET = opt('target', 'DBT_TARGET', 'dev')
 # an incompatible dbt (e.g. a global dbt-fusion install) that fails to even
 # parse the project.
 DBT_BIN = opt('dbt-bin', 'DBT_BIN', '')
+DBT_BIN = opt('dbt-bin','DBT_BIN', os.getcwd() + '/.venv/bin/dbt')
 PORT = opt('port', 'PORT', '8080')
 AIRFLOW_VERSION = opt('airflow-version', 'AIRFLOW_VERSION', '2.10.5')
 PYTHON_VERSION = opt('python-version', 'PYTHON_VERSION', '3.12')

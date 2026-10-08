@@ -56,17 +56,27 @@ job:
   environment_id: 11111
   threads: 8
   target_name: prod
-  orchestration_mode: staggered  # simple | staggered | none
-  cron_schedule: "0 6 * * *"    # base schedule (staggered mode staggers from here)
+  orchestration_mode: none  # Default; AWS/API/manual triggers, no cron required
 ```
 
-### 3. Generate selectors and jobs
+Scheduling is opt-in. Set `job.orchestration_mode: simple` with `cron_schedule`
+or `staggered` with its start/increment fields for dbt Cloud scheduling.
+Airflow uses the independent `airflow.orchestration_mode` setting, also defaulting
+to `none`. This disables every generated schedule, including full-refresh and
+seed-refresh schedules; cron fields can be omitted. Existing configs relying
+on implicit cron scheduling must explicitly opt in on each platform. AWS/API
+triggers are configured outside Maestro.
+
+### 3. Generate selectors and jobs locally
 
 ```bash
 dbt compile
-maestro generate --config maestro-config.yml
-maestro generate-jobs --config maestro-config.yml
+maestro build --config maestro-config.yml
 ```
+
+`maestro build` regenerates both selectors and the configured jobs YAML locally,
+including when the generated jobs file already exists. It does not deploy or
+push anything to dbt Cloud. Review the generated files before committing.
 
 ### 4. Commit and push
 
@@ -250,6 +260,32 @@ python -c "from airflow.models import DagBag; b=DagBag('.', include_examples=Fal
 If `dbt: command not found` at runtime, ensure `dbt` is installed on the Airflow
 worker and set `dbt_project_dir` / `dbt_profiles_dir` in the `airflow:` config so
 the generated commands include `--project-dir` / `--profiles-dir`.
+
+### Selecting the dbt-specific Airflow operator
+
+`airflow.operator` defaults to `bash`, preserving the historical BashOperator DAGs.
+To generate Cosmos local dbt operators instead, install the optional dependency in
+the Airflow environment:
+
+```bash
+pip install "dbt-job-maestro[airflow-dbt]"
+```
+
+Then configure the dbt project and profile:
+
+```yaml
+airflow:
+  operator: dbt
+  dbt_project_dir: /opt/airflow/dbt
+  dbt_profiles_dir: /opt/airflow/.dbt
+  dbt_profile: analytics # optional when dbt_project.yml contains `profile`
+  dbt_target: prod
+  dbt_threads: 8
+```
+
+The Airflow worker must also have dbt Core and the project's adapter installed,
+and access to the configured project and `profiles.yml`. If `run_dbt_deps` is
+enabled, Cosmos dbt tasks are preceded by a BashOperator `dbt deps` setup task.
 
 ## Best Practices
 

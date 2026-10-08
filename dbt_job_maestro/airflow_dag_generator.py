@@ -10,8 +10,12 @@ are removed, while hand-written DAGs are left untouched.
 import logging
 import os
 import re
+import shlex
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 from dbt_job_maestro.config import AirflowConfig, CustomFullRefreshSchedule
 from dbt_job_maestro.dbt_commands import build_steps, resolve_command
@@ -59,7 +63,7 @@ class AirflowDAGGenerator:
             uid: n.get("name") for uid, n in nodes.items() if n.get("resource_type") == "model"
         }
         index: Dict[str, Dict[str, Any]] = {}
-        for uid, node in nodes.items():
+        for node in nodes.values():
             if node.get("resource_type") != "model":
                 continue
             name = node.get("name")
@@ -150,6 +154,7 @@ class AirflowDAGGenerator:
         Returns:
             Mapping of ``filename -> python_source`` for each generated DAG.
         """
+        self.config.validate()
         prefix = f"{self.config.selector_prefix}_"
         full_refresh_selector_name = f"{self.config.selector_prefix}_full_refresh_incremental"
 
@@ -314,14 +319,28 @@ class AirflowDAGGenerator:
         """Common --project-dir/--profiles-dir/--target/--threads flags."""
         flags: List[str] = []
         if self.config.dbt_project_dir:
-            flags += ["--project-dir", self.config.dbt_project_dir]
+            flags += ["--project-dir", shlex.quote(self.config.dbt_project_dir)]
         if self.config.dbt_profiles_dir:
-            flags += ["--profiles-dir", self.config.dbt_profiles_dir]
+            flags += ["--profiles-dir", shlex.quote(self.config.dbt_profiles_dir)]
         if self.config.dbt_target:
             flags += ["--target", self.config.dbt_target]
         if self.config.dbt_threads:
             flags += ["--threads", str(self.config.dbt_threads)]
         return flags
+
+    def _dbt_deps_task(self) -> Tuple[str, str]:
+        """``(task_id, bash_command)`` for the "dbt deps" task.
+
+        Only --project-dir/--profiles-dir are relevant to "dbt deps"; --target
+        and --threads are dropped since they don't affect package installation.
+        """
+        flags: List[str] = []
+        if self.config.dbt_project_dir:
+            flags += ["--project-dir", shlex.quote(self.config.dbt_project_dir)]
+        if self.config.dbt_profiles_dir:
+            flags += ["--profiles-dir", shlex.quote(self.config.dbt_profiles_dir)]
+        cmd = " ".join(["dbt", "deps"] + flags)
+        return ("dbt_deps", cmd)
 
     # ------------------------------------------------------------------
     # Partitioning, ordering, naming
@@ -451,7 +470,11 @@ class AirflowDAGGenerator:
             )
             tasks = [(self._task_id(selector), cmd)]
             dags[f"{dag_id}.py"] = self._render_dag(
-                dag_id, fr.cron_schedule, 0, [tasks], extra_tags=["auto", "full-refresh"]
+                dag_id,
+                None if self.config.orchestration_mode == "none" else fr.cron_schedule,
+                0,
+                [tasks],
+                extra_tags=["auto", "full-refresh"],
             )
 
         for schedule in fr.custom_schedules:
@@ -463,7 +486,11 @@ class AirflowDAGGenerator:
             dag_id = f"{self.config.dag_id_prefix}_full_refresh_{schedule.name}"
             tasks = [(f"run_full_refresh_{schedule.name}", cmd)]
             dags[f"{dag_id}.py"] = self._render_dag(
-                dag_id, schedule.cron_schedule, 0, [tasks], extra_tags=["auto", "full-refresh"]
+                dag_id,
+                None if self.config.orchestration_mode == "none" else schedule.cron_schedule,
+                0,
+                [tasks],
+                extra_tags=["auto", "full-refresh"],
             )
 
         if self.config.seeds_full_refresh.enabled:
@@ -476,7 +503,11 @@ class AirflowDAGGenerator:
             tasks = [(self._task_id(selector), cmd)]
             dags[f"{dag_id}.py"] = self._render_dag(
                 dag_id,
-                self.config.seeds_full_refresh.cron_schedule,
+                (
+                    None
+                    if self.config.orchestration_mode == "none"
+                    else self.config.seeds_full_refresh.cron_schedule
+                ),
                 0,
                 [tasks],
                 extra_tags=["auto", "full-refresh"],
@@ -555,11 +586,36 @@ class AirflowDAGGenerator:
             "from datetime import datetime, timedelta",
             "",
             "from airflow import DAG",
-            bash_import,
         ]
+        if self.config.operator == "dbt":
+            if self.config.run_dbt_deps:
+                lines.append(bash_import)
+            lines += [
+                "from pathlib import Path",
+                "from cosmos import (",
+                "    DbtBuildLocalOperator,",
+                "    DbtRunLocalOperator,",
+                "    DbtSeedLocalOperator,",
+                "    DbtSnapshotLocalOperator,",
+                "    DbtTestLocalOperator,",
+                "    ProfileConfig,",
+                ")",
+            ]
+        else:
+            lines.append(bash_import)
         if lineage:
             lines += [empty_import, "from airflow.utils.task_group import TaskGroup"]
         lines += ["", ""]
+
+        if self.config.operator == "dbt":
+            lines += [
+                "profile_config = ProfileConfig(",
+                f"    profile_name={self._python_literal(self._resolve_dbt_profile())},",
+                f"    target_name={self._python_literal(self.config.dbt_target)},",
+                f"    profiles_yml_filepath={self._profiles_yml_path_expression()},",
+                ")",
+                "",
+            ]
 
         if lineage:
             lines += self._lineage_doc_lines(lineage, lineage_selector) + ["", ""]
@@ -613,25 +669,53 @@ class AirflowDAGGenerator:
             "",
         ]
 
+        # "dbt deps" task, rendered first so dbt_packages/ is always installed
+        # and up to date before any build/run/test/seed/snapshot task runs.
+        deps_task: Optional[Tuple[str, str]] = (
+            self._dbt_deps_task() if self.config.run_dbt_deps else None
+        )
+        if deps_task:
+            deps_task_id, deps_cmd = deps_task
+            deps_var = self._safe_var(deps_task_id)
+            lines += [
+                f"    {deps_var} = BashOperator(",
+                f'        task_id="{deps_task_id}",',
+                f'        bash_command="{deps_cmd}",',
+            ]
+            # Cosmos deprecated its deps operator. Keep this one setup step as
+            # BashOperator while selector execution uses Cosmos's supported local operators.
+            if self.config.dbt_deps_pool:
+                lines.append(f'        pool="{self.config.dbt_deps_pool}",')
+            lines += ["    )", ""]
+
         # Tasks. task_id keeps the (possibly hyphenated) selector name; the
         # Python variable is sanitised so the assignment is always valid.
         for group in task_groups:
             for task_id, cmd in group:
-                task_var = self._safe_var(task_id)
-                lines += [
-                    f"    {task_var} = BashOperator(",
-                    f'        task_id="{task_id}",',
-                    f'        bash_command="{cmd}",',
-                    "    )",
-                    "",
-                ]
+                if self.config.operator == "dbt":
+                    lines += self._cosmos_task_lines(task_id, cmd)
+                else:
+                    task_var = self._safe_var(task_id)
+                    lines += [
+                        f"    {task_var} = BashOperator(",
+                        f'        task_id="{task_id}",',
+                        f'        bash_command="{cmd}",',
+                        "    )",
+                        "",
+                    ]
 
         # Dependencies:
+        #  - "dbt deps" always gates every group's first task, so packages are
+        #    installed/refreshed before any selector work runs;
         #  - within a group, tasks always run in order (e.g. run >> test);
         #  - across groups, chain sequentially (mirrors a job's ordered
         #    execute_steps) UNLESS continue_on_failure is set, in which case the
         #    groups stay independent so a failing selector never skips its siblings.
         dependency_lines: List[str] = []
+        if deps_task:
+            deps_var = self._safe_var(deps_task[0])
+            for group in task_groups:
+                dependency_lines.append(f"{deps_var} >> {self._safe_var(group[0][0])}")
         for group in task_groups:
             if len(group) > 1:
                 dependency_lines.append(
@@ -653,6 +737,114 @@ class AirflowDAGGenerator:
             lines += self._lineage_task_lines(lineage, task_groups)
 
         return "\n".join(lines) + "\n"
+
+    def _resolve_dbt_profile(self) -> str:
+        """Resolve Cosmos's required profile name from config or dbt_project.yml."""
+        if self.config.dbt_profile:
+            return self.config.dbt_profile
+
+        project_dir = Path(self.config.dbt_project_dir or ".").expanduser()
+        project_file = project_dir / "dbt_project.yml"
+        try:
+            with project_file.open("r") as project_yaml:
+                project_config = yaml.safe_load(project_yaml) or {}
+        except FileNotFoundError as exc:
+            raise ValueError(
+                "airflow.operator='dbt' requires airflow.dbt_profile or a readable "
+                f"'profile' in {project_file}"
+            ) from exc
+        except yaml.YAMLError as exc:
+            raise ValueError(
+                f"Could not parse dbt project configuration {project_file}: {exc}"
+            ) from exc
+
+        if not isinstance(project_config, dict):
+            raise ValueError(f"dbt project configuration {project_file} must be a YAML mapping")
+
+        profile = project_config.get("profile")
+        if not isinstance(profile, str) or not profile.strip():
+            raise ValueError(
+                "airflow.operator='dbt' requires airflow.dbt_profile or a non-empty "
+                f"'profile' in {project_file}"
+            )
+        return profile
+
+    def _profiles_yml_path_expression(self) -> str:
+        """Return a Python expression for the configured/default profiles.yml path."""
+        if self.config.dbt_profiles_dir:
+            profiles_dir = self.config.dbt_profiles_dir
+            if profiles_dir.startswith("~"):
+                return (
+                    f"str(Path({self._python_literal(profiles_dir)}).expanduser() "
+                    '/ "profiles.yml")'
+                )
+            return self._python_literal(str(Path(profiles_dir) / "profiles.yml"))
+        return 'str(Path.home() / ".dbt" / "profiles.yml")'
+
+    @staticmethod
+    def _python_literal(value: Any) -> str:
+        """Return a source-safe Python literal for a generated DAG."""
+        return repr(value)
+
+    def _cosmos_task_lines(
+        self, task_id: str, command: str, pool: Optional[str] = None
+    ) -> List[str]:
+        """Render a Cosmos local operator while retaining the generated dbt flags."""
+        argv = shlex.split(command)
+        if len(argv) < 2 or argv[0] != "dbt":
+            raise ValueError(f"Cannot map generated command to a Cosmos dbt operator: {command}")
+
+        operator_by_command = {
+            "build": "DbtBuildLocalOperator",
+            "run": "DbtRunLocalOperator",
+            "seed": "DbtSeedLocalOperator",
+            "snapshot": "DbtSnapshotLocalOperator",
+            "test": "DbtTestLocalOperator",
+        }
+        command_name = argv[1]
+        operator = operator_by_command.get(command_name)
+        if operator is None:
+            raise ValueError(
+                f"Unsupported dbt command '{command_name}' for airflow.operator='dbt'. "
+                f"Supported commands: {', '.join(sorted(operator_by_command))}"
+            )
+
+        # Cosmos configures project, profile and target independently. dbt
+        # exposes --threads on individual commands, so retain it alongside
+        # selector and full-refresh command flags.
+        command_flags: List[str] = []
+        index = 2
+        runtime_flags = {"--project-dir", "--profiles-dir", "--target"}
+        while index < len(argv):
+            flag = argv[index]
+            if flag in runtime_flags:
+                index += 1
+                while index < len(argv) and not argv[index].startswith("--"):
+                    index += 1
+                continue
+            command_flags.append(flag)
+            index += 1
+
+        task_var = self._safe_var(task_id)
+        project_dir = self.config.dbt_project_dir or "."
+        if project_dir.startswith("~"):
+            project_dir_expression = f"str(Path({self._python_literal(project_dir)}).expanduser())"
+        else:
+            project_dir_expression = self._python_literal(project_dir)
+        lines = [
+            f"    {task_var} = {operator}(",
+            f'        task_id="{task_id}",',
+            f"        project_dir={project_dir_expression},",
+            "        profile_config=profile_config,",
+            "        install_deps=False,",
+            "        append_env=True,",
+        ]
+        if command_flags:
+            lines.append(f"        dbt_cmd_flags={self._python_literal(command_flags)},")
+        if pool:
+            lines.append(f'        pool="{pool}",')
+        lines += ["    )", ""]
+        return lines
 
     def _lineage_task_lines(
         self,

@@ -2,10 +2,12 @@
 
 **Automatically generate dbt selectors, dbt Cloud jobs, and Airflow DAGs from your manifest.json by analyzing dependencies.**
 
-`dbt-job-maestro` analyzes your dbt project's dependency graph and generates organized, maintainable selectors, grouping related models by connected components. Manual selectors are always preserved. From those selectors it can generate **two kinds of orchestration artifacts from the same logic**:
+`dbt-job-maestro` analyzes your dbt project's dependency graph and generates organized, maintainable selectors, grouping related models by connected components. Manual selectors are always preserved. Automated model groups are resolved before manual-selector exclusions are applied, so manually selected bridge models do not split an automated lineage group. From those selectors it can generate **two kinds of orchestration artifacts from the same logic**:
 
 - **dbt Cloud jobs** (`jobs.yml`) - sync to dbt Cloud with `dbt-jobs-as-code`.
-- **Airflow DAGs** (`*.py`) - drop into your Airflow `dags/` folder; each selector becomes a `BashOperator` running `dbt build --selector <name>`.
+- **Airflow DAGs** (`*.py`) - drop into your Airflow `dags/` folder; each selector becomes a `BashOperator` running `dbt build --selector <name>` by default. Set `airflow.operator: dbt` to use Astronomer Cosmos local dbt operators instead.
+
+The dbt operator mode requires Cosmos in the Airflow environment (install with `pip install 'dbt-job-maestro[airflow-dbt]'`), plus dbt Core and the project's adapter available to the Airflow worker. Set `airflow.dbt_profile` explicitly or let Maestro infer it from `dbt_project.yml`; the configured `dbt_project_dir`, `dbt_profiles_dir`, target, and threads are passed to the generated tasks. When `run_dbt_deps` is enabled, the setup task remains a `BashOperator` because Cosmos deprecated its standalone deps operator. BashOperator remains the default and does not require Cosmos.
 
 Pick whichever orchestrator your team uses - the selector generation is identical for both.
 
@@ -14,6 +16,7 @@ Pick whichever orchestrator your team uses - the selector generation is identica
 ## Table of Contents
 
 - [Installation](#installation)
+- [Publishing to PyPI](#publishing-to-pypi)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
 - [Data Flow & What It Solves](#data-flow--what-it-solves)
@@ -45,6 +48,38 @@ pip install -e .
 ```
 
 ---
+
+## Publishing to PyPI
+
+From a clean release checkout, install the release tools, run the tests, and
+build both distributions:
+
+```bash
+python -m pip install -e ".[dev,release]"
+python -m pytest tests/ -q
+python -m build
+python -m twine check --strict dist/*
+```
+
+The package version comes from `dbt_job_maestro.__version__` in
+`dbt_job_maestro/__init__.py`. Update it before each new release; PyPI cannot
+replace an already published version. Build into an empty `dist/` directory
+so older releases are not accidentally uploaded. Both distributions include
+the MIT license, and the installed package provides the `maestro` command.
+
+Optionally test publication to TestPyPI before publishing to PyPI:
+
+```bash
+python -m twine upload --repository testpypi dist/*
+# After verifying the release, publish to PyPI:
+python -m twine upload dist/*
+```
+
+Uploads are explicit maintainer actions, not part of generation or build.
+Use a PyPI API token supplied securely to Twine, never committed to the
+repository, or configure trusted publishing in a separately approved release
+workflow. Package-name availability and account permissions must be confirmed
+on the chosen registry.
 
 ## Quick Start
 
@@ -111,9 +146,75 @@ Maestro uses **FQN-based (Fully Qualified Name) selector generation**. It analyz
 **What it does:**
 1. Reads `target/manifest.json` and builds a dependency graph
 2. Finds connected components (groups of models that share dependencies)
-3. Generates one FQN selector per component, with no duplicate models across selectors
+3. Generates one FQN selector per component, avoiding duplicate model selection across resolved selectors
 4. Preserves any existing manual selectors (those without the `maestro_` prefix)
-5. Excludes models already covered by manual selectors from auto-generation
+5. After automated groups are complete in memory, removes models matched by configuration exclusions or owned by manual selectors from their positive FQN entries before writing; remaining models from the component stay together in one selector. Configured tag/path/model exclusions are also emitted explicitly as `exclude` clauses in automated dependency selectors.
+
+`selector.exclude_tags`, `selector.exclude_paths`, and `selector.exclude_models`
+are applied after complete dependency grouping, so excluding a bridge model does
+not split its group. `exclude_models` takes exact bare model names (for example,
+`stg_orders`, not `model.project.stg_orders` or `models/stg_orders.sql`); unmatched
+entries produce a warning. Tag/path criteria use `exclusion_mode` (`union` or
+`intersection`); explicit model names are always removed. These options affect
+automated dependency selectors only: preserved manual selectors can still select
+those models. Dedicated full-refresh exclusions keep their existing behavior.
+
+### Advanced runtime exclusions
+
+Use `selector.exclude_rules` for `config.materialized` and `state` exclusions,
+including nested `intersection` (AND) or `union` (OR) groups:
+
+```yaml
+selector:
+  exclude_rules:
+    - intersection:
+        - method: config.materialized
+          value: view
+        - method: state
+          value: unmodified
+        - method: state
+          value: old
+```
+
+These rules are emitted under `exclude` on automated dependency selectors only;
+manual definitions are unchanged. Each top-level rule is an additional OR
+exclusion, independent of `exclusion_mode` for tag/path criteria. dbt evaluates
+these advanced rules at runtime, not Maestro during grouping or FQN removal.
+State selection requires a previous manifest, for example:
+`dbt ls --selector maestro_example --state ./previous_state`.
+`previous_state/manifest.json` must be a preserved earlier manifest, not the
+current output being overwritten. `state:old` means present in the previous
+manifest; intersecting it with `state:unmodified` is valid but usually redundant.
+Generated job/DAG commands do not automatically add `--state`; provide it in
+your dbt runtime invocation before using state rules. Coverage is explicitly
+reported as unverified when these runtime methods are present.
+
+After generation, Maestro prints model coverage across the final manual and
+automated selectors:
+
+```text
+Models selected (unique): 2800
+Models fully excluded: 53
+Coverage: 2800 selected + 53 fully excluded = 2853 / 2853 manifest models
+Unexplained coverage gaps: 0
+All manifest models accounted for.
+```
+
+Counts are unique manifest models, not the sum of selector sizes. A model excluded
+from one selector but selected by another counts as selected. Fully excluded
+models are absent from every selector and are accounted for by configuration
+exclusions or by the difference between a selector's selection before and after
+its exclusions. Unexplained missing models are reported separately, never counted
+as exclusions. Accounting for all models does not mean all models will run:
+fully excluded models will not run.
+
+This uses Maestro's FQN/tag/path model resolver, not a `dbt ls` invocation.
+Unsupported selector methods are reported as unverified rather than claiming
+complete verification. Use `dbt ls` to validate advanced dbt selector semantics.
+
+Repeated generation with identical output leaves the selectors file untouched,
+including its modification time, avoiding unnecessary editor/file-watcher and
+cloud-sync refreshes. Changed output is rendered in memory before writing.
 
 **Example output:**
 ```yaml
@@ -331,6 +432,22 @@ maestro generate --config maestro-config.yml --include-freshness
 | `--snapshots-method` | Snapshots grouping: `path` or `fqn` | `path` |
 | `--snapshots-path` | Path to snapshots folder | auto-detected |
 
+### `maestro build`
+
+Regenerate selectors and the local dbt Cloud jobs YAML from the current manifest
+and config in one local-only command:
+
+```bash
+maestro build --config maestro-config.yml
+```
+
+This updates generated `jobs.yml` (or the configured output filename) but never
+syncs or pushes jobs to dbt Cloud. The configured Maestro file is the source of
+truth: rerunning `build` regenerates an existing generated jobs file, so there
+is no need to delete it manually after changing configuration. Repeating a
+build with unchanged inputs produces the same generated content. Use `generate`
+alone when you only want to refresh selectors.
+
 ### `maestro generate-jobs`
 
 Generate dbt Cloud jobs from selectors.
@@ -352,7 +469,7 @@ maestro generate-jobs --config maestro-config.yml --account-id 12345
 
 ### `maestro generate-dags`
 
-Generate Airflow DAG Python files from selectors - **one DAG file per selector** (the Airflow analogue of one dbt Cloud job per selector). Each selector becomes a DAG whose `BashOperator` task runs the appropriate dbt command (`dbt build`, `dbt seed`, or `dbt snapshot`). Generation is idempotent: stale auto-generated DAGs are removed and hand-written DAGs left untouched.
+Generate Airflow DAG Python files from selectors - **one DAG file per selector** (the Airflow analogue of one dbt Cloud job per selector). Each selector becomes a DAG whose task uses the configured `airflow.operator` (`BashOperator` by default, or an Astronomer Cosmos local dbt operator). Generation is idempotent: stale auto-generated DAGs are removed and hand-written DAGs left untouched.
 
 ```bash
 maestro generate-dags --config maestro-config.yml
@@ -525,7 +642,7 @@ job:
 
   # Orchestration mode: simple, staggered, or none
   # (cron_incremental is accepted as an alias for staggered)
-  orchestration_mode: simple
+  orchestration_mode: none  # Default: external/manual triggers; use simple/staggered for cron
   cron_schedule: "0 */6 * * *"
 
   # For staggered mode
@@ -578,10 +695,18 @@ airflow:
   retry_delay_minutes: 5               # Minutes between retries
 
   # dbt runtime paths (added to every dbt command)
+  operator: bash                     # bash (default) or dbt (Astronomer Cosmos)
   dbt_project_dir: ""                 # --project-dir (empty = worker cwd)
   dbt_profiles_dir: ""                # --profiles-dir (empty = ~/.dbt)
+  dbt_profile: ""                     # profile name (empty = read from dbt_project.yml)
   dbt_target: prod                     # --target
   dbt_threads: 8                       # --threads
+
+  run_dbt_deps: true                   # Add a "dbt deps" task gating every DAG's
+                                        # build/run/test/seed/snapshot task(s), so
+                                        # dbt_packages/ is always installed/current
+  dbt_deps_pool: ""                    # Airflow pool to serialize "dbt deps" across
+                                        # DAGs (empty = no pool). Pool must pre-exist.
 
   tags: [dbt, maestro]                # Tags shown in the Airflow DAG list
 
@@ -604,7 +729,7 @@ airflow:
   # - simple:    every maestro DAG uses schedule_interval
   # - staggered: DAGs offset by cron_increment_minutes from start_hour:start_minute
   # - none:      no schedule (manual trigger only)
-  orchestration_mode: simple
+  orchestration_mode: none  # Default: external/manual triggers; use simple/staggered for cron
   start_hour: 6
   start_minute: 0
   cron_increment_minutes: 5
@@ -641,7 +766,7 @@ Maestro always preserves selectors that don't start with the configured prefix (
 **How it works:**
 1. Maestro reads existing `selectors.yml`
 2. Selectors without the `maestro_` prefix are identified as manual
-3. Models covered by manual selectors are excluded from auto-generation (zero duplicates)
+3. After automated model groups are complete in memory, manually owned models and configuration-excluded models are removed from automated selectors' positive FQN entries before writing. Configured exclusions are also emitted as explicit `exclude` clauses on automated dependency selectors; manual ownership alone does not add exclusion clauses. Remaining models keep their original group membership, so removing a model in the middle of a lineage does not split the automated group. Manual selector definitions remain unchanged.
 4. Manual selectors are written back to the output file
 
 ### Preserving Original Formatting
@@ -691,6 +816,24 @@ Maestro generates dbt Cloud job definition YAML files (`jobs.yml`).
 
 ### Orchestration Modes
 
+Scheduling is opt-in for both dbt Cloud and Airflow. Omitting `orchestration_mode`
+defaults to `none`; cron fields may be omitted and are ignored in this mode,
+including full-refresh, custom full-refresh, seed-refresh, and manual-selector
+schedules. Trigger generated jobs/DAGs externally (for example from AWS) using
+the platform API; Maestro does not create the AWS trigger.
+
+```yaml
+job:
+  orchestration_mode: none
+airflow:
+  orchestration_mode: none
+```
+
+**Migration:** configs that previously relied on the implicit `simple` default
+must now explicitly set `orchestration_mode: simple` in each platform section
+to retain cron scheduling. Existing explicit `simple`/`staggered` configs keep
+their schedules.
+
 #### Simple Mode (Parallel)
 
 All jobs run at the same time.
@@ -716,7 +859,7 @@ job:
 
 Result: jobs at 6:00, 6:05, 6:10, etc.
 
-#### None Mode (Manual Trigger Only)
+#### None Mode (Default: External or Manual Trigger)
 
 Jobs are generated with `triggers.schedule = false` and no `schedule` field. Useful when you want to trigger jobs manually or via an external orchestrator.
 
@@ -799,7 +942,9 @@ maestro generate-jobs --config maestro-config.yml  # Generate jobs
 
 ## Airflow DAG Generation
 
-If you orchestrate with **Apache Airflow** instead of dbt Cloud, maestro generates ready-to-run DAG files from the same `selectors.yml`. It emits **one DAG file per selector** - the Airflow analogue of one dbt Cloud job per selector - so each selector gets its own schedule, SLA, and retry policy. Each DAG's `BashOperator` task runs the appropriate dbt command:
+If you orchestrate with **Apache Airflow** instead of dbt Cloud, maestro generates ready-to-run DAG files from the same `selectors.yml`. It emits **one DAG file per selector** - the Airflow analogue of one dbt Cloud job per selector - so each selector gets its own schedule, SLA, and retry policy. By default, each DAG uses a `BashOperator` to run the appropriate dbt command. Set `airflow.operator: dbt` to use Astronomer Cosmos local dbt operators instead; `run_dbt_deps` setup tasks continue to use `BashOperator`.
+
+For the default BashOperator mode, the selector types map to these dbt commands:
 
 | Selector type | dbt command |
 |---------------|-------------|
@@ -1024,11 +1169,11 @@ A single Airflow DAG has a single `schedule_interval`, so per-selector DAGs are 
 
 | Mode | Behaviour |
 |------|-----------|
-| `simple` (default) | every maestro DAG uses `schedule_interval` |
+| `simple` | every maestro DAG uses `schedule_interval` |
 | `staggered` | DAGs offset by `cron_increment_minutes` from `start_hour:start_minute`, in creation order |
-| `none` | `schedule_interval=None` - manual trigger only |
+| `none` (default) | `schedule_interval=None` - external/manual trigger only, for all generated DAGs |
 
-**Manual selectors** (no `maestro_` prefix) commonly need a different cadence/SLA. `manual_schedule_interval` overrides their cron in any mode, and `manual_sla_minutes` sets their SLA (`-1` inherits `sla_minutes`, `0` disables, `>0` sets it). When the resolved SLA is `> 0` it's emitted as `"sla": timedelta(...)` in `default_args`.
+**Manual selectors** (no `maestro_` prefix) commonly need a different cadence/SLA. `manual_schedule_interval` overrides their cron only in scheduled modes (not `none`), and `manual_sla_minutes` sets their SLA (`-1` inherits `sla_minutes`, `0` disables, `>0` sets it). When the resolved SLA is `> 0` it's emitted as `"sla": timedelta(...)` in `default_args`.
 
 ### Combining Small Selectors
 
@@ -1078,6 +1223,7 @@ with DAG(
     dag_id="dbt_maestro_maestro_staging",
     default_args=default_args,
     schedule_interval="0 6 * * *",
+    orchestration_mode="simple",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=['dbt', 'maestro'],
@@ -1132,7 +1278,27 @@ airflow:
   dbt_profiles_dir: /opt/airflow/.dbt
 ```
 
-These map to `--project-dir` and `--profiles-dir`. For more complex setups, consider running dbt via the Astronomer Cosmos provider or a `KubernetesPodOperator` - the generated DAGs use `BashOperator` for maximum portability.
+These map to `--project-dir` and `--profiles-dir`. For more complex setups, select `airflow.operator: dbt` to generate Astronomer Cosmos local dbt operators; `BashOperator` remains the default for portability.
+
+### "Too many dbt/Python processes at once" / crashes around the shared schedule time
+
+Every generated DAG runs its own `dbt deps` task (see [`run_dbt_deps`](#complete-configuration-reference)) followed by its build/run/test task(s) - each is a separate `dbt` (Python) process. If most of your DAGs share one `schedule_interval` (the default), dozens can fire simultaneously, all invoking `dbt deps` at the same instant **into the same `dbt_packages/` directory** under `dbt_project_dir`. Concurrent installs there can race/corrupt package extraction and spike process count enough to crash the worker.
+
+Two independent mitigations, both safe to combine:
+
+1. **Serialize `dbt deps` with an Airflow pool.** Create a 1-slot pool once, then point every DAG's deps task at it:
+   ```bash
+   airflow pools set dbt_deps 1 "Serialize dbt deps across DAGs"
+   ```
+   ```yaml
+   airflow:
+     dbt_deps_pool: dbt_deps
+   ```
+   Only one `dbt deps` runs at a time across *all* DAGs; everything else is unaffected. The pool must already exist - referencing a missing pool fails the task at runtime.
+
+2. **Spread schedules with `orchestration_mode: staggered`** (see [Orchestration Modes](#orchestration-modes)) so DAGs don't all fire at the exact same minute in the first place.
+
+If you don't need `dbt deps` re-run on every DAG trigger (e.g. a separate process already keeps `dbt_packages/` current), set `run_dbt_deps: false` to remove the task entirely.
 
 ### Regeneration Workflow
 

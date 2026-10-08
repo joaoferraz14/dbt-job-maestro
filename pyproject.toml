@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbt-job-maestro"
-version = "0.3.0"
-description = "Automatically generate dbt selectors from manifest.json by analyzing dependencies, paths, and tags"
-readme = "README.md"
+dynamic = ["version"]
+description = "Generate dbt selectors, dbt Cloud job definitions, and Airflow DAGs from manifest.json"
+readme = { file = "README.md", content-type = "text/markdown" }
 authors = [
     { name = "João Ferraz", email = "joaotiagoplgferraz@gmail.com" }
 ]
@@ -38,17 +38,32 @@ dev = [
     "flake8>=4.0.0",
     "mypy>=0.950",
 ]
+release = [
+    "build>=1.0.0",
+    "twine>=5.0.0",
+]
 airflow = [
     "apache-airflow>=2.5.0",
+]
+airflow-dbt = [
+    "astronomer-cosmos>=1.4.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/joaoferraz14/dbt-job-maestro"
 Repository = "https://github.com/joaoferraz14/dbt-job-maestro"
 Issues = "https://github.com/joaoferraz14/dbt-job-maestro/issues"
+Documentation = "https://github.com/joaoferraz14/dbt-job-maestro#readme"
+Changelog = "https://github.com/joaoferraz14/dbt-job-maestro/releases"
 
 [project.scripts]
 maestro = "dbt_job_maestro.cli:main"
+
+[tool.setuptools]
+license-files = ["LICENSE"]
+
+[tool.setuptools.dynamic]
+version = { attr = "dbt_job_maestro.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]

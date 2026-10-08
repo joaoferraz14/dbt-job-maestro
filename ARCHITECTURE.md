@@ -74,11 +74,35 @@ In addition to dependency-based selectors, maestro can generate:
 ## Manual Selector Preservation
 
 Across all methods, selectors NOT starting with the configured prefix (`maestro_` by default) are
-considered **manual selectors** and are always preserved. Models covered by manual selectors are
-automatically excluded from auto-generation to prevent duplicates.
+considered **manual selectors** and are always preserved. Automated model selectors are first
+constructed in memory from the complete eligible dependency graph. Maestro then removes models
+covered by manual selectors from the positive FQN entries before writing the automated selector
+definitions. Configuration tag/path/model matches are also removed only after complete grouping,
+and are also emitted as explicit exclusion clauses in automated dependency selectors.
+Manual ownership alone removes positive FQNs without adding exclusion clauses. Manual definitions and
+dedicated full-refresh exclusions remain intact.
+This avoids duplicate positive FQN entries without splitting a connected component when a
+manually selected model lies between upstream and downstream models; the remaining models stay
+together in the same selector.
 
 - `critical_revenue`, `my_custom_selector` → Manual (preserved)
 - `maestro_stg_customers` → Auto-generated (replaced on regeneration)
+
+### Model coverage accounting
+
+`selector.exclude_rules` adds validated nested union/intersection exclusion trees
+for `config.materialized` and `state` to automated dependency selectors. They
+are emitted for dbt runtime evaluation without altering in-memory grouping;
+state rules require a previous manifest supplied with dbt's `--state`. Manual
+definitions are not changed, and coverage warns about unresolved runtime methods.
+
+After generation, the orchestrator records unique selected, fully excluded, and
+unexplained model sets. It reuses the uncovered-model check for the CLI summary.
+Fully excluded models come from configuration exclusions or models removed by
+selector exclusion clauses, minus all models selected elsewhere. The CLI shows
+selected + fully excluded against the manifest model total, and reports gaps and
+unsupported resolver methods separately. This does not change generated selectors
+or invoke dbt; it is accounting through the existing FQN/tag/path resolver.
 
 ## Freshness Selector Identification
 
@@ -332,6 +356,7 @@ with DAG(
     dag_id="dbt_maestro_maestro_stg_customers",
     default_args=default_args,
     schedule_interval="0 6 * * *",
+    orchestration_mode="simple",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=['dbt', 'maestro'],
@@ -368,8 +393,11 @@ Cloud jobs, DAGs are independent and ordered via schedules.
 
 Freshness selectors (`freshness_*`, `automatically_generated_freshness_*`) and the
 auto full-refresh selector are filtered out of the per-selector pass. Each remaining
-selector becomes one DAG whose `BashOperator` has `task_id = run_<selector_name>`,
-in a file named `<dag_id_prefix>_<selector_name>.py`.
+selector becomes one DAG with a task whose operator is selected using
+`airflow.operator` (`bash` by default, or `dbt` for Astronomer Cosmos local operators),
+in a file named `<dag_id_prefix>_<selector_name>.py`. With `run_dbt_deps: true`,
+the dependency-install setup task uses `BashOperator`; Cosmos has deprecated its
+standalone deps operator.
 
 **Per-selector command** (`default_command` + `selector_commands`) is resolved by the
 shared `dbt_commands` module, used by both `JobGenerator` and `AirflowDAGGenerator`:
@@ -379,13 +407,17 @@ task, but `run_test` yields two tasks wired `run >> test` (so the test only runs
 run succeeds). Seeds/snapshots/full-refresh keep their type-specific command above.
 
 ### Schedules & SLA (`airflow.orchestration_mode`)
-- **simple** (default) - every maestro DAG uses `schedule_interval`.
+- **simple** - every maestro DAG uses `schedule_interval`.
 - **staggered** - DAGs are offset by `cron_increment_minutes` from
   `start_hour:start_minute`, in creation order (controlled by `execution_order`).
-- **none** - `schedule_interval=None`; DAGs are manual-trigger only.
+- **none** (default) - `schedule_interval=None`; all generated DAGs are
+  externally/manual-triggered, including full-refresh and seed-refresh DAGs.
+  Cron settings are optional and ignored in this mode. dbt Cloud jobs likewise
+  default to `job.orchestration_mode: none`, with no schedule and a disabled
+  schedule trigger. Explicit `simple`/`staggered` enables cron scheduling.
 
 Manual selectors (no `maestro_` prefix) can take a different cadence via
-`manual_schedule_interval` (always wins, in any mode) and a different SLA via
+`manual_schedule_interval` (wins only in scheduled modes) and a different SLA via
 `manual_sla_minutes` (`-1` inherits `sla_minutes`, `0` disables, `>0` sets it).
 SLA is emitted into `default_args` only when the resolved value is `> 0`.
 
@@ -434,7 +466,11 @@ import with `TypeError: DAG.__init__() got an unexpected keyword argument 'sched
 `--target` and `--threads` are always appended. `--project-dir` and
 `--profiles-dir` are appended only when `dbt_project_dir` / `dbt_profiles_dir`
 are configured, keeping commands clean when the worker already runs in the
-project directory.
+project directory. For `airflow.operator: dbt`, Cosmos receives the project,
+profile, target, threads, selector, and full-refresh settings through its local
+dbt operators. Set `airflow.dbt_profile` or provide `profile` in the project's
+`dbt_project.yml`; install the optional extra with
+`pip install 'dbt-job-maestro[airflow-dbt]'` in the Airflow environment.
 
 ## CLI Commands
 
@@ -448,12 +484,153 @@ maestro generate --config maestro-config.yml
 # Generate dbt Cloud jobs from selectors
 maestro generate-jobs --config maestro-config.yml
 
+# Regenerate selectors and the local dbt Cloud jobs YAML together (no cloud push)
+maestro build --config maestro-config.yml
+
 # Generate Airflow DAGs from selectors (one DAG file per selector)
 maestro generate-dags --config maestro-config.yml
 
 # Analyze project
 maestro info --manifest target/manifest.json
 ```
+
+## Possible Future Implementation: Separate Generated-Artifacts Repository
+
+**Proposal only:** this describes a possible CI/CD integration, not functionality
+implemented by Maestro. No cross-repository trigger, rename detector, or deployment
+workflow is currently provided by this design.
+
+Keep dbt models and Maestro configuration in the source repository, and maintain
+generated selectors, dbt Cloud job YAML, and/or Airflow DAGs in a separate
+generated-artifacts repository. Merging to the source repository's `main` branch
+would trigger generation and open a pull request in the artifacts repository.
+Generation and deployment should remain separate, with review before deployment.
+
+### Example Workflow
+
+1. **Source merge:** CI runs after a merge to `main`, records the exact source
+   commit SHA, and dispatches an authenticated event to the artifacts repository.
+   Limit dispatch credentials to the required repository permissions.
+2. **Reproducible checkout:** the artifacts workflow checks out that source SHA
+   and the current artifacts branch. Pin Maestro, dbt, and adapter versions.
+   Serialize updates per source project so concurrent merges cannot overwrite
+   each other's output; reject obsolete results before publishing.
+3. **Prepare inputs:** install the dbt dependencies and produce a manifest using
+   the source project's configuration. Carry forward user-managed selectors and
+   jobs from their designated source of truth; never replace them with an empty
+   starting file. Configure generation paths inside an isolated staging directory
+   containing the existing owned artifacts.
+4. **Generate locally:** run `maestro build --config <config-path>` for selectors
+   and job YAML. For Airflow, run `maestro generate --config <config-path>` followed
+   by `maestro generate-dags --config <config-path>`. If both outputs are needed,
+   build first and then generate DAGs from the same selectors. These commands
+   generate files only; generation CI must not push jobs to dbt Cloud.
+5. **Validate and reconcile:** validate selector YAML and dbt selection against
+   the matching manifest, validate job definitions, and import DAGs in an Airflow
+   environment with the configured operator dependencies. Generate a second time
+   and require identical output. Compare the candidate artifacts with the
+   artifacts repository's current approved revision.
+6. **Review:** open or update an artifacts pull request containing generated-file
+   diffs, source SHA, tool versions, validation results, and an identity-change
+   report. Do not create a commit or pull request when output is unchanged.
+7. **Deploy separately:** after approval and merge in the artifacts repository,
+   a separately authorized deployment workflow may synchronize jobs or publish
+   DAGs. Make selectors available to the runtime dbt project from the same
+   approved artifact revision, and ensure the runtime models match the recorded
+   source SHA. Publishing DAGs or job YAML alone is insufficient if their
+   selector names are missing from the runtime project.
+
+### Airflow-Only Example: Compile, Generate, Publish to S3
+
+For an Airflow-only implementation, no dbt Cloud jobs need to be generated.
+The external CI workflow runs `dbt compile` explicitly: Maestro does not compile
+the dbt project or refresh its manifest, and `maestro build` is local selector/job
+generation, not a dbt compilation command.
+
+An example generation stage, run from the checked-out dbt project:
+
+```bash
+# CI installs pinned dbt/adapter/Maestro versions and supplies dbt credentials.
+dbt deps
+dbt compile --target ci
+
+# Config points manifest_path at target/manifest.json and defines output paths.
+maestro generate --config maestro-config.yml
+maestro generate-dags --config maestro-config.yml
+
+# CI validation and the identity-change checks above must pass before publishing.
+```
+
+`dbt compile` may query the warehouse while compiling macros; use an appropriate
+CI profile and credentials. Selectors generated afterward must be included in
+the runtime project, not just in the compile-time checkout. If validation needs
+a manifest containing the newly generated selector definitions, re-run
+`dbt compile --target ci` after generation before that validation.
+
+After review and approval, an example publication stage uploads the validated
+release to a dedicated, immutable S3 prefix:
+
+```bash
+# Example paths only: CI assembles release/ from the approved artifacts revision.
+# SOURCE_SHA is the exact source commit recorded by the generation workflow.
+aws s3 cp release/ "s3://example-airflow-artifacts/releases/${SOURCE_SHA}/" --recursive
+```
+
+The release should contain generated DAGs, selectors, the matching manifest,
+and release metadata identifying source/tool versions. Also provide the matching
+dbt project and its runtime dependencies, either in the release or through a
+version-pinned worker image/checkout. The bucket upload is a CI responsibility,
+not a Maestro command. Use short-lived AWS credentials and permissions scoped to
+the designated artifact prefix; do not upload profiles containing credentials,
+local virtual environments, or unrelated project files.
+
+Uploading a release does not by itself make Airflow discover its DAGs. A deployment
+step must configure or update the runtime's artifact loader to consume the approved
+release and place DAGs in its discovery location and selectors in the dbt project.
+For managed Airflow services with a fixed S3 DAG prefix, publish approved DAGs to
+that configured prefix separately. Reconcile renamed/removed generated DAGs only
+within the owned deployment scope after the identity checks; do not blindly sync
+with deletion across a shared bucket. Promote only a complete validated release,
+and retain the previous release reference for rollback.
+
+### CI/CD Checks for Selector, Job, and DAG Identity Changes
+
+Generated selector names can change as dependency groups or their naming model
+change. Because job names and DAG IDs derive from selector names, a selector
+rename can appear as a deleted job/DAG plus a newly created one. A file diff alone
+must not be treated as proof of a safe rename.
+
+The proposed CI would maintain a versioned inventory of selectors, selected dbt
+model unique IDs, generated job keys/names, DAG IDs, and associated source SHA.
+Compare old selections using the old manifest and new selections using the new
+manifest, rather than resolving both against the latest project.
+
+Required checks and report:
+
+- **Unchanged identity, changed content:** report configuration or model-membership
+  updates separately from renames.
+- **Likely rename:** an old selector disappears and a new selector selects the
+  same model unique-ID set. Report the old/new selector names and the corresponding
+  old/new job names and DAG IDs. Treat this as a candidate requiring review, not
+  an automatic migration.
+- **Added or removed group:** report identities with no counterpart explicitly.
+- **Split, merge, or ambiguous match:** report overlapping model sets and require
+  review. Do not infer a rename from name similarity or partial overlap alone.
+- **Unresolved selection:** if runtime state, selector methods, or exclusions
+  prevent reliable model-set comparison, mark reconciliation unverified and block
+  automatic identity migration rather than claiming a match.
+- **Stale references:** check generated commands, selector references, DAG/task
+  dependencies, and any version-controlled external-trigger mappings for removed
+  names. AWS trigger targets outside the repository require a separate inventory
+  or an explicit owner acknowledgement.
+
+Removing an owned generated file locally does not delete a deployed dbt Cloud
+job or an Airflow metadata record. A future deployment workflow must explicitly
+plan retirement of old identities, prevent duplicate scheduled execution, update
+AWS/API trigger targets, and preserve user-managed resources. Airflow DAG ID
+changes also affect historical identity; decide how to retain history and handle
+active runs before retiring the old DAG. Require approval for destructive changes
+and retain the prior artifacts revision for rollback.
 
 ## Dependencies
 
@@ -466,6 +643,9 @@ maestro info --manifest target/manifest.json
 - apache-airflow >= 2.5.0 - only needed to *render/validate* generated DAGs in a
   live Airflow environment (`pip install dbt-job-maestro[airflow]`). Generating
   the DAG file itself requires no Airflow install.
+- astronomer-cosmos >= 1.4.0 - optional, needed only when
+  `airflow.operator: dbt` is selected (`pip install 'dbt-job-maestro[airflow-dbt]'`).
+  The Airflow worker also needs dbt Core and the adapter used by the project.
 
 ## Testing
 

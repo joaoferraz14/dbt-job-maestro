@@ -1,6 +1,7 @@
 """FQN-based selector generator."""
 
 from typing import Dict, List, Any, Set, Optional
+from copy import deepcopy
 
 from dbt_job_maestro.base_selector import BaseSelector
 from dbt_job_maestro.selector_types import SelectorPriority, SelectorMetadata
@@ -310,7 +311,7 @@ class FQNSelector(BaseSelector):
         }
 
     def _create_exclusion(self) -> Optional[Dict[str, Any]]:
-        """Create combined exclusion definition for tags and paths.
+        """Create explicit configuration exclusions for tags, paths, and model names.
 
         dbt requires the value of ``exclude`` to be a **list** of selector
         definitions; a dict (e.g. ``exclude: {union: [...]}``) makes dbt reject
@@ -338,11 +339,14 @@ class FQNSelector(BaseSelector):
             for path in self.config.exclude_paths:
                 exclusion_items.append({"method": "path", "value": path})
 
+        if self.config.exclusion_mode == "intersection" and len(exclusion_items) > 1:
+            exclusion_items = [{"intersection": exclusion_items}]
+        exclusion_items.extend(
+            {"method": "fqn", "value": name} for name in self.config.exclude_models
+        )
+        exclusion_items.extend(deepcopy(self.config.exclude_rules))
         if not exclusion_items:
             return None
-
-        if self.config.exclusion_mode == "intersection" and len(exclusion_items) > 1:
-            return {"exclude": [{"intersection": exclusion_items}]}
         return {"exclude": exclusion_items}
 
     def _custom_sort(self, models: List[str]) -> List[str]:
