@@ -10,6 +10,37 @@ from dbt_job_maestro.airflow_dag_generator import AirflowDAGGenerator, GENERATED
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("operator", ["bash", "dbt"])
+@pytest.mark.parametrize("mode", ["none", "simple"])
+def test_all_dag_schedules_are_opt_in(default_cfg, sample_selectors, operator, mode):
+    default_cfg.operator = operator
+    default_cfg.dbt_project_dir = "/tmp/dbt-project"
+    default_cfg.dbt_profiles_dir = "/tmp/dbt-profiles"
+    default_cfg.dbt_profile = "test"
+    default_cfg.orchestration_mode = mode
+    default_cfg.manual_schedule_interval = "0 1 * * *"
+    default_cfg.full_refresh.enabled = True
+    default_cfg.seeds_full_refresh.enabled = True
+    default_cfg.full_refresh.custom_schedules = [
+        CustomFullRefreshSchedule(name="custom", models=["model_a"])
+    ]
+    selectors = sample_selectors + [
+        {"name": "manual", "definition": {"union": [{"method": "fqn", "value": "m"}]}}
+    ]
+    dags = AirflowDAGGenerator(default_cfg).generate_dags(selectors)
+    assert len(dags) >= 6
+    for source in dags.values():
+        assert ("schedule_interval=None" in source) is (mode == "none")
+
+
+def test_default_dags_have_no_schedule(sample_selectors):
+    config = AirflowConfig()
+    assert config.orchestration_mode == "none"
+    dags = AirflowDAGGenerator(config).generate_dags(sample_selectors)
+    assert dags
+    assert all("schedule_interval=None" in source for source in dags.values())
+
+
 def _airflow_available() -> bool:
     """Return True only if Airflow can actually be imported and used."""
     try:
@@ -254,6 +285,207 @@ class TestOneDagPerSelector:
         assert "from airflow.operators.bash import BashOperator" in src
         assert "catchup=False" in src
         assert "datetime(2024, 1, 1)" in src
+
+    def test_explicit_bash_operator_matches_legacy_default(self, default_cfg, sample_selectors):
+        default_source = AirflowDAGGenerator(default_cfg).generate_dags(sample_selectors)
+        default_cfg.operator = "bash"
+        explicit_source = AirflowDAGGenerator(default_cfg).generate_dags(sample_selectors)
+        assert explicit_source == default_source
+
+
+class TestDbtOperator:
+    def test_generates_dbt_build_and_deps_operators(self, default_cfg, sample_selectors):
+        default_cfg.operator = "dbt"
+        default_cfg.dbt_profile = "analytics"
+        default_cfg.dbt_project_dir = "/app/dbt"
+        default_cfg.dbt_profiles_dir = "/app/profiles"
+        default_cfg.dbt_target = "production"
+        default_cfg.dbt_threads = 12
+        default_cfg.dbt_deps_pool = "dbt_deps"
+
+        source = AirflowDAGGenerator(default_cfg).generate_dags(sample_selectors)[
+            "dbt_maestro_maestro_staging.py"
+        ]
+
+        assert "from cosmos import (" in source
+        for operator in (
+            "DbtBuildLocalOperator",
+            "DbtRunLocalOperator",
+            "DbtSeedLocalOperator",
+            "DbtSnapshotLocalOperator",
+            "DbtTestLocalOperator",
+            "ProfileConfig",
+        ):
+            assert f"    {operator}," in source
+        assert "profile_name='analytics'" in source
+        assert "target_name='production'" in source
+        assert "profiles_yml_filepath='/app/profiles/profiles.yml'" in source
+        assert "run_maestro_staging = DbtBuildLocalOperator(" in source
+        assert "dbt_cmd_flags=['--selector', 'maestro_staging', '--threads', '12']" in source
+        assert "project_dir='/app/dbt'" in source
+        assert "dbt_deps = BashOperator(" in source
+        assert (
+            'bash_command="dbt deps --project-dir /app/dbt --profiles-dir /app/profiles"' in source
+        )
+        assert 'pool="dbt_deps"' in source
+        assert "dbt_deps >> run_maestro_staging" in source
+        assert source.count("BashOperator(") == 1
+        compile(source, "dbt_operator_dag", "exec")
+
+    def test_maps_run_test_to_chained_dbt_operators(self, default_cfg):
+        default_cfg.operator = "dbt"
+        default_cfg.dbt_profile = "analytics"
+        default_cfg.default_command = "run_test"
+        source = AirflowDAGGenerator(default_cfg).generate_dags(
+            [{"name": "maestro_staging", "definition": {"union": []}}]
+        )["dbt_maestro_maestro_staging.py"]
+
+        assert "run_maestro_staging = DbtRunLocalOperator(" in source
+        assert "test_maestro_staging = DbtTestLocalOperator(" in source
+        assert "run_maestro_staging >> test_maestro_staging" in source
+
+    def test_infers_profile_from_dbt_project(self, default_cfg, tmp_path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "dbt_project.yml").write_text(
+            "name: maestro_test\nversion: '1.0.0'\nprofile: analytics\n"
+        )
+        default_cfg.operator = "dbt"
+        default_cfg.dbt_project_dir = str(project_dir)
+        source = AirflowDAGGenerator(default_cfg).generate_dags(
+            [{"name": "maestro_staging", "definition": {"union": []}}]
+        )["dbt_maestro_maestro_staging.py"]
+
+        assert "profile_name='analytics'" in source
+
+    def test_dbt_operator_preserves_paths_with_spaces(self, default_cfg):
+        default_cfg.operator = "dbt"
+        default_cfg.dbt_profile = "analytics"
+        default_cfg.dbt_project_dir = "/opt/dbt projects/analytics"
+        default_cfg.dbt_profiles_dir = "/opt/airflow profiles"
+        source = AirflowDAGGenerator(default_cfg).generate_dags(
+            [{"name": "maestro_staging", "definition": {"union": []}}]
+        )["dbt_maestro_maestro_staging.py"]
+
+        assert "project_dir='/opt/dbt projects/analytics'" in source
+        assert "profiles_yml_filepath='/opt/airflow profiles/profiles.yml'" in source
+        assert (
+            "bash_command=\"dbt deps --project-dir '/opt/dbt projects/analytics' "
+            "--profiles-dir '/opt/airflow profiles'\""
+        ) in source
+        compile(source, "dbt_operator_paths", "exec")
+
+    def test_maps_seed_snapshot_and_full_refresh_commands(self, default_cfg):
+        default_cfg.operator = "dbt"
+        default_cfg.dbt_profile = "analytics"
+        default_cfg.run_dbt_deps = False
+        default_cfg.full_refresh.enabled = True
+        selectors = [
+            {"name": "maestro_seeds", "definition": {"union": []}},
+            {"name": "maestro_snapshots", "definition": {"union": []}},
+            {"name": "maestro_full_refresh_incremental", "definition": {"union": []}},
+        ]
+        source_by_name = AirflowDAGGenerator(default_cfg).generate_dags(selectors)
+
+        assert "DbtSeedLocalOperator(" in source_by_name["dbt_maestro_maestro_seeds.py"]
+        assert "DbtSnapshotLocalOperator(" in source_by_name["dbt_maestro_maestro_snapshots.py"]
+        full_refresh = source_by_name["dbt_maestro_full_refresh_incremental.py"]
+        assert "DbtBuildLocalOperator(" in full_refresh
+        assert "'--full-refresh'" in full_refresh
+
+    def test_maps_custom_full_refresh_selection(self, default_cfg):
+        default_cfg.operator = "dbt"
+        default_cfg.dbt_profile = "analytics"
+        default_cfg.run_dbt_deps = False
+        default_cfg.full_refresh.custom_schedules = [
+            CustomFullRefreshSchedule(
+                name="tagged", cron_schedule="0 3 * * 1", tags=["weekly", "critical"]
+            )
+        ]
+        source = AirflowDAGGenerator(default_cfg).generate_dags([])[
+            "dbt_maestro_full_refresh_tagged.py"
+        ]
+        assert "DbtBuildLocalOperator(" in source
+        assert "'--full-refresh', '--select', 'tag:weekly', 'tag:critical'" in source
+
+    def test_missing_profile_is_reported_for_dbt_operator(self, default_cfg):
+        default_cfg.operator = "dbt"
+        generator = AirflowDAGGenerator(default_cfg)
+        with pytest.raises(ValueError, match=r"airflow\.dbt_profile.*dbt_project\.yml"):
+            generator.generate_dags([{"name": "maestro_staging", "definition": {"union": []}}])
+
+
+# ---------------------------------------------------------------------------
+# "dbt deps" task
+# ---------------------------------------------------------------------------
+
+
+class TestDbtDepsTask:
+    def test_deps_task_present_by_default(self, gen, sample_selectors):
+        src = gen.generate_dags(sample_selectors)["dbt_maestro_maestro_staging.py"]
+        assert 'task_id="dbt_deps"' in src
+        assert 'bash_command="dbt deps"' in src
+        assert "dbt_deps >> run_maestro_staging" in src
+
+    def test_deps_task_uses_project_and_profiles_dir_only(self):
+        g = AirflowDAGGenerator(
+            AirflowConfig(
+                dbt_project_dir="/app/dbt",
+                dbt_profiles_dir="/home/ubuntu/.dbt",
+                dbt_target="production",
+                dbt_threads=16,
+            )
+        )
+        _, cmd = g._dbt_deps_task()
+        assert cmd == "dbt deps --project-dir /app/dbt --profiles-dir /home/ubuntu/.dbt"
+        assert "--target" not in cmd
+        assert "--threads" not in cmd
+
+    def test_deps_task_can_be_disabled(self, default_cfg):
+        default_cfg.run_dbt_deps = False
+        gen = AirflowDAGGenerator(default_cfg)
+        src = gen.generate_dags([{"name": "maestro_staging", "definition": {"union": []}}])[
+            "dbt_maestro_maestro_staging.py"
+        ]
+        assert "dbt_deps" not in src
+        assert ">>" not in src
+
+    def test_deps_task_no_pool_by_default(self, gen, sample_selectors):
+        src = gen.generate_dags(sample_selectors)["dbt_maestro_maestro_staging.py"]
+        assert "pool=" not in src
+
+    def test_deps_task_uses_configured_pool(self, default_cfg):
+        default_cfg.dbt_deps_pool = "dbt_deps"
+        gen = AirflowDAGGenerator(default_cfg)
+        src = gen.generate_dags([{"name": "maestro_staging", "definition": {"union": []}}])[
+            "dbt_maestro_maestro_staging.py"
+        ]
+        assert 'pool="dbt_deps"' in src
+        compile(src, "dag", "exec")
+
+    def test_deps_task_gates_run_test_chain(self, default_cfg):
+        default_cfg.default_command = "run_test"
+        gen = AirflowDAGGenerator(default_cfg)
+        src = gen.generate_dags([{"name": "maestro_staging", "definition": {"union": []}}])[
+            "dbt_maestro_maestro_staging.py"
+        ]
+        assert "dbt_deps >> run_maestro_staging" in src
+        assert "run_maestro_staging >> test_maestro_staging" in src
+
+    def test_deps_task_gates_every_group_in_combined_dag(self, default_cfg):
+        default_cfg.min_models_per_dag = 5
+        gen = AirflowDAGGenerator(default_cfg)
+        sels = [
+            {"name": "maestro_a", "definition": {"union": [{"method": "fqn", "value": "a"}]}},
+            {"name": "maestro_b", "definition": {"union": [{"method": "fqn", "value": "b"}]}},
+        ]
+        src = gen.generate_dags(sels)["dbt_maestro_combined_small_selectors.py"]
+        assert "dbt_deps >> run_maestro_a" in src
+        assert "dbt_deps >> run_maestro_b" in src
+
+    def test_all_files_are_valid_python(self, gen, sample_selectors):
+        for name, src in gen.generate_dags(sample_selectors).items():
+            compile(src, name, "exec")
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +741,7 @@ class TestWriteDags:
         stale = tmp_path / "dbt_maestro_old.py"
         stale.write_text(f'"""old"""\n{GENERATED_MARKER}\n')
         dags = gen.generate_dags(sample_selectors)
-        written, removed = gen.write_dags(dags, str(tmp_path))
+        _, removed = gen.write_dags(dags, str(tmp_path))
         assert "dbt_maestro_old.py" in removed
         assert not stale.exists()
 
@@ -554,7 +786,7 @@ class TestAirflowConfigFromYaml:
         cfg_file.write_text("selector:\n  selector_prefix: maestro\n")
         cfg = Config.from_yaml(str(cfg_file))
         assert cfg.airflow.dag_id_prefix == "dbt_maestro"
-        assert cfg.airflow.orchestration_mode == "simple"
+        assert cfg.airflow.orchestration_mode == "none"
         assert cfg.airflow.dbt_target == "prod"
         assert cfg.airflow.min_models_per_dag == 1
 
@@ -608,6 +840,7 @@ class TestAirflowConfigFromYaml:
         content = output.read_text()
         assert "airflow:" in content
         assert "dag_id_prefix:" in content
+        assert "operator: bash" in content
         assert "orchestration_mode:" in content
         assert "min_models_per_dag:" in content
 
@@ -618,7 +851,22 @@ class TestAirflowConfigFromYaml:
         Config().to_yaml(str(output))
         # Generated template must parse back without error
         cfg = Config.from_yaml(str(output))
-        assert cfg.airflow.orchestration_mode == "simple"
+        assert cfg.airflow.orchestration_mode == "none"
+        assert cfg.job.orchestration_mode == "none"
+        assert cfg.airflow.operator == "bash"
+
+    def test_to_yaml_round_trips_dbt_operator_settings(self, tmp_path):
+        from dbt_job_maestro.config import Config
+
+        cfg = Config()
+        cfg.airflow.operator = "dbt"
+        cfg.airflow.dbt_profile = "analytics"
+        output = tmp_path / "maestro.yml"
+        cfg.to_yaml(str(output))
+
+        loaded = Config.from_yaml(str(output))
+        assert loaded.airflow.operator == "dbt"
+        assert loaded.airflow.dbt_profile == "analytics"
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +906,34 @@ class TestAirflowDAGRendering:
         assert "dbt_maestro_maestro_staging" in dagbag.dags
         assert "dbt_maestro_maestro_marts" in dagbag.dags
 
+    @pytest.mark.parametrize("operator", ["bash", "dbt"])
+    def test_external_trigger_dags_have_no_timetable(
+        self, live_cfg, sample_selectors, tmp_path, operator
+    ):
+        from airflow.models import DagBag
+
+        live_cfg.operator = operator
+        live_cfg.dbt_project_dir = str(tmp_path)
+        live_cfg.dbt_profiles_dir = str(tmp_path)
+        live_cfg.dbt_profile = "test"
+        live_cfg.orchestration_mode = "none"
+        live_cfg.manual_schedule_interval = "0 1 * * *"
+        live_cfg.full_refresh.enabled = True
+        live_cfg.seeds_full_refresh.enabled = True
+        live_cfg.full_refresh.custom_schedules = [
+            CustomFullRefreshSchedule(name="custom", models=["model_a"])
+        ]
+        generator = AirflowDAGGenerator(live_cfg)
+        selectors = sample_selectors + [
+            {"name": "manual", "definition": {"union": [{"method": "fqn", "value": "m"}]}}
+        ]
+        generator.write_dags(generator.generate_dags(selectors), str(tmp_path / "dags"))
+        dagbag = DagBag(dag_folder=str(tmp_path / "dags"), include_examples=False)
+        assert not dagbag.import_errors, dagbag.import_errors
+        assert len(dagbag.dags) >= 6
+        for dag in dagbag.dags.values():
+            assert dag.timetable.__class__.__name__ == "NullTimetable"
+
     def test_combined_dag_wires_chain(self, live_cfg, tmp_path):
         from airflow.models import DagBag
 
@@ -672,6 +948,66 @@ class TestAirflowDAGRendering:
         dag = dagbag.dags["dbt_maestro_combined_small_selectors"]
         downstream = dag.get_task("run_maestro_s2")
         assert "run_maestro_s1" in {t.task_id for t in downstream.upstream_list}
+
+    def test_cosmos_dag_imports_and_registers_dbt_operators(self, live_cfg, tmp_path):
+        from airflow.models import DagBag
+        from airflow import __version__ as airflow_version
+        from cosmos.operators.local import (
+            DbtRunLocalOperator,
+            DbtTestLocalOperator,
+        )
+
+        if int(airflow_version.split(".", 1)[0]) >= 3:
+            from airflow.providers.standard.operators.bash import BashOperator
+        else:
+            from airflow.operators.bash import BashOperator
+
+        project_dir = tmp_path / "dbt_project"
+        project_dir.mkdir()
+        (project_dir / "dbt_project.yml").write_text(
+            "name: maestro_test\nversion: '1.0.0'\nprofile: local_profile\n"
+        )
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        (profiles_dir / "profiles.yml").write_text(
+            "local_profile:\n  target: local\n  outputs:\n    local:\n"
+            "      type: duckdb\n      path: ':memory:'\n      threads: 1\n"
+        )
+
+        live_cfg.operator = "dbt"
+        live_cfg.dbt_project_dir = str(project_dir)
+        live_cfg.dbt_profiles_dir = str(profiles_dir)
+        live_cfg.dbt_target = "local"
+        live_cfg.dbt_threads = 1
+        live_cfg.run_dbt_deps = True
+        live_cfg.default_command = "run_test"
+        live_cfg.min_models_per_dag = 2
+        generator = AirflowDAGGenerator(live_cfg)
+        selectors = [
+            {
+                "name": "maestro_staging",
+                "definition": {"union": [{"method": "fqn", "value": "staging_model"}]},
+            },
+            {
+                "name": "maestro_marts",
+                "definition": {"union": [{"method": "fqn", "value": "mart_model"}]},
+            },
+        ]
+        generator.write_dags(generator.generate_dags(selectors), str(tmp_path / "dags"))
+
+        dagbag = DagBag(dag_folder=str(tmp_path / "dags"), include_examples=False)
+        assert not dagbag.import_errors, f"DAG import errors: {dagbag.import_errors}"
+        dag = dagbag.dags["dbt_maestro_combined_small_selectors"]
+        assert isinstance(dag.get_task("dbt_deps"), BashOperator)
+        assert isinstance(dag.get_task("run_maestro_staging"), DbtRunLocalOperator)
+        assert isinstance(dag.get_task("test_maestro_staging"), DbtTestLocalOperator)
+        assert isinstance(dag.get_task("run_maestro_marts"), DbtRunLocalOperator)
+        assert "dbt_deps" in {
+            task.task_id for task in dag.get_task("run_maestro_staging").upstream_list
+        }
+        assert "test_maestro_staging" in {
+            task.task_id for task in dag.get_task("run_maestro_marts").upstream_list
+        }
 
 
 # ---------------------------------------------------------------------------

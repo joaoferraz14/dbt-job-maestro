@@ -398,13 +398,12 @@ class TestTagExclusion:
         assert "stg_users" not in all_fqn_values
         assert "stg_orders" not in all_fqn_values
 
-    def test_tag_exclusion_adds_exclude_clause_to_selector(self, parser, graph):
-        """Test that tag exclusion adds exclude clause to auto-generated selector definition."""
+    def test_tag_exclusion_removes_entries_and_adds_exclude_clause(self, parser, graph):
+        """Tag matches are removed in memory and explicitly excluded in YAML."""
         config = SelectorConfig(exclude_tags=["legacy", "temp"], group_by_dependencies=True)
         orchestrator = SelectorOrchestrator(parser, graph, config)
         selectors = orchestrator.generate_selectors()
 
-        # Each auto-generated (non-freshness, non-manual) selector should have exclude clause
         auto_selectors = [
             s
             for s in selectors
@@ -418,22 +417,17 @@ class TestTagExclusion:
         for selector in auto_selectors:
             union_items = selector["definition"]["union"]
             exclude_items = [item for item in union_items if "exclude" in item]
-            assert (
-                len(exclude_items) > 0
-            ), f"Selector '{selector['name']}' missing tag exclusion in definition"
-            # dbt requires the value of "exclude" to be a list, not a
-            # {union: [...]} dict - a dict makes dbt reject the whole file with
-            # 'Invalid value for key "exclude". Expected a list.'
-            exclude_value = exclude_items[0]["exclude"]
-            assert isinstance(exclude_value, list), (
-                f"Selector '{selector['name']}' emitted a "
-                f"{type(exclude_value).__name__} under 'exclude'; dbt requires a list"
-            )
-            tag_excludes = [e for e in exclude_value if e.get("method") == "tag"]
-            assert len(tag_excludes) == 2
-            excluded_tags = {e["value"] for e in tag_excludes}
-            assert "legacy" in excluded_tags
-            assert "temp" in excluded_tags
+            assert exclude_items == [
+                {
+                    "exclude": [
+                        {"method": "tag", "value": "legacy"},
+                        {"method": "tag", "value": "temp"},
+                    ]
+                }
+            ]
+            assert not {
+                item.get("value") for item in union_items if item.get("method") == "fqn"
+            } & {"stg_legacy_data", "temp_debug"}
 
 
 class TestExclusionEdgeCases:
@@ -505,40 +499,48 @@ class TestExcludeClauseShape:
                     out.append(item["exclude"])
         return out
 
-    def test_union_mode_emits_flat_list(self, parser, graph):
+    def test_union_mode_removes_matching_models_and_emits_exclude_clause(self, parser, graph):
         config = SelectorConfig(
             exclude_tags=["legacy"], exclude_paths=["models/temp"], exclusion_mode="union"
         )
-        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
-        values = self._exclude_values(selectors)
-        assert values
-        for value in values:
-            assert isinstance(value, list)
-            assert all("method" in entry for entry in value)
-            assert {e["method"] for e in value} == {"tag", "path"}
+        orchestrator = SelectorOrchestrator(parser, graph, config)
+        selectors = orchestrator.generate_selectors()
+        assert self._exclude_values(selectors)
+        for value in self._exclude_values(selectors):
+            assert value == [
+                {"method": "tag", "value": "legacy"},
+                {"method": "path", "value": "models/temp"},
+            ]
+        assert orchestrator.model_coverage.fully_excluded == {"stg_legacy_data", "temp_debug"}
 
-    def test_intersection_mode_wraps_in_nested_intersection(self, parser, graph):
+    def test_intersection_mode_removes_only_models_matching_all_criteria(self, parser, graph):
         config = SelectorConfig(
             exclude_tags=["legacy"], exclude_paths=["models/temp"], exclusion_mode="intersection"
         )
-        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
-        values = self._exclude_values(selectors)
-        assert values
-        for value in values:
-            assert isinstance(value, list)
-            assert len(value) == 1
-            assert "intersection" in value[0]
-            assert {e["method"] for e in value[0]["intersection"]} == {"tag", "path"}
+        orchestrator = SelectorOrchestrator(parser, graph, config)
+        selectors = orchestrator.generate_selectors()
+        assert self._exclude_values(selectors)
+        for value in self._exclude_values(selectors):
+            assert value == [
+                {
+                    "intersection": [
+                        {"method": "tag", "value": "legacy"},
+                        {"method": "path", "value": "models/temp"},
+                    ]
+                }
+            ]
+        assert orchestrator.model_coverage.fully_excluded == set()
+        assert len(orchestrator.model_coverage.selected) == 6
 
     def test_single_criterion_intersection_stays_flat(self, parser, graph):
         """One criterion needs no intersection wrapper - AND of one thing is itself."""
         config = SelectorConfig(exclude_tags=["legacy"], exclusion_mode="intersection")
-        selectors = SelectorOrchestrator(parser, graph, config).generate_selectors()
-        values = self._exclude_values(selectors)
-        assert values
-        for value in values:
-            assert isinstance(value, list)
+        orchestrator = SelectorOrchestrator(parser, graph, config)
+        selectors = orchestrator.generate_selectors()
+        assert self._exclude_values(selectors)
+        for value in self._exclude_values(selectors):
             assert value == [{"method": "tag", "value": "legacy"}]
+        assert orchestrator.model_coverage.fully_excluded == {"stg_legacy_data"}
 
     def test_full_refresh_exclusions_are_a_list(self, parser, graph):
         config = SelectorConfig(

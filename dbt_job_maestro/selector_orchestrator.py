@@ -1,11 +1,12 @@
 """Orchestrate selector generation across all types."""
 
 import os
+import io
 import yaml
 import logging
 from typing import List, Dict, Any, Set, Tuple
 
-from dbt_job_maestro.selector_types import SelectorPriority
+from dbt_job_maestro.selector_types import ModelCoverage, SelectorPriority
 from dbt_job_maestro.model_resolver import ModelResolver
 from dbt_job_maestro.overlap_detector import OverlapDetector
 from dbt_job_maestro.selectors import ManualSelector, FQNSelector
@@ -60,17 +61,23 @@ class SelectorOrchestrator:
 
         # Raw YAML text blocks for manual selectors (populated during generation)
         self._raw_manual_blocks: List[str] = []
+        self.model_coverage = ModelCoverage()
 
     def generate_selectors(self) -> List[Dict[str, Any]]:
         """Generate FQN-based selectors.
 
-        Manual selectors are always preserved and their models excluded from
-        auto-generation to prevent duplicates.
+        Manual selectors are preserved and their models are excluded from
+        automated selectors after complete automated model groups are built.
 
         Returns:
             List of selector definitions
         """
-        selectors = self._generate_fqn_mode()
+        model_selectors = self._generate_fqn_mode()
+        manual_selectors, manual_excluded = self._get_manual_selectors_and_excluded_models()
+        manual_gen = self.generators[SelectorPriority.MANUAL]
+        self._raw_manual_blocks = list(manual_gen.raw_manual_blocks)
+        self._apply_manual_model_exclusions(model_selectors, manual_excluded)
+        selectors = manual_selectors + self._remove_empty_model_selectors(model_selectors)
 
         # Generate seeds selectors if configured
         if self.config.include_seeds_selectors:
@@ -182,42 +189,30 @@ class SelectorOrchestrator:
         Args:
             selectors: List of all selector definitions
         """
-        # Get all models in manifest
-        all_models = set(self.models.keys())
-
-        # Get models excluded by config
-        config_excluded = self._get_config_excluded_models()
-
-        # Get models covered by all selectors (manual + auto-generated)
-        covered_models: Set[str] = set()
-        for selector in selectors:
-            resolution = self.resolver.resolve_selector(selector)
-            covered_models.update(resolution.models)
-
-        # Find ALL models that aren't covered by any selector
-        all_uncovered = all_models - covered_models
+        self.model_coverage = self.get_model_coverage(selectors)
+        config_excluded = self.model_coverage.fully_excluded
+        all_uncovered = self.model_coverage.fully_excluded | self.model_coverage.unexplained
 
         if all_uncovered:
-            # Separate into config-excluded vs other uncovered
+            # Separate into explicitly excluded vs unexplained uncovered models
             excluded_and_uncovered = all_uncovered & config_excluded
             other_uncovered = all_uncovered - config_excluded
 
-            # Warn about config-excluded models not in any manual selector
+            # Warn about excluded models not in any selector
             if excluded_and_uncovered:
                 logger.warning(
                     f"\n⚠️  WARNING: {len(excluded_and_uncovered)} model(s) are excluded from "
-                    f"auto-generation and NOT in any manual selector (they will NOT run):"
+                    f"all selectors (they will NOT run):"
                 )
                 for model in sorted(excluded_and_uncovered)[:10]:
                     logger.warning(f"    - {model}")
                 if len(excluded_and_uncovered) > 10:
                     logger.warning(f"    ... and {len(excluded_and_uncovered) - 10} more")
                 logger.warning(
-                    "\n💡 TIP: If these models should run, add them to a manual selector "
+                    "\n💡 TIP: If these models should run, adjust selector exclusions "
                     "or remove them from exclude_tags/exclude_paths/exclude_models."
                 )
 
-            # Warn about other uncovered models (not excluded by config)
             if other_uncovered:
                 logger.warning(
                     f"\n⚠️  WARNING: {len(other_uncovered)} model(s) "
@@ -232,6 +227,60 @@ class SelectorOrchestrator:
                     "manual selector or if they need proper tags/paths for auto-generation."
                 )
 
+    def get_model_coverage(self, selectors: List[Dict[str, Any]]) -> ModelCoverage:
+        """Account for selected, explicitly removed, and unexplained manifest models."""
+        all_models = set(self.models)
+        selected: Set[str] = set()
+        excluded = self._get_config_excluded_models()
+        unsupported_methods: Set[str] = set()
+
+        def without_exclusions(definition: Any) -> Any:
+            if isinstance(definition, list):
+                return [without_exclusions(item) for item in definition]
+            if not isinstance(definition, dict):
+                if isinstance(definition, str):
+                    unsupported_methods.add("string selector expressions")
+                return definition
+            method = definition.get("method")
+            if method and method not in {"fqn", "tag", "path"}:
+                unsupported_methods.add(str(method))
+            value = definition.get("value", "")
+            if (
+                method == "fqn"
+                and isinstance(value, str)
+                and value not in self.models
+                and any(character in value for character in ".*?")
+            ):
+                unsupported_methods.add("qualified or wildcard fqn")
+            if "exclude" in definition:
+                without_exclusions(definition["exclude"])
+            return {
+                key: without_exclusions(value) if key in {"union", "intersection"} else value
+                for key, value in definition.items()
+                if key != "exclude"
+            }
+
+        for selector in selectors:
+            # Freshness selects sources, not executable model coverage.
+            if selector.get("name", "").startswith("freshness_"):
+                continue
+            resolution = self.resolver.resolve_selector(selector)
+            selected.update(resolution.models & all_models)
+            definition = selector.get("definition", {})
+            positive_definition = without_exclusions(definition)
+            if positive_definition != definition:
+                positive = self.resolver.resolve_selector({"definition": positive_definition})
+                excluded.update(positive.models - resolution.models)
+
+        fully_excluded = (excluded & all_models) - selected
+        return ModelCoverage(
+            total=len(all_models),
+            selected=selected,
+            fully_excluded=fully_excluded,
+            unexplained=all_models - selected - fully_excluded,
+            unsupported_methods=unsupported_methods,
+        )
+
     def _get_config_excluded_models(self) -> Set[str]:
         """Get models to exclude based on config's exclude_tags, exclude_paths, and exclude_models.
 
@@ -239,6 +288,7 @@ class SelectorOrchestrator:
             Set of model names to exclude from selector generation
         """
         excluded = set()
+        criteria: List[Set[str]] = []
 
         # Exclude models matching exclude_tags
         if self.config.exclude_tags:
@@ -249,6 +299,7 @@ class SelectorOrchestrator:
                     f"{', '.join(self.config.exclude_tags)}"
                 )
             excluded.update(tag_excluded)
+            criteria.extend(set(self.graph.group_by_tag(tag)) for tag in self.config.exclude_tags)
 
         # Exclude models matching exclude_paths
         if self.config.exclude_paths:
@@ -259,6 +310,12 @@ class SelectorOrchestrator:
                     f"{', '.join(self.config.exclude_paths)}"
                 )
             excluded.update(path_excluded)
+            criteria.extend(
+                set(self.graph.group_by_path(path)) for path in self.config.exclude_paths
+            )
+
+        if self.config.exclusion_mode == "intersection" and criteria:
+            excluded = set.intersection(*criteria)
 
         # Exclude models by name
         if self.config.exclude_models:
@@ -269,14 +326,22 @@ class SelectorOrchestrator:
                     f"{', '.join(model_excluded)}"
                 )
             excluded.update(model_excluded)
+            unmatched = set(self.config.exclude_models) - model_excluded
+            if unmatched:
+                logger.warning(
+                    "exclude_models entries did not match manifest model names: "
+                    + ", ".join(sorted(unmatched))
+                    + ". Use bare model names, not file paths or qualified node IDs."
+                )
 
         return excluded
 
     def _get_manual_selectors_and_excluded_models(self) -> tuple:
         """Get manual selectors and the models they cover.
 
-        Manual selectors are always preserved. Their covered models are excluded
-        from auto-generation to prevent duplicates.
+        Manual selectors are preserved. Their covered models are returned so
+        automated groups can be formed first, then emitted without duplicate
+        positive FQN entries.
 
         Returns:
             Tuple of (manual_selectors list, excluded_models set)
@@ -418,39 +483,86 @@ class SelectorOrchestrator:
         return excluded_tags, excluded_paths
 
     def _generate_fqn_mode(self) -> List[Dict[str, Any]]:
-        """Generate FQN-based selectors with manual selector preservation.
+        """Build complete dependency selectors, then remove configuration matches.
 
-        Manual selectors are always preserved. Auto-generated FQN selectors
-        exclude models already covered by manual selectors.
+        Manual-selector exclusions are applied after all automated selectors
+        have been generated, so they cannot alter connected-component grouping.
 
         Returns:
-            List of selector definitions (manual + auto-generated)
+            List of automated FQN-based selector definitions
         """
-        all_selectors = []
-
-        # Start with models excluded by config
         excluded_models = self._get_config_excluded_models()
-
-        # Get manual selectors and their covered models
-        manual_selectors, manual_excluded = self._get_manual_selectors_and_excluded_models()
-        excluded_models.update(manual_excluded)
-        all_selectors.extend(manual_selectors)
-
-        # Capture raw text blocks from the manual generator
-        manual_gen = self.generators[SelectorPriority.MANUAL]
-        self._raw_manual_blocks = list(manual_gen.raw_manual_blocks)
-
-        # Generate FQN-based selectors for remaining models
         fqn_gen = self.generators[SelectorPriority.AUTO_FQN]
-        fqn_selectors = fqn_gen.generate(excluded_models=excluded_models)
+        fqn_selectors = fqn_gen.generate(excluded_models=set())
+        self._apply_manual_model_exclusions(fqn_selectors, excluded_models)
+        fqn_selectors = self._remove_empty_model_selectors(fqn_selectors)
 
         logger.info(f"Generated {len(fqn_selectors)} FQN-based selectors")
         if excluded_models:
             logger.info(f"  ({len(excluded_models)} models excluded from auto-generation)")
 
-        all_selectors.extend(fqn_selectors)
+        return fqn_selectors
 
-        return all_selectors
+    def _apply_manual_model_exclusions(
+        self, selectors: List[Dict[str, Any]], manual_models: Set[str]
+    ) -> None:
+        """Exclude manual-owned models without changing generated group membership."""
+        if not manual_models:
+            return
+
+        model_names = set(self.models)
+        excluded_names = sorted(manual_models & model_names)
+        for selector in selectors:
+            name = selector.get("name", "")
+            if name.startswith("freshness_"):
+                continue
+            self._remove_fqn_inclusions(selector, excluded_names)
+
+    @staticmethod
+    def _remove_fqn_inclusions(selector: Dict[str, Any], names: List[str]) -> None:
+        """Remove manually owned models from an automated selector's positive FQNs."""
+        definition = selector.get("definition", {})
+        if not isinstance(definition, dict):
+            return
+        union = definition.get("union", [])
+        if not isinstance(union, list):
+            return
+
+        excluded_names = set(names)
+        definition["union"] = [
+            item
+            for item in union
+            if not (
+                isinstance(item, dict)
+                and item.get("method") == "fqn"
+                and item.get("value") in excluded_names
+            )
+        ]
+
+    @staticmethod
+    def _remove_empty_model_selectors(
+        selectors: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Drop emptied model selectors and freshness selectors that reference them."""
+        model_selector_names = {
+            selector.get("name", "")
+            for selector in selectors
+            if not selector.get("name", "").startswith("freshness_")
+            and any(
+                isinstance(item, dict) and item.get("method") == "fqn"
+                for item in selector.get("definition", {}).get("union", [])
+            )
+        }
+
+        return [
+            selector
+            for selector in selectors
+            if (
+                selector.get("name", "")[len("freshness_") :] in model_selector_names
+                if selector.get("name", "").startswith("freshness_")
+                else selector.get("name", "") in model_selector_names
+            )
+        ]
 
     def _generate_seeds_selectors(self) -> List[Dict[str, Any]]:
         """Generate selectors for seed files.
@@ -468,7 +580,6 @@ class SelectorOrchestrator:
             logger.info("No seeds found in manifest")
             return selectors
 
-        # Get seeds covered by manual selectors
         excluded_seeds = self._get_seeds_in_manual_selectors()
 
         if self.config.seeds_selector_method == "path":
@@ -481,7 +592,6 @@ class SelectorOrchestrator:
                     seeds_path = sorted(path_prefixes)[0]
 
             if seeds_path:
-                # Filter out excluded seeds
                 included_seeds = [s for s in seeds.keys() if s not in excluded_seeds]
                 if included_seeds:
                     selector = {
@@ -530,7 +640,6 @@ class SelectorOrchestrator:
             logger.info("No snapshots found in manifest")
             return selectors
 
-        # Get snapshots covered by manual selectors
         excluded_snapshots = self._get_snapshots_in_manual_selectors()
 
         if self.config.snapshots_selector_method == "path":
@@ -543,7 +652,6 @@ class SelectorOrchestrator:
                     snapshots_path = sorted(path_prefixes)[0]
 
             if snapshots_path:
-                # Filter out excluded snapshots
                 included_snapshots = [s for s in snapshots.keys() if s not in excluded_snapshots]
                 if included_snapshots:
                     selector = {
@@ -553,7 +661,8 @@ class SelectorOrchestrator:
                     }
                     selectors.append(selector)
                     logger.info(
-                        f"Generated snapshots selector covering {len(included_snapshots)} snapshots "
+                        f"Generated snapshots selector covering "
+                        f"{len(included_snapshots)} snapshots "
                         f"({len(excluded_snapshots)} excluded by manual selectors)"
                     )
         else:
@@ -568,7 +677,9 @@ class SelectorOrchestrator:
                 ]
                 selector = {
                     "name": f"{self.config.selector_prefix}_snapshots",
-                    "description": f"Selector for all snapshots ({len(included_snapshots)} snapshots)",
+                    "description": (
+                        f"Selector for all snapshots ({len(included_snapshots)} snapshots)"
+                    ),
                     "definition": {"union": union_items},
                 }
                 selectors.append(selector)
@@ -591,8 +702,6 @@ class SelectorOrchestrator:
         covered_seeds = set()
         seeds = self.parser.get_seeds()
         seed_names = set(seeds.keys())
-
-        # Get all manual selectors
         manual_gen = self.generators[SelectorPriority.MANUAL]
         manual_selectors = manual_gen.generate(excluded_models=set())
 
@@ -615,8 +724,6 @@ class SelectorOrchestrator:
         covered_snapshots = set()
         snapshots = self.parser.get_snapshots()
         snapshot_names = set(snapshots.keys())
-
-        # Get all manual selectors
         manual_gen = self.generators[SelectorPriority.MANUAL]
         manual_selectors = manual_gen.generate(excluded_models=set())
 
@@ -654,9 +761,7 @@ class SelectorOrchestrator:
             if method == "fqn" and value in resource_names:
                 covered.add(value)
             elif method == "path" and value:
-                # Check if any resources are in this path
                 for resource_name in resource_names:
-                    # Simple path matching - could be enhanced
                     if value in resource_name or resource_name.startswith(value.rstrip("/")):
                         covered.add(resource_name)
 
@@ -744,14 +849,14 @@ class SelectorOrchestrator:
             else:
                 auto_selectors.append(s)
 
-        with open(output_path, "w") as f:
+        with io.StringIO() as f:
             # Write the selectors key
             f.write("selectors:\n")
 
             # Determine which selectors to dump vs preserve raw
             if not self.config.reformat_manual_selectors and self._raw_manual_blocks:
                 # Write manual selectors as raw text (preserving original formatting)
-                for i, raw_block in enumerate(self._raw_manual_blocks):
+                for raw_block in self._raw_manual_blocks:
                     f.write(raw_block)
                     f.write("\n\n")
 
@@ -767,6 +872,16 @@ class SelectorOrchestrator:
                     self._write_single_selector(f, selector)
                     if i < len(all_selectors) - 1:
                         f.write("\n")
+            content = f.getvalue().encode("utf-8")
+
+        if os.path.exists(output_path):
+            with open(output_path, "rb") as existing:
+                if existing.read() == content:
+                    logger.info(f"Selectors unchanged; leaving {output_path} untouched")
+                    return
+
+        with open(output_path, "wb") as destination:
+            destination.write(content)
 
     def _write_single_selector(self, f, selector: Dict[str, Any]) -> None:
         """Write a single selector to file using yaml.dump formatting.

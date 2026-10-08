@@ -83,6 +83,17 @@ class ModelResolution:
 
 
 @dataclass
+class ModelCoverage:
+    """Unique manifest model accounting across the final selector definitions."""
+
+    total: int = 0
+    selected: Set[str] = field(default_factory=set)
+    fully_excluded: Set[str] = field(default_factory=set)
+    unexplained: Set[str] = field(default_factory=set)
+    unsupported_methods: Set[str] = field(default_factory=set)
+
+
+@dataclass
 class OverlapWarning:
     """Warning about overlapping models between selectors.
 

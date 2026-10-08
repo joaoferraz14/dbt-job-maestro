@@ -24,6 +24,9 @@ class SelectorConfig:
     # Paths to exclude from selectors
     exclude_paths: List[str] = field(default_factory=list)
 
+    # Advanced exclusion trees evaluated by dbt at runtime.
+    exclude_rules: List[Dict[str, Any]] = field(default_factory=list)
+
     # How to combine exclusion criteria in the selector definition
     # - 'union': Exclude models matching ANY of the criteria (OR logic) - default
     # - 'intersection': Exclude models matching ALL of the criteria (AND logic)
@@ -137,12 +140,50 @@ class SelectorConfig:
     # e.g., maestro_orphan_models
     single_model_selector_name: str = "orphan_models"
 
+    @staticmethod
+    def _validate_exclude_rules(rules: Any) -> None:
+        if not isinstance(rules, list):
+            raise ValueError("selector.exclude_rules must be a list of exclusion definitions")
+        for rule in rules:
+            if not isinstance(rule, dict):
+                raise ValueError("Each selector.exclude_rules entry must be a dictionary")
+            if set(rule) in ({"intersection"}, {"union"}):
+                children = next(iter(rule.values()))
+                if not children:
+                    raise ValueError("selector.exclude_rules groups must not be empty")
+                SelectorConfig._validate_exclude_rules(children)
+                continue
+            if set(rule) != {"method", "value"}:
+                raise ValueError("Exclusion rules require method/value or a union/intersection")
+            method, value = rule["method"], rule["value"]
+            if method not in {"config.materialized", "state"}:
+                raise ValueError(
+                    "selector.exclude_rules supports config.materialized and state methods"
+                )
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("Exclusion rule values must be non-empty strings")
+            if method == "state" and value not in {
+                "new",
+                "old",
+                "modified",
+                "unmodified",
+                "modified.body",
+                "modified.configs",
+                "modified.relation",
+                "modified.persisted_descriptions",
+                "modified.macros",
+                "modified.contract",
+            }:
+                raise ValueError(f"Unsupported state exclusion value: {value}")
+
     def validate(self) -> None:
         """Validate configuration options for compatibility.
 
         Raises:
             ValueError: If incompatible options are set
         """
+        self._validate_exclude_rules(self.exclude_rules)
+
         # Validate exclusion_mode
         valid_exclusion_modes = ["union", "intersection"]
         if self.exclusion_mode not in valid_exclusion_modes:
@@ -246,6 +287,11 @@ class AirflowConfig:
     # Each DAG is named "{dag_id_prefix}_{selector_name}".
     dag_id_prefix: str = "dbt_maestro"
 
+    # Implementation used to execute dbt tasks in generated DAGs.
+    # "bash" preserves the historical BashOperator behavior; "dbt" uses
+    # Astronomer Cosmos local dbt operators.
+    operator: str = "bash"
+
     # Major Airflow version the generated DAG files must run on: 2 or 3.
     # Airflow 3 made three breaking changes that affect rendered DAGs:
     #   - DAG(schedule_interval=...) was removed in favour of DAG(schedule=...)
@@ -286,11 +332,32 @@ class AirflowConfig:
     # Absolute path to dbt profiles directory (passed via --profiles-dir)
     dbt_profiles_dir: str = ""
 
+    # dbt profile name. When empty, it is read from dbt_project.yml during DAG
+    # generation for the Cosmos operator path.
+    dbt_profile: str = ""
+
     # dbt target name (e.g. "prod")
     dbt_target: str = "prod"
 
     # dbt --threads value
     dbt_threads: int = 8
+
+    # Run "dbt deps" as a task at the start of every generated DAG, gating the
+    # selector's build/run/test/seed/snapshot task(s). Without this, dbt fails
+    # whenever dbt_packages/ is missing or out of sync with packages.yml (e.g.
+    # a fresh worker checkout, or packages.yml changed since the last deps run).
+    run_dbt_deps: bool = True
+
+    # Airflow pool assigned to every "dbt deps" task (empty = no pool, i.e.
+    # unlimited concurrency). All auto-generated DAGs typically share ONE
+    # schedule_interval, so dozens of DAGs can fire "dbt deps" at the exact
+    # same instant - all writing into the SAME dbt_packages/ directory under
+    # dbt_project_dir concurrently. That races/corrupts package extraction and
+    # spikes Python/dbt process count, which can crash the worker. Setting this
+    # to a pool with 1 slot serializes "dbt deps" across every DAG. The pool
+    # must already exist in Airflow (e.g. `airflow pools set dbt_deps 1 "..."`)
+    # - referencing a pool that doesn't exist fails the task at runtime.
+    dbt_deps_pool: str = ""
 
     # Render the selector's dbt lineage as EmptyOperator nodes inside the DAG.
     # Purely visual: the selector is still built by ONE dbt invocation. The nodes
@@ -317,8 +384,8 @@ class AirflowConfig:
     #              manual_schedule_interval when set)
     # - staggered: DAGs are offset by cron_increment_minutes from
     #              start_hour:start_minute, in creation order
-    # - none:      no schedule (schedule_interval=None) - manual trigger only
-    orchestration_mode: str = "simple"
+    # - none:      default, all DAGs externally/manual-triggered
+    orchestration_mode: str = "none"
 
     # Staggered-mode timing (mirrors JobConfig)
     start_hour: int = 6
@@ -370,9 +437,15 @@ class AirflowConfig:
         """Validate Airflow configuration options.
 
         Raises:
-            ValueError: If orchestration_mode, airflow_version or a command
-                value is invalid.
+            ValueError: If operator, orchestration_mode, airflow_version or a
+                command value is invalid.
         """
+        valid_operators = {"bash", "dbt"}
+        if not isinstance(self.operator, str) or self.operator not in valid_operators:
+            raise ValueError(
+                f"Invalid airflow.operator '{self.operator}'. "
+                f"Valid options: {', '.join(sorted(valid_operators))}"
+            )
         valid_modes = {"simple", "staggered", "none"}
         if self.orchestration_mode not in valid_modes:
             raise ValueError(
@@ -428,8 +501,8 @@ class JobConfig:
     # Job orchestration mode: "simple", "staggered", or "none"
     # - simple: All jobs use the same cron_schedule (parallel execution)
     # - staggered: Jobs staggered with time increments (e.g., 6:00, 6:30, 7:00)
-    # - none: No schedule - jobs are created but must be triggered manually
-    orchestration_mode: str = "simple"
+    # - none: Default, no schedule; external or manual triggers
+    orchestration_mode: str = "none"
 
     # Whether to automatically create jobs for maestro_ selectors (auto-generated)
     # When True: maestro_ selectors automatically become dbt Cloud jobs
@@ -541,6 +614,7 @@ class Config:
             exclude_tags=selector_data.get("exclude_tags", []),
             exclude_models=selector_data.get("exclude_models", []),
             exclude_paths=selector_data.get("exclude_paths", []),
+            exclude_rules=selector_data.get("exclude_rules", []),
             exclusion_mode=selector_data.get("exclusion_mode", "union"),
             include_freshness_selectors=selector_data.get("include_freshness_selectors", False),
             freshness_selector_names=selector_data.get("freshness_selector_names", []),
@@ -593,7 +667,7 @@ class Config:
             run_generate_sources=job_data.get("run_generate_sources", False),
             job_name_prefix=job_data.get("job_name_prefix", "dbt"),
             orchestration_mode=cls._normalize_orchestration_mode(
-                job_data.get("orchestration_mode", "simple")
+                job_data.get("orchestration_mode", "none")
             ),
             start_hour=job_data.get("start_hour", 6),
             start_minute=job_data.get("start_minute", 0),
@@ -621,6 +695,7 @@ class Config:
         airflow_data = data.get("airflow", {})
         airflow_config = AirflowConfig(
             dag_id_prefix=airflow_data.get("dag_id_prefix", "dbt_maestro"),
+            operator=airflow_data.get("operator", "bash"),
             airflow_version=airflow_data.get("airflow_version", 2),
             schedule_interval=airflow_data.get("schedule_interval", "0 6 * * *"),
             manual_schedule_interval=airflow_data.get("manual_schedule_interval", ""),
@@ -632,15 +707,18 @@ class Config:
             retry_delay_minutes=airflow_data.get("retry_delay_minutes", 5),
             dbt_project_dir=airflow_data.get("dbt_project_dir", ""),
             dbt_profiles_dir=airflow_data.get("dbt_profiles_dir", ""),
+            dbt_profile=airflow_data.get("dbt_profile", ""),
             dbt_target=airflow_data.get("dbt_target", "prod"),
             dbt_threads=airflow_data.get("dbt_threads", 8),
+            run_dbt_deps=airflow_data.get("run_dbt_deps", True),
+            dbt_deps_pool=airflow_data.get("dbt_deps_pool", ""),
             lineage_tasks=airflow_data.get("lineage_tasks", False),
             lineage_max_models=airflow_data.get("lineage_max_models", 50),
             tags=airflow_data.get("tags", ["dbt", "maestro"]),
             selector_prefix=selector_data.get("selector_prefix", "maestro"),
             dags_dir=airflow_data.get("dags_dir", ""),
             orchestration_mode=cls._normalize_airflow_orchestration_mode(
-                airflow_data.get("orchestration_mode", "simple")
+                airflow_data.get("orchestration_mode", "none")
             ),
             start_hour=airflow_data.get("start_hour", 6),
             start_minute=airflow_data.get("start_minute", 0),
@@ -852,12 +930,14 @@ selector:
 
   # ---------------------------------------------------------------------------
   # EXCLUSIONS - Models to skip from auto-generation
+  # Applied after complete dependency grouping by removing FQN entries.
+  # Config exclusions are also emitted explicitly on automated dependency selectors.
   # ---------------------------------------------------------------------------
   # Tags to exclude (models with these tags won't be in auto-generated selectors)
   # Example: ['deprecated', 'archived', 'test']
   exclude_tags: {self.selector.exclude_tags}
 
-  # Models to exclude by name
+  # Models to exclude by exact bare name (not paths or qualified node IDs)
   # Example: ['temp_model', 'debug_model']
   exclude_models: {self.selector.exclude_models}
 
@@ -865,7 +945,13 @@ selector:
   # Example: ['models/staging/legacy', 'models/temp']
   exclude_paths: {self.selector.exclude_paths}
 
-  # How to combine exclusion criteria: 'union' or 'intersection'
+  # Advanced dbt runtime exclusions. Nested union/intersection is supported.
+  # Methods: config.materialized and state. State requires dbt --state <directory>.
+  # Not resolved in memory by Maestro; coverage remains unverified for these rules.
+  exclude_rules: {self.selector.exclude_rules}
+
+  # How to combine tag/path criteria: 'union' or 'intersection'
+  # Explicit exclude_models entries are always removed.
   # - union: Exclude if ANY criteria matches (OR logic) - default
   # - intersection: Exclude only if ALL criteria match (AND logic)
   exclusion_mode: {self.selector.exclusion_mode}
@@ -1045,10 +1131,10 @@ job:
   # ('cron_incremental' is accepted as an alias for 'staggered')
   # - simple: All jobs use the same cron_schedule (parallel execution)
   # - staggered: Jobs staggered by cron_increment_minutes from start_hour:start_minute
-  # - none: No schedule, jobs exist but must be triggered manually in dbt Cloud
+  # - none: Default, no schedules (including refresh jobs); external/manual triggers
   orchestration_mode: {self.job.orchestration_mode}
 
-  # Cron schedule for simple mode (e.g., "0 */6 * * *" = every 6 hours)
+  # Optional cron for simple mode; ignored in none mode.
   cron_schedule: {self.job.cron_schedule}
 
   # Starting hour for first job (0-23) - for staggered mode
@@ -1139,6 +1225,11 @@ job:
 # rebuilt/cleaned on every run; hand-written DAGs in the same folder are
 # never touched.
 airflow:
+  # Operator used to execute each dbt task: "bash" (default, no extra package)
+  # or "dbt" (Astronomer Cosmos local dbt operators; install the airflow-dbt
+  # extra and set dbt_profile if it cannot be read from dbt_project.yml).
+  operator: {self.airflow.operator}
+
   # Prefix for generated DAG ids and file names.
   # Each DAG is named "{{dag_id_prefix}}_{{selector_name}}" → e.g. dbt_maestro_staging.py
   dag_id_prefix: {self.airflow.dag_id_prefix}
@@ -1194,11 +1285,27 @@ airflow:
   # Leave empty to use the default ~/.dbt location
   dbt_profiles_dir: '{self.airflow.dbt_profiles_dir}'
 
+  # dbt profile name used by Cosmos when operator is "dbt".
+  # Leave empty to infer it from dbt_project.yml.
+  dbt_profile: '{self.airflow.dbt_profile}'
+
   # dbt target name (e.g. "prod", "production")
   dbt_target: {self.airflow.dbt_target}
 
   # Number of threads passed to dbt via --threads
   dbt_threads: {self.airflow.dbt_threads}
+
+  # Run "dbt deps" as a task at the start of every generated DAG, gating the
+  # selector's build/run/test/seed/snapshot task(s)
+  run_dbt_deps: {self.airflow.run_dbt_deps}
+
+  # Airflow pool assigned to every "dbt deps" task (empty = no pool). Set this
+  # to serialize "dbt deps" across all DAGs sharing one schedule_interval -
+  # otherwise dozens of DAGs can fire "dbt deps" simultaneously, all writing
+  # into the SAME dbt_packages/, racing/corrupting installs and spiking process
+  # count. The pool must already exist in Airflow, e.g.:
+  #   airflow pools set dbt_deps 1 "Serialize dbt deps across DAGs"
+  dbt_deps_pool: '{self.airflow.dbt_deps_pool}'
 
   # ---------------------------------------------------------------------------
   # LINEAGE (visual only)
@@ -1263,7 +1370,7 @@ airflow:
   #              manual_schedule_interval when set)
   # - staggered: DAGs are offset by cron_increment_minutes from
   #              start_hour:start_minute, in creation order
-  # - none:      no schedule (manual trigger only)
+  # - none:      default, no schedules (including refresh DAGs); external/manual triggers
   orchestration_mode: {self.airflow.orchestration_mode}
 
   # Staggered-mode timing

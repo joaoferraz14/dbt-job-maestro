@@ -5,7 +5,7 @@ import tempfile
 import os
 from pathlib import Path
 
-from dbt_job_maestro.config import Config, SelectorConfig, JobConfig
+from dbt_job_maestro.config import AirflowConfig, Config, JobConfig, SelectorConfig
 
 
 class TestSelectorConfig:
@@ -77,6 +77,45 @@ class TestJobConfig:
         assert config.include_maestro_selectors_in_jobs is True
         assert config.include_manual_selectors_in_jobs is True
         assert config.min_models_per_job == 4
+
+
+class TestAirflowConfig:
+    """Test Airflow operator configuration."""
+
+    def test_operator_defaults_to_bash_for_existing_configs(self):
+        yaml_content = """
+airflow:
+  schedule_interval: "0 6 * * *"
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write(yaml_content)
+            config_path = f.name
+        try:
+            config = Config.from_yaml(config_path)
+            assert config.airflow.operator == "bash"
+        finally:
+            os.unlink(config_path)
+
+    def test_operator_can_select_dbt(self):
+        config = AirflowConfig(operator="dbt")
+        config.validate()
+        assert config.operator == "dbt"
+
+    def test_yaml_operator_can_select_dbt(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write("airflow:\n  operator: dbt\n  dbt_profile: analytics\n")
+            config_path = f.name
+        try:
+            config = Config.from_yaml(config_path)
+            assert config.airflow.operator == "dbt"
+            assert config.airflow.dbt_profile == "analytics"
+        finally:
+            os.unlink(config_path)
+
+    def test_unsupported_operator_has_useful_error(self):
+        config = AirflowConfig(operator="python")
+        with pytest.raises(ValueError, match=r"airflow\.operator.*bash.*dbt"):
+            config.validate()
 
 
 class TestConfig:
