@@ -16,7 +16,6 @@ Pick whichever orchestrator your team uses - the selector generation is identica
 ## Table of Contents
 
 - [Installation](#installation)
-- [Publishing to PyPI](#publishing-to-pypi)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
 - [Data Flow & What It Solves](#data-flow--what-it-solves)
@@ -48,38 +47,6 @@ pip install -e .
 ```
 
 ---
-
-## Publishing to PyPI
-
-From a clean release checkout, install the release tools, run the tests, and
-build both distributions:
-
-```bash
-python -m pip install -e ".[dev,release]"
-python -m pytest tests/ -q
-python -m build
-python -m twine check --strict dist/*
-```
-
-The package version comes from `dbt_job_maestro.__version__` in
-`dbt_job_maestro/__init__.py`. Update it before each new release; PyPI cannot
-replace an already published version. Build into an empty `dist/` directory
-so older releases are not accidentally uploaded. Both distributions include
-the MIT license, and the installed package provides the `maestro` command.
-
-Optionally test publication to TestPyPI before publishing to PyPI:
-
-```bash
-python -m twine upload --repository testpypi dist/*
-# After verifying the release, publish to PyPI:
-python -m twine upload dist/*
-```
-
-Uploads are explicit maintainer actions, not part of generation or build.
-Use a PyPI API token supplied securely to Twine, never committed to the
-repository, or configure trusted publishing in a separately approved release
-workflow. Package-name availability and account permissions must be confirmed
-on the chosen registry.
 
 ## Quick Start
 
